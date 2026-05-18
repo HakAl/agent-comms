@@ -1,0 +1,8 @@
+#!/bin/sh
+# Wrapper for the agent-comms CLI. Resolves the repo from the script's own
+# location so the wrapper works when symlinked or invoked from any directory.
+set -eu
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+exec uv run python -m agent_comms.cli "$@"
