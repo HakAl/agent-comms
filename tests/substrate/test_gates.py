@@ -102,6 +102,7 @@ class HygieneScanTests(unittest.TestCase):
             "someone@host.example",
             "root@box.localhost",
             "git@github.com:org/repo.git",
+            "noreply@github.com",
         ):
             self.assertNotIn("email", self.checks_for(allowed), allowed)
         self.assertNotIn("email", self.checks_for("decorator @unittest.skip and a@b"))
@@ -351,6 +352,25 @@ class HygieneRepoTests(unittest.TestCase):
         code, report = self.run_hygiene(base="main", private_dir=private)
         self.assertIn(f": author: personal-path: Dev at {PERSONAL_PATH} <author@example.com>", report)
         self.assertIn(": committer: email: Example Author <nobody>", report)
+
+    def test_github_merge_commit_identity_is_allowed(self) -> None:
+        git(self.repo, "checkout", "-q", "-b", "feature")
+        self.commit_file("a.md", "fine\n", "work")
+        git(self.repo, "checkout", "-q", "main")
+        git(
+            self.repo,
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "Merge pull request #1 from example/feature",
+            "feature",
+            env={"GIT_COMMITTER_NAME": "GitHub", "GIT_COMMITTER_EMAIL": "noreply@github.com"},
+        )
+        git(self.repo, "branch", "-q", "-f", "base", "HEAD~1")
+        code, report = self.run_hygiene(base="base")
+        self.assertEqual(code, 0, report)
+        self.assertIn("PASS commits (2 commit(s) beyond base", report)
 
     def test_explicit_base_that_does_not_resolve_fails(self) -> None:
         code, report = self.run_hygiene(base="no-such-ref")

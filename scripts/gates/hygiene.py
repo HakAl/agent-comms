@@ -70,8 +70,10 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # Reserved names (RFC 2606 and RFC 6761) that can never receive mail.
 EXAMPLE_DOMAINS = ("example.com", "example.org", "example.net")
 RESERVED_TLDS = (".invalid", ".test", ".example", ".localhost")
-# ``git@host`` is an ssh remote, not a mailbox.
-ALLOWED_LOCAL_PARTS = frozenset({"git"})
+# ``git@host`` is an ssh remote, not a mailbox; ``noreply@github.com`` is the
+# committer of GitHub's own merge commits, including the pull request merge
+# ref that CI checks out.
+ALLOWED_LOCAL_PARTS = frozenset({"git", "noreply", "no-reply"})
 
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
