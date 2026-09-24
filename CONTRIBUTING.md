@@ -1,13 +1,13 @@
 # Contributing
 
 The goal is a system an agent can set up and operate for its user, with useful
-failure reports and little maintainer intervention. Today this repository
-ships the original mailbox. [The roadmap](docs/ROADMAP.md) describes the larger
-workflow; [AGENTS.md](AGENTS.md) describes how to work on it.
+failure reports and little maintainer intervention. [The README](README.md)
+describes what the checkout does today, [the roadmap](docs/ROADMAP.md) what
+remains before a release, and [AGENTS.md](AGENTS.md) how to work on it.
 
 Contributions can be small: a reproducible failure, a Linux test result, a
-better agent instruction, or one reviewed implementation slice. Access to the
-maintainer's private deployment is never a prerequisite.
+better agent instruction, or one reviewed implementation slice. Nothing
+outside this repository is a prerequisite.
 
 ## Development setup and tests
 

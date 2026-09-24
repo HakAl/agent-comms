@@ -2,15 +2,11 @@
 
 ## Where this is going
 
-This repository ships the original mailbox: a local SQLite store, a CLI, and
-an MCP server. The maintainer has since grown that mailbox, in a separate
-private deployment, into a full local workflow that has run for hundreds of
-hours of real use. This roadmap brings that workflow here as a public product
-anyone can install.
-
-The private deployment is a source, not an upstream. Behavior is ported here
-with generic configuration, fresh tests, and none of the maintainer's paths,
-teams, or history. After porting, this repository evolves on its own.
+This repository is a local workflow for terminal coding agents: a mailbox,
+bounded dispatch to supervised workers, and a review and landing cycle with
+signed human approval. The code is here. The roadmap is about making it
+installable and operable by a new user on their own machine, macOS first,
+then Linux. Progress against each item is tracked in the `br` backlog.
 
 ## What you get, in layers
 
@@ -81,7 +77,7 @@ needed. The commands and results are saved with the release.
 ### Later
 
 - A redacted bug report export that users can preview before sharing.
-- More runtimes (for example Gemini) once they pass the same certification.
+- More runtimes, once they pass the same certification as Claude and Codex.
 
 ## Testing against real runtimes
 
@@ -93,4 +89,4 @@ only after its tests pass on that version.
 ## Not planned
 
 A hosted or multi-user service, networking between machines, a dashboard, and
-native Windows. The proposals in [DESIGN.md](DESIGN.md) are historical.
+native Windows.

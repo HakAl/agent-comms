@@ -53,7 +53,6 @@ Hard limits:
 - Body maximum: 12 lines.
 - File refs maximum: 5.
 - Do not paste logs unless the log excerpt is the artifact and is under 20 lines.
-- Do not include message subject/body in tmux wakeups.
 
 ## Reply Rules
 
@@ -130,16 +129,14 @@ Avoid:
 
 When replying, reference the original `message_id` and only describe the delta.
 
-## Semaphore And Wakeup Behavior
+## Semaphore Behavior
 
 `.agent-comms/<agent_id>/new_messages` is a pull signal, not content. On seeing it:
 
 1. Call `list_inbox`.
 2. Read only messages addressed to your architect id.
 3. Act only on messages that meet the send criteria.
-4. Let `list_inbox` clear the semaphore automatically, or clear it through `agent-comms clear-semaphore` if needed.
-
-Tmux wakeups are nudges. If a wakeup appears mid-task, finish the current step before reading the referenced message.
+4. `list_inbox` clears the semaphore.
 
 ## Human Escalation
 
@@ -151,18 +148,3 @@ Escalate to the human instead of continuing agent-to-agent messaging when:
 - A blocker affects release/eval criteria.
 - The needed evidence is subjective rather than executable.
 - The next message would mostly restate prior context.
-
-## Dashboard Contract Checks
-
-The dashboard should make protocol drift visible:
-
-- Threads over budget.
-- Messages requiring ack but not acknowledged.
-- Messages with no refs and no evidence.
-- Broadcasts with many replies.
-- Reopened closed threads.
-- Repeated wakeups for the same message.
-- Stale semaphores.
-- Unacked `high` or `blocker` messages past the configured window.
-
-These checks should warn, not block. The contract is non-binding, but violations should be visible.

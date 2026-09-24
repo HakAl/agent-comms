@@ -1,58 +1,65 @@
-# MCP Setup
+# MCP setup
 
-`agent-comms` exposes a stdio MCP server. Each architect CLI launches the server as a subprocess, so there are no port conflicts across architect terminals.
+`agent-comms` exposes a stdio MCP server. Each agent CLI launches it as a
+subprocess, so there are no ports to manage and no conflicts between
+terminals.
 
 ## Prerequisites
 
-1. Install [uv](https://docs.astral.sh/uv/) (used by the wrapper scripts).
-2. Sync the optional MCP dependency:
-   ```bash
+1. Install [uv](https://docs.astral.sh/uv/).
+2. Sync the environment with the MCP extra:
+   ```sh
    uv sync --extra mcp
    ```
-3. Create your agent registry:
-   ```bash
-   cp config/agents.example.json config/agents.json
-   # edit config/agents.json with your real team ids and project roots
+3. Describe your actors and register them:
+   ```sh
+   cp config/actors.example.json config/actors.json
+   $EDITOR config/actors.json
    scripts/agent-comms bootstrap
    ```
 
-## Add the MCP server to each CLI
+The launcher `scripts/agent-comms-mcp` executes the checkout's `.venv`
+directly and refuses to start if the environment is missing or the `mcp`
+package is not installed.
 
-The wrapper script `scripts/agent-comms-mcp` launches the stdio MCP server. Register it once per architect CLI.
+## One server per seat, bound to one identity
+
+The server takes `--actor-id` and binds every tool call to that actor. It
+refuses to start for an actor that is not registered or not launchable.
+Register it once per architect seat, with that seat's id, and never expose two
+differently named `agent-comms` servers to the same session.
 
 ### Claude Code
 
-```bash
-claude mcp add agent-comms -- /absolute/path/to/scripts/agent-comms-mcp
+```sh
+claude mcp add agent-comms -- /absolute/path/to/scripts/agent-comms-mcp --actor-id team-a-architect
 claude mcp list
 ```
 
 ### Codex CLI
 
-```bash
-codex mcp add agent-comms -- /absolute/path/to/scripts/agent-comms-mcp
+```sh
+codex mcp add agent-comms -- /absolute/path/to/scripts/agent-comms-mcp --actor-id team-a-architect
 codex mcp list
 ```
 
-Codex also reads `~/.codex/config.toml`; the CLI command above writes the same config.
+Codex writes this to `~/.codex/config.toml`. Prefer a per-profile or
+per-project entry over a global one so each seat keeps its own identity.
 
-### Gemini CLI
+### Any other MCP client
 
-```bash
-gemini mcp add agent-comms /absolute/path/to/scripts/agent-comms-mcp
-gemini mcp list
-```
+Point it at the same launcher with the same `--actor-id` argument. The server
+speaks plain stdio MCP and needs nothing else.
 
-Gemini stores MCP config under `~/.gemini/settings.json`; use the CLI command above to avoid hand-editing the schema.
+## Checking the binding
 
-## Tested CLI versions
+From inside the agent session, call the `whoami` tool. It returns the bound
+actor. From a shell, `scripts/agent-comms actors` lists every registered
+actor.
 
-| CLI         | Version  |
-|-------------|----------|
-| Claude Code | 2.1.143  |
-| Codex CLI   | 0.130.0  |
-| Gemini CLI  | 0.42.0   |
+## Workers
 
-## Identity caveat
-
-In the current implementation, the MCP server is identity-neutral: the architect passes its `agent_id` as a tool argument on each call. Nothing prevents a confused architect from sending as another. See `docs/DESIGN.md` for the planned per-architect MCP subprocess pattern that closes this gap.
+Worker seats are not configured this way. When an architect dispatches to a
+worker, the runtime adapter starts the worker with a generated MCP
+configuration and a restricted tool policy. Nothing needs to be added to the
+worker's CLI by hand.
