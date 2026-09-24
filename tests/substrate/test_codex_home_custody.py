@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import subprocess
+import shutil
 import tempfile
 import types
 import unittest
@@ -55,6 +56,16 @@ def _make_home(home: Path, *, actor_id: str = "alpha-codex-worker", age_days: in
 
 class _Base(unittest.TestCase):
     def setUp(self) -> None:
+        # The refresh driver looks the codex binary up before calling the exec
+        # runner these tests supply; a runner never executes it, so a machine
+        # without codex (CI) must see one anyway.
+        real_which = shutil.which
+        which_patch = mock.patch(
+            "shutil.which",
+            side_effect=lambda cmd, *args, **kwargs: "/abs/codex" if cmd == "codex" else real_which(cmd, *args, **kwargs),
+        )
+        which_patch.start()
+        self.addCleanup(which_patch.stop)
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.custody = self.root / "custody-root"
