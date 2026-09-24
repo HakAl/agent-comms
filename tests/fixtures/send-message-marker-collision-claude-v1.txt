@@ -1,0 +1,6 @@
+<invoke name="send_message">
+<parameter name="to_agents">["gamma-codex-architect"]</parameter>
+<parameter name="subject">Pin drift</subject>
+<parameter name="body">Kind: assumption_change</body>
+<parameter name="parent_message_id">msg_20260816_113309_95f5d7ec</parameter>
+</invoke>

@@ -1,6 +1,6 @@
 # Architect Communication Relay — Design
 
-> **Status**: this document is the full design. Phases 1–3 are shipped today. Phases 4–6 are designed but not implemented. See the per-phase status markers and the rollout plan at the bottom.
+> **Historical design:** this records the original communication-relay proposal. Its future phases and recommendations are not the current work queue. See [ROADMAP.md](ROADMAP.md) and the `br` backlog for the expanded workflow direction, and [README.md](../README.md) for implemented behavior.
 
 ## Goal
 
@@ -148,19 +148,19 @@ Messages should be compact and path-oriented. Large content stays in the owning 
 
 ```json
 {
-  "id": "msg_20260517_153012_lab_sensor_01",
+  "id": "msg_20260517_153012_example_01",
   "from_type": "architect",
   "from_id": "team-c-architect",
   "to": ["team-a-architect"],
   "parent_message_id": null,
-  "subject": "ZH route finding relevant to sensor false positives",
+  "subject": "Parser finding relevant to your input validation",
   "body": "Short summary of what changed and why the recipient should care.",
   "refs": [
     {
-      "display_path": "/path/to/team-a/repo/parapet/implement/research-findings/zh_route.md",
-      "resolved_path": "/path/to/team-a/repo/parapet/implement/research-findings/zh_route.md",
+      "display_path": "/path/to/team-a/repo/notes/findings/parser.md",
+      "resolved_path": "/path/to/team-a/repo/notes/findings/parser.md",
       "exists_at_send": true,
-      "summary": "Route analysis notes; see section on register-paired benign samples."
+      "summary": "Parser notes; see the section on malformed input."
     }
   ],
   "priority": "normal",
@@ -564,7 +564,7 @@ agent-comms agents
 agent-comms inbox team-a-architect
 agent-comms unread
 agent-comms status
-agent-comms thread msg_20260517_153012_lab_sensor_01
+agent-comms thread msg_20260517_153012_example_01
 ```
 
 This lets the human operator inspect the relay without entering each architect session.
@@ -648,7 +648,7 @@ Example:
 
 ```text
 team-a-architect
-  receiver_id: recv_sensor_20260517_01
+  receiver_id: recv_team_a_20260517_01
   transport: tmux
   target: agent-comms:team-a
   cli: claude

@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from agent_comms import push_approval
+from agent_comms.review import ReviewError, run_git
+
+
+def current_ref(repo: Path) -> str:
+    branch = run_git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    if not branch:
+        raise ReviewError("detached HEAD refuses without explicit --ref")
+    return f"refs/heads/{branch}"
+
+
+def verify_candidate(record: Path, *, head: str, target_ref: str, repo_identity: str) -> tuple[bool, str]:
+    try:
+        push_approval.verify_record_path(record, head=head, target_ref=target_ref, repo_identity=repo_identity)
+    except ReviewError as exc:
+        return False, f"{record.name}: {exc}"
+    return True, f"{record.name}: matched"
+
+
+def record_mtime(record: Path) -> float:
+    try:
+        return record.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def scan_records(*, head: str, target_ref: str, repo_identity: str) -> tuple[Path | None, str]:
+    root = push_approval.PUSH_APPROVAL_ROOT
+    candidates = sorted(root.glob("push_*.json"), key=record_mtime, reverse=True) if root.exists() else []
+    reasons: list[str] = []
+    for candidate in candidates:
+        matched, reason = verify_candidate(candidate, head=head, target_ref=target_ref, repo_identity=repo_identity)
+        if matched:
+            return candidate, reason
+        reasons.append(reason)
+    capped = reasons[:20]
+    if len(reasons) > len(capped):
+        capped.append(f"... {len(reasons) - len(capped)} more candidates omitted")
+    summary = f"no matching push approval record among {len(candidates)} candidates"
+    if capped:
+        summary += ":\n" + "\n".join(capped)
+    return None, summary
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="guarded-push")
+    parser.add_argument("--repo", default=".")
+    parser.add_argument("--remote", default="origin")
+    parser.add_argument("--ref")
+    parser.add_argument("--record")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    repo = Path(args.repo).resolve()
+    try:
+        target_ref = args.ref or current_ref(repo)
+        head = run_git(repo, "rev-parse", target_ref)
+        repo_identity = run_git(repo, "remote", "get-url", args.remote)
+        if args.record:
+            push_approval.verify_record_path(Path(args.record), head=head, target_ref=target_ref, repo_identity=repo_identity)
+        else:
+            match, summary = scan_records(head=head, target_ref=target_ref, repo_identity=repo_identity)
+            if match is None:
+                raise ReviewError(summary)
+        proc = subprocess.run(["git", "-C", str(repo), "push", args.remote, target_ref], check=False)
+        return proc.returncode
+    except ReviewError as exc:
+        print(f"guarded-push: refused: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

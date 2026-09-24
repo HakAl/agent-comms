@@ -1,0 +1,51 @@
+{
+  "alpha-claude-worker": {
+    "args": [
+      "-p",
+      "--no-session-persistence",
+      "--output-format",
+      "stream-json",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "{{\"mcpServers\":{{\"agent-comms\":{{\"alwaysLoad\":true,\"args\":[\"--db\",\"{db_path}\",\"--actor-id\",\"{actor_id}\"],\"command\":\"{mcp_command}\",\"env\":{{\"AGENT_COMMS_ACTOR_ID\":\"{actor_id}\",\"AGENT_COMMS_PROJECT_ROOT\":\"{project_root}\",\"WAKE_POLICY\":\"worker_dispatch_readwrite_bounded\",\"WAKE_POLICY_VERSION\":\"v2\"}}}}}}}}",
+      "--settings",
+      "{claude_settings}",
+      "--permission-mode",
+      "dontAsk",
+      "{worker_prompt}"
+    ],
+    "command": "{claude_binary}"
+  },
+  "alpha-codex-worker": {
+    "args": [
+      "--ask-for-approval",
+      "never",
+      "exec",
+      "--profile",
+      "{actor_id}",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--sandbox",
+      "workspace-write",
+      "{worker_prompt}"
+    ],
+    "command": "codex",
+    "env": {
+      "CODEX_HOME": "{codex_home}"
+    }
+  },
+  "alpha-fake-worker": {
+    "args": [
+      "-m",
+      "agent_comms.adapters.fake_worker",
+      "--actor-id",
+      "{actor_id}",
+      "--message-id",
+      "{message_id}",
+      "--db",
+      "{db_path}",
+      "WakePolicy=worker_dispatch_readwrite_bounded"
+    ],
+    "command": "python3"
+  }
+}
