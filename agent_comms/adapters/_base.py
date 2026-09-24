@@ -4,6 +4,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,6 +122,7 @@ class ProcessSpawnAdapter:
         "hooks_path",
         "codex_home",
         "claude_binary",
+        "python",
         "worker_prompt",
     )
 
@@ -536,6 +538,9 @@ class ProcessSpawnAdapter:
             "hooks_path": str(paths.hooks_path()),
             "codex_home": str(paths.codex_home(str(context.recipient["id"]))),
             "claude_binary": str(claude_binary_path()),
+            # The dispatching process's own interpreter: whatever can run this
+            # adapter can import the package, on PATH or not.
+            "python": sys.executable,
         }
         try:
             return arg.format(**values)

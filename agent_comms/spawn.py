@@ -325,9 +325,12 @@ def _claude_settings() -> str:
 
 
 def _fake_spawn() -> dict:
+    # {python} resolves at dispatch time to the interpreter running the
+    # dispatch, which can import agent_comms by definition; a bare "python3"
+    # only worked when the project environment happened to be first on PATH.
     policy = compile_policy(WORKER_DISPATCH_POLICY)
     return {
-        "command": "python3",
+        "command": "{python}",
         "args": [
             "-m",
             "agent_comms.adapters.fake_worker",
@@ -353,6 +356,7 @@ def _escaped_json(value: dict) -> str:
         "mcp_command",
         "hooks_path",
         "claude_binary",
+        "python",
     )
     sentinels = {name: f"@@AGENT_COMMS_PLACEHOLDER_{index}@@" for index, name in enumerate(placeholders)}
     for name, sentinel in sentinels.items():

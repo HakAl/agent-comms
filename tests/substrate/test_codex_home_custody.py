@@ -756,7 +756,7 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 21 refuses stale single-log adapters before structured codex output.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 22)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 23)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

@@ -76,10 +76,6 @@ architect session in the loop. In normal use the architect calls the
 `dispatch_agent` MCP tool instead and no token is involved.
 
 ```sh
-# The fake worker is launched as `python3 -m agent_comms.adapters.fake_worker`,
-# so the project environment must be first on PATH for this walkthrough.
-export PATH="$PWD/.venv/bin:$PATH"
-
 # One-time operator credential, mode 600
 (umask 077; head -c 32 /dev/urandom | xxd -p -c 64 > ~/.agent-comms/admin-token)
 export AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)"
@@ -104,14 +100,11 @@ scripts/agent-comms inbox team-a-architect
 
 Expected result: the dispatch row shows `closed` with result `satisfied`,
 and the architect's inbox holds a reply from the fake worker parented to the
-dispatch message. If the worker log shows `No module named 'agent_comms'`,
-the PATH step above was skipped.
+dispatch message. The fake worker runs on the same interpreter as the
+process that dispatched it, so nothing needs to be on `PATH`.
 
 Worker logs for each dispatch land under `~/.agent-comms/logs/dispatch/`
-(`AGENT_COMMS_DISPATCH_LOG_DIR` moves them). One thing about this walkthrough
-is a known defect, not design: the fake worker depends on `python3` resolving
-to an interpreter that can import this package. The installable package work
-fixes it.
+(`AGENT_COMMS_DISPATCH_LOG_DIR` moves them).
 
 ## MCP tool surface
 

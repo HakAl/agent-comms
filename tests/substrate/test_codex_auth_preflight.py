@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -223,6 +224,25 @@ class CodexAuthPreflightTest(unittest.TestCase):
 
         self.assertEqual(result.spawn_handle, "fake:alpha-fake-worker:4321")
         spawn_call.assert_called_once()
+
+    def test_t8b_fake_worker_runs_on_the_dispatching_interpreter(self) -> None:
+        # Regression for ac-qy8: the rendered command was the bare name
+        # "python3", so the worker only imported agent_comms when the first
+        # python3 on PATH happened to be the project environment. The spawn
+        # block stays portable ({python}) and the adapter resolves it to the
+        # interpreter that is running the dispatch, which can import the
+        # package by definition.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            spawn = render_spawn("fake", "alpha-fake-worker")
+            self.assertEqual(spawn["command"], "{python}")
+
+            with _supervised_boundary() as spawn_call:
+                FakeAdapter().dispatch(_context("fake", "alpha-fake-worker", root, spawn))
+
+        child_command = spawn_call.call_args.args[0]
+        self.assertEqual(child_command[0], sys.executable)
+        self.assertEqual(child_command[1:3], ["-m", "agent_comms.adapters.fake_worker"])
 
     def test_t9_symlink_auth_target_controls_staleness(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

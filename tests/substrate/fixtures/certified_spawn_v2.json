@@ -46,6 +46,6 @@
       "{db_path}",
       "WakePolicy=worker_dispatch_readwrite_bounded"
     ],
-    "command": "python3"
+    "command": "{python}"
   }
 }

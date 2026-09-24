@@ -429,7 +429,7 @@ class NegativeSweepTest(unittest.TestCase):
             self.assertEqual(actors[HUMAN_ID]["kind"], "human")
             self.assertEqual(actors["alpha-architect"]["kind"], "agent")
             self.assertEqual(actors["alpha-fake-worker"]["runtime"], "fake")
-            self.assertEqual(actors["alpha-fake-worker"]["spawn"]["command"], "python3")
+            self.assertEqual(actors["alpha-fake-worker"]["spawn"]["command"], "{python}")
             self.assertEqual(actors["alpha-claude-worker"]["runtime"], "claude")
             self.assertEqual(actors["alpha-claude-worker"]["spawn"]["command"], "{claude_binary}")
             self.assertEqual(actors["alpha-codex-worker"]["runtime"], "codex")
