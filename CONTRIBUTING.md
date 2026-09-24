@@ -1,13 +1,13 @@
 # Contributing
 
 The goal is a system an agent can set up and operate for its user, with useful
-failure reports and little maintainer intervention. Today this repository
-ships the original mailbox. [The roadmap](docs/ROADMAP.md) describes the larger
-workflow; [AGENTS.md](AGENTS.md) describes how to work on it.
+failure reports and little maintainer intervention. [The README](README.md)
+describes what the checkout does today, [the roadmap](docs/ROADMAP.md) what
+remains before a release, and [AGENTS.md](AGENTS.md) how to work on it.
 
 Contributions can be small: a reproducible failure, a Linux test result, a
-better agent instruction, or one reviewed implementation slice. Access to the
-maintainer's private deployment is never a prerequisite.
+better agent instruction, or one reviewed implementation slice. Nothing
+outside this repository is a prerequisite.
 
 ## Development setup and tests
 
@@ -58,7 +58,7 @@ public push must pass; each can also run on its own. `make help` lists them.
 | Target | What it checks | Needs |
 |---|---|---|
 | `make hygiene` | Every tracked file, and every commit beyond `origin/main` (message, author and committer identities, added diff lines, files added or changed), for personal paths, email addresses, machine hostnames, key and token material, and the tracked layout (nothing under `data/`, `logs/`, `local/`, only `*.example*` under `config/`, no `.env` files, no binaries outside the allowlist). Commit identities must use an `example.*`, `noreply` or reserved-domain address. | git |
-| `make lint` | ruff (pinned through `uvx`) against `scripts/gates/ruff-baseline.txt`; fails when a file gains findings of a rule or a new file and rule pair appears. Fewer findings pass; `make lint-baseline` records the lower count. | uv |
+| `make lint` | ruff (pinned through `uvx`) against `scripts/gates/ruff-baseline.txt`; fails when a file gains findings of a rule or a new file and rule pair appears. Fewer findings pass; `make lint-baseline` records the lower count. Also fails when a GitHub Action in `.github/workflows/` is not pinned to a full commit SHA with a `# vN` version comment. | uv |
 | `make test` | The isolated suite with the pinned test extra. `PYTHON=3.11` selects an interpreter. | uv |
 | `make preverify` | A fresh clone of HEAD under `local/preverify/`, the suite on Python 3.11 and 3.14, then lint and hygiene inside the clone. Refuses a dirty tree unless `PREVERIFY_ARGS=--allow-dirty`. | uv, network for missing interpreters |
 

@@ -514,6 +514,60 @@ class LintBaselineTests(unittest.TestCase):
         self.assertNotIn(("tests/substrate/test_gates.py", "F401"), baseline)
 
 
+class WorkflowPinTests(unittest.TestCase):
+    SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+
+    def setUp(self) -> None:
+        self.lint = load("lint")
+
+    def _findings(self, workflow: str) -> list[str]:
+        with tempfile.TemporaryDirectory(prefix="gates-") as temp:
+            repo = Path(temp)
+            workflows = repo / ".github" / "workflows"
+            workflows.mkdir(parents=True)
+            (workflows / "ci.yml").write_text(workflow)
+            return self.lint.workflow_pin_findings(repo)
+
+    def test_sha_pin_with_version_comment_passes(self) -> None:
+        self.assertEqual(
+            self._findings(
+                f"steps:\n  - uses: actions/checkout@{self.SHA} # v7.0.1\n"
+                f"  - uses: 'owner/repo/sub/dir@{self.SHA}'  #v1\n"
+            ),
+            [],
+        )
+
+    def test_tag_and_branch_refs_fail_with_the_line_named(self) -> None:
+        findings = self._findings(
+            "steps:\n  - uses: actions/checkout@v7\n  - uses: astral-sh/setup-uv@v10.2.0\n"
+            "  - uses: owner/repo@main\n"
+        )
+        self.assertEqual(len(findings), 3)
+        self.assertTrue(findings[0].startswith(".github/workflows/ci.yml:2:"))
+        self.assertIn("actions/checkout@v7", findings[0])
+        self.assertIn("not pinned to a commit SHA", findings[1])
+
+    def test_sha_pin_without_a_version_comment_fails(self) -> None:
+        findings = self._findings(f"steps:\n  - uses: actions/checkout@{self.SHA}\n")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("version comment", findings[0])
+        findings = self._findings(f"steps:\n  - uses: actions/checkout@{self.SHA} # latest\n")
+        self.assertEqual(len(findings), 1)
+
+    def test_local_actions_and_non_uses_lines_are_ignored(self) -> None:
+        self.assertEqual(
+            self._findings("steps:\n  - uses: ./.github/actions/setup\n  - run: echo uses: x@v1\n"),
+            [],
+        )
+
+    def test_missing_workflows_dir_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gates-") as temp:
+            self.assertEqual(self.lint.workflow_pin_findings(Path(temp)), [])
+
+    def test_committed_workflows_are_pinned(self) -> None:
+        self.assertEqual(self.lint.workflow_pin_findings(REPO_ROOT), [])
+
+
 class MakefileTests(unittest.TestCase):
     def test_documented_gate_targets_exist(self) -> None:
         text = (REPO_ROOT / "Makefile").read_text()

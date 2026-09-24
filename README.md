@@ -1,152 +1,166 @@
 # agent-comms
 
-A local mailbox for coordinating multiple terminal-based AI coding agents — Claude Code, Codex CLI, Gemini CLI, or anything else that speaks MCP.
+A local mailbox and bounded dispatch system for terminal AI coding agents such
+as Claude Code and Codex CLI. Everything runs on one workstation against one
+SQLite file. There is no daemon, no network service, and no cloud.
 
-When you run several agent CLIs in parallel (one per team or one per repo) and they need to coordinate, you end up relaying messages by hand: "team A found X, tell team B." `agent-comms` replaces that relay with a tiny local SQLite mailbox that every CLI can read and write through standard MCP tools.
+Agents talk to it through a stdio MCP server that is bound to one identity per
+process. Humans and scripts use the `agent-comms` CLI.
 
-## Development direction
+## What is in this checkout
 
-This checkout still implements the original mailbox. The full local workflow
-(bounded dispatch, review by a different model family, and signed human
-approval) already runs in the maintainer's own deployment and is being ported
-here, **macOS first, then Linux**. Until that lands, those capabilities are not
-in this repository.
+- **Mailbox.** Messages, acknowledgements, status posts, handoff snapshots,
+  and a blocking `wait_for_reply`. Each MCP server process is started with
+  `--actor-id`, so an agent cannot send as anyone else.
+- **Dispatch.** An architect hands a bounded task to a worker it owns. The
+  worker runs under a supervisor with a time limit and a restricted tool
+  surface. Work that fails or times out lands in a dead-letter queue and the
+  human actor is paged. A monitor process reconciles in-flight dispatches.
+- **Runtimes.** Workers can run on `claude`, `codex`, or a `fake` runtime
+  that needs no login and exists for demos and tests.
+- **Review and landing.** A review gate runner and a signed push approval
+  check (`scripts/guarded-push`), so nothing pushes without a human approval
+  signed with an SSH key.
+- **Gates.** `make gate` runs hygiene, lint, the isolated test suite, and a
+  fresh-clone preverify. CI runs the same checks on macOS.
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) to help.
-[The roadmap](docs/ROADMAP.md) describes the layers, milestones, and release
-checks. Basic messaging remains useful on its own and does not require both
-Claude and Codex.
+## What is not here yet
 
-## What it is today
+Milestone 1 of [the roadmap](docs/ROADMAP.md) is in progress. The pieces
+that still need to land before a new user can run this without a checkout:
 
-- A **SQLite mailbox** (`messages`, `statuses`, `agents` tables) with WAL enabled.
-- A **stdio MCP server** exposing 10 tools: `send_message`, `list_inbox`, `read_message`, `ack_message`, `close_message`, `wait_for_reply`, `post_status`, `list_status`, `register_agent`, `list_agents`.
-- A **CLI** (`agent-comms`) for human inspection and scripting.
-- **No daemons, no networking, no cloud.** Everything runs locally on one workstation.
+- An installable package with installed launchers. Today everything runs
+  from a synced development checkout.
+- `agent-comms setup` and `agent-comms doctor`.
+- Runtime version pins per platform, and upgrades from the original 0.1.0
+  mailbox.
+- A proper quickstart, concepts page, and runbook. This README is the
+  interim version.
 
-## Current boundaries
+Known gaps in the current dispatch path are tracked in the maintainer's
+issue tracker and summarized at the end of the walkthrough below.
 
-- Not an orchestrator. Architects still drive themselves.
-- Not a replacement for A2A or BeeAI ACP. The schema borrows ideas (agent cards, refs, tasks) but the implementation is intentionally smaller.
-- Not a message queue. There's no broker, no fan-out, no retries.
-- Not opinionated about which CLI you use. It's just a mailbox.
+## Quickstart from a checkout
 
-## Status
+Requirements: macOS, Python 3.11 or newer, Git, and
+[uv](https://docs.astral.sh/uv/).
 
-| Component | State in this checkout |
-|-----------|------------------------|
-| SQLite mailbox + CLI | Implemented |
-| MCP stdio server | Implemented; caller-supplied identity |
-| Architect prompt integration | Available in `docs/architect-prompt.md` |
-| Full local execution workflow and reliable upgrades | Planned in [ROADMAP.md](docs/ROADMAP.md) |
-
-The original tmux/dashboard/A2A proposals in [DESIGN.md](docs/DESIGN.md) are
-historical context, not the current implementation queue. Platform certification
-is a release goal, not a claim made by this status table.
-
-Known gap: per-architect MCP identity is server-derived only in design. Today the architect passes its `agent_id` per call; nothing structurally prevents spoofing. Fine for a trusted single-workstation setup; consequential if you ever expose this beyond localhost.
-
-## Quickstart
-
-```bash
-# 1. Install dependencies
+```sh
+# 1. Sync the environment (the MCP extra is required for the server)
 uv sync --extra mcp
 
-# 2. Create your agent registry
-cp config/agents.example.json config/agents.json
-$EDITOR config/agents.json    # set your real team ids and project_root paths
+# 2. Describe your actors: one human, one architect per team, and workers
+cp config/actors.example.json config/actors.json
+$EDITOR config/actors.json
+export PROJECT_A_ROOT=/absolute/path/to/your/project   # referenced by the example
 
-# 3. Bootstrap the mailbox
+# 3. Register them in the mailbox at ~/.agent-comms/agent-comms.sqlite
 scripts/agent-comms bootstrap
-
-# 4. Smoke test
-scripts/agent-comms send \
-    --from-agent team-a-architect \
-    --to team-b-architect \
-    --subject "test" \
-    --body "hello from team-a"
-
-scripts/agent-comms inbox team-b-architect
+scripts/agent-comms actors
 ```
 
-To wire into a CLI, see [`docs/mcp-setup.md`](docs/mcp-setup.md).
+`config/actors.json` is ignored by git. Worker entries declare a `runtime`;
+the spawn command is rendered from it, never written by hand. Project roots
+may use `~` and `${ENV}` expansion.
 
-## Architecture
+To connect an agent CLI, see [docs/mcp-setup.md](docs/mcp-setup.md). Each
+seat gets one MCP server started with its own `--actor-id`.
 
+## Try a dispatch without any login
+
+This exercises the whole dispatch path with the `fake` runtime. It uses the
+operator override command, which needs an admin token, because there is no
+architect session in the loop. In normal use the architect calls the
+`dispatch_agent` MCP tool instead and no token is involved.
+
+```sh
+# The fake worker is launched as `python3 -m agent_comms.adapters.fake_worker`,
+# so the project environment must be first on PATH for this walkthrough.
+export PATH="$PWD/.venv/bin:$PATH"
+
+# One-time operator credential, mode 600
+(umask 077; head -c 32 /dev/urandom | xxd -p -c 64 > ~/.agent-comms/admin-token)
+export AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)"
+
+# Dispatch from the example architect to the example fake worker
+scripts/agent-comms admin dispatch \
+    --from-actor-id team-a-architect \
+    --target-actor-id team-a-fake-worker \
+    --idempotency-key demo-1 \
+    --requested-policy worker_dispatch_readwrite_bounded \
+    --override-reason "fake runtime demo" \
+    --subject ping --body "Reply with PONG."
+
+# Reconcile until the dispatch reaches a terminal state
+scripts/agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG \
+    --interval 1 --max-passes 15
+
+# Inspect the outcome and the worker's reply
+scripts/agent-comms dispatch-status
+scripts/agent-comms inbox team-a-architect
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│ Claude Code │     │ Codex CLI   │     │ Gemini CLI  │
-│ (team-a)    │     │ (team-b)    │     │ (team-c)    │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │ stdio MCP         │ stdio MCP         │ stdio MCP
-       ▼                   ▼                   ▼
-┌─────────────────────────────────────────────────────┐
-│             agent-comms MCP server                  │
-│                                                     │
-│   send_message / list_inbox / ack / post_status /   │
-│   wait_for_reply / list_status / ...                │
-└──────────────────────┬──────────────────────────────┘
-                       │
-                       ▼
-              ┌─────────────────┐
-              │ SQLite (WAL)    │
-              │ data/agent-     │
-              │ comms.sqlite    │
-              └─────────────────┘
-```
 
-Each architect calls the same set of MCP tools. The mailbox is the source of truth; architects pull rather than push. `wait_for_reply` provides a blocking idle pattern for synchronous handoffs.
+Expected result: the dispatch row shows `closed` with result `satisfied`,
+and the architect's inbox holds a reply from the fake worker parented to the
+dispatch message. If the worker log shows `No module named 'agent_comms'`,
+the PATH step above was skipped.
 
-## Tool surface
+Two things about this walkthrough are known defects, not design: the
+dispatch logs land in `logs/dispatch/` inside the checkout instead of under
+`~/.agent-comms`, and the fake worker depends on `python3` resolving to an
+interpreter that can import this package. Both are fixed by the installable
+package work.
 
-| Tool              | Purpose                                       |
-|-------------------|-----------------------------------------------|
-| `register_agent`  | Register or refresh an architect identity     |
-| `list_agents`     | List all registered architects                |
-| `send_message`    | Send a message with optional file refs        |
-| `list_inbox`      | List messages addressed to an architect       |
-| `read_message`    | Read and mark-read a message                  |
-| `ack_message`     | Acknowledge with optional response            |
-| `close_message`   | Close a recipient's copy of a message         |
-| `wait_for_reply`  | Block until a new message arrives or timeout  |
-| `post_status`     | Publish current files / blockers / next step  |
-| `list_status`     | Get the latest status from each architect     |
+## MCP tool surface
+
+| Tool | Purpose |
+|------|---------|
+| `whoami` | The identity bound to this server process |
+| `list_actors`, `list_agents` | Known actors and agent registrations |
+| `send_message` | Send a message with optional file refs |
+| `list_inbox`, `read_message` | Read messages addressed to this actor |
+| `ack_message`, `close_message` | Acknowledge with a response; close a copy |
+| `wait_for_reply` | Block until a new message arrives or a timeout |
+| `post_status`, `list_status` | Publish and read current status |
+| `post_handoff`, `read_handoff` | Durable handoff snapshots between sessions |
+| `dispatch_agent` | Hand a bounded task to an owned worker |
+| `cancel_dispatch` | Terminate one of this actor's in-flight dispatches |
+| `close_dispatch` | A worker reports its result and delta |
+
+A worker runs under a policy that hides every tool it is not allowed to use.
 
 ## Operating model
 
-Architects are expected to:
+Architects check their inbox at session start, pass file refs instead of
+pasted content, acknowledge messages that affect their lane, and post status
+before ending substantial work. The default is not to message.
 
-1. Check inbox at session start.
-2. Use file refs (paths + summaries) instead of pasting large content.
-3. Acknowledge messages that affect their lane.
-4. Post status before ending substantial work.
+The prompt snippet for an architect seat is in
+[docs/architect-prompt.md](docs/architect-prompt.md). The message and reply
+discipline that keeps threads from looping is in
+[docs/communication_contract.md](docs/communication_contract.md).
 
-This is enforced by prompt discipline, not by the mailbox. See [`docs/architect-prompt.md`](docs/architect-prompt.md) for the operating snippet to paste into each architect's system prompt or AGENTS.md.
+## Boundaries
 
-For loop prevention and message discipline, see [`docs/communication_contract.md`](docs/communication_contract.md). For per-CLI MCP and hook configuration notes, see [`docs/harness_integration.md`](docs/harness_integration.md).
-
-## Comparison to nearby projects
-
-| Project | What it does | Why agent-comms is different |
-|---------|--------------|------------------------------|
-| [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams) | Tmux-spawned teammates with shared task list and mailbox | Claude-only; agent-comms is vendor-neutral |
-| [awslabs/cli-agent-orchestrator](https://github.com/awslabs/cli-agent-orchestrator) | Supervisor/worker via MCP with per-terminal state | Heavier framework; agent-comms is just the mailbox |
-| [Dicklesworthstone/mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail) | FastMCP + SQLite + git inbox/outbox | Adds git layer; agent-comms is plain SQLite |
-| [njbrake/agent-of-empires](https://github.com/njbrake/agent-of-empires) | Tmux session manager for multi-CLI agents | Manages sessions; agent-comms only handles messages |
-
-If you want a full session manager with TUI/web dashboard, look at Agent of Empires or CAO. If you want a small, vendor-neutral mailbox you can drop into any setup, this is it.
+- One workstation. State lives under `~/.agent-comms`; nothing listens on a
+  port.
+- Claude Code and Codex CLI are the runtimes with adapters and certification
+  tests. Any MCP client can use the mailbox.
+- Not a session manager or dashboard. It does not spawn or arrange your
+  terminals.
+- Not a message queue. There is no broker or fan-out.
 
 ## Testing
 
-```bash
+```sh
 make test
 ```
 
 Every test process runs in a scratch home and never touches `~/.agent-comms`.
-Tests that need a real runtime login are skipped. `make gate` runs every
-check a push must pass. See
-[the contributor test instructions](CONTRIBUTING.md#development-setup-and-tests)
-and [the gates](CONTRIBUTING.md#gates).
+Tests that need a real runtime login are skipped and reported as skipped.
+`make gate` runs every check a push must pass. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the gates, and how to report a
+failure.
 
 ## License
 

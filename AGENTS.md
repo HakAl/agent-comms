@@ -1,10 +1,11 @@
 # Working on agent-comms
 
-This checkout ships a local SQLite mailbox, CLI, and MCP server. The full
-workflow is being ported here in the order set by
-[docs/ROADMAP.md](docs/ROADMAP.md). Planned capabilities are not implemented
-just because they appear in the roadmap. [README.md](README.md) describes what
-works today; [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and tests.
+This checkout holds the mailbox, bounded dispatch with supervised workers,
+and the review and landing cycle. The remaining milestone work, in the order
+set by [docs/ROADMAP.md](docs/ROADMAP.md), makes it installable and operable
+without a checkout. Roadmap items are not implemented just because they are
+listed. [README.md](README.md) describes what works today;
+[CONTRIBUTING.md](CONTRIBUTING.md) covers setup and tests.
 
 Use the smallest process that gets the requested outcome implemented, verified,
 and reviewed. Keep moving within the user's authorized scope; ask only when a

@@ -13,6 +13,10 @@ window short the gate prints an INFO line whenever the tree is below the
 baseline; ratchet with ``--update-baseline`` (``make lint-baseline``) as
 part of the change that removed the findings.
 
+The gate also requires every GitHub Action used by the workflows to be
+pinned to a full commit SHA with a trailing version comment, so a moved or
+missing tag can neither break nor silently change CI.
+
 Run through ``make lint`` and ``make lint-baseline``.
 """
 
@@ -21,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -31,8 +36,35 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).resolve().parent / "ruff-baseline.txt"
 RUFF_VERSION = "0.16.8"
 RUFF_ENV = "RUFF"
+WORKFLOWS_DIR = Path(".github") / "workflows"
+# ``uses: owner/repo[/path]@<40-hex>  # vN[.N.N]``; local ``./`` actions are exempt.
+USES_LINE = re.compile(r"^\s*-?\s*uses:\s*(?P<ref>\S+)(?P<rest>.*)$")
+PINNED_REF = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^@\s]+)?@[0-9a-f]{40}$")
+VERSION_COMMENT = re.compile(r"^\s*#\s*v\d+(?:\.\d+)*\s*$")
 
 Counts = dict[tuple[str, str], int]
+
+
+def workflow_pin_findings(repo: Path) -> list[str]:
+    """Every ``uses:`` in the workflows must be ``@<sha>`` with a ``# vN`` comment."""
+    findings = []
+    workflows = repo / WORKFLOWS_DIR
+    if not workflows.is_dir():
+        return findings
+    for path in sorted(list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml"))):
+        rel = path.relative_to(repo).as_posix()
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            match = USES_LINE.match(line)
+            if match is None:
+                continue
+            ref = match.group("ref").strip("'\"")
+            if ref.startswith("./"):
+                continue
+            if not PINNED_REF.match(ref):
+                findings.append(f"{rel}:{number}: not pinned to a commit SHA: {ref}")
+            elif not VERSION_COMMENT.match(match.group("rest")):
+                findings.append(f"{rel}:{number}: SHA pin lacks a `# vN` version comment: {ref}")
+    return findings
 
 
 def ruff_command() -> list[str]:
@@ -117,6 +149,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"PASS lint-baseline ({total} findings recorded in {baseline_path})")
         return 0
 
+    pins = workflow_pin_findings(repo)
+    if pins:
+        print(f"FAIL lint: {len(pins)} unpinned GitHub Action(s)")
+        for line in pins:
+            print(f"  {line}")
+        return 1
+
     baseline = load_baseline(baseline_path)
     regressions = compare(current, baseline)
     below = headroom(current, baseline)
@@ -127,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in regressions:
             print(f"  {line}")
         return 1
-    print(f"PASS lint ({total} findings, none beyond the baseline)")
+    print(f"PASS lint ({total} findings, none beyond the baseline; actions pinned)")
     return 0
 
 
