@@ -4,17 +4,23 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "agent-comms"
-version = "0.1.0"
+version = "0.2.0.dev0"
 source = { editable = "." }
 
 [package.optional-dependencies]
 mcp = [
     { name = "mcp", extra = ["cli"] },
 ]
+test = [
+    { name = "mcp", extra = ["cli"] },
+]
 
 [package.metadata]
-requires-dist = [{ name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.0" }]
-provides-extras = ["mcp"]
+requires-dist = [
+    { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
+    { name = "mcp", extras = ["cli"], marker = "extra == 'test'", specifier = "==1.27.1" },
+]
+provides-extras = ["mcp", "test"]
 
 [[package]]
 name = "annotated-doc"

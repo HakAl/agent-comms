@@ -3,4 +3,31 @@ __pycache__/
 .venv/
 *.egg-info/
 data/
+logs/
 .DS_Store
+
+# Personal agent registry; keep the generic example tracked.
+/config/agents.json
+/config/actors.json
+
+# Per-worker Codex homes (live auth and generated config); never tracked.
+config/codex-home*/
+.agent-comms-codex-home/
+
+# Environment files, never tracked
+.env
+.env.*
+
+# Maintainer-local issue tracker
+.beads/
+
+# Local working notes, briefs, and review output
+/local/
+
+# Personal Claude Code settings and switch auto install
+.claude/settings.local.json
+.claude/switch-auto*
+.claude/.switch-auto-install.lock
+
+# Editor
+.idea/

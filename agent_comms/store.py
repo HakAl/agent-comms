@@ -1,99 +1,49 @@
 from __future__ import annotations
 
-import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 import sqlite3
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
+import os
+import json
 
-from .schema import ValidationError, validate_priority, validate_refs
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+from .actors import ActorRegistry
+from .clock import utc_now
+from .db import Database
+from .dispatch_ledger import (
+    DispatchLedger,
+    WORKER_DISPATCH_POLICY,  # noqa: F401 - compatibility re-export
+    WORKER_DISPATCH_TTL_SECONDS,  # noqa: F401 - compatibility re-export
+)
+from .handoff import HandoffBoard
+from .mailbox import Mailbox
+from .status import StatusBoard
 
 
 class Store:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialized = False
+    def __init__(self, db_path: Path, *, is_default_db_open: bool = False) -> None:
+        self._db = Database(db_path, is_default_db_open=is_default_db_open)
+        self._actors = ActorRegistry(self._db)
+        self._mailbox = Mailbox(self._db, self._actors)
+        self._status = StatusBoard(self._db, self._actors)
+        self._dispatch = DispatchLedger(self._db, self._actors, self._mailbox)
+        self._handoff = HandoffBoard(self._db, self._actors)
+
+    @property
+    def db_path(self) -> Path:
+        return self._db.db_path
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("pragma foreign_keys = on")
-        return conn
+        return self._db.connect()
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        with self._db.connection() as conn:
+            yield conn
 
     def init(self) -> None:
-        if self._initialized:
-            return
-        with self.connect() as conn:
-            conn.execute("pragma journal_mode = wal")
-            conn.executescript(
-                """
-                create table if not exists agents(
-                  id text primary key,
-                  team text not null,
-                  role text not null,
-                  project_root text not null,
-                  capabilities_json text not null,
-                  last_seen_at text not null
-                );
-
-                create table if not exists messages(
-                  id text primary key,
-                  from_agent text not null,
-                  subject text not null,
-                  body text not null,
-                  refs_json text not null,
-                  priority text not null,
-                  requires_ack integer not null,
-                  created_at text not null,
-                  foreign key(from_agent) references agents(id)
-                );
-
-                create table if not exists message_recipients(
-                  message_id text not null,
-                  to_agent text not null,
-                  status text not null,
-                  read_at text,
-                  acked_at text,
-                  closed_at text,
-                  ack_response text,
-                  primary key(message_id, to_agent),
-                  foreign key(message_id) references messages(id),
-                  foreign key(to_agent) references agents(id)
-                );
-
-                create table if not exists message_threads(
-                  message_id text primary key,
-                  parent_message_id text,
-                  foreign key(message_id) references messages(id),
-                  foreign key(parent_message_id) references messages(id)
-                );
-
-                create table if not exists statuses(
-                  id text primary key,
-                  agent_id text not null,
-                  summary text not null,
-                  current_files_json text not null,
-                  blocked_on text,
-                  next_step text,
-                  created_at text not null,
-                  foreign key(agent_id) references agents(id)
-                );
-
-                create index if not exists idx_message_recipients_inbox
-                  on message_recipients(to_agent, status);
-
-                create index if not exists idx_statuses_agent_created
-                  on statuses(agent_id, created_at desc);
-                """
-            )
-            self._ensure_column(conn, "message_recipients", "closed_at", "text")
-        self._initialized = True
+        self._db.init()
 
     def register_agent(
         self,
@@ -102,197 +52,258 @@ class Store:
         role: str,
         project_root: str,
         capabilities: list[str],
+        *,
+        owner: str | None = None,
     ) -> dict:
-        self.init()
-        now = utc_now()
-        with self.connect() as conn:
-            conn.execute(
-                """
-                insert into agents(id, team, role, project_root, capabilities_json, last_seen_at)
-                values(?, ?, ?, ?, ?, ?)
-                on conflict(id) do update set
-                  team = excluded.team,
-                  role = excluded.role,
-                  project_root = excluded.project_root,
-                  capabilities_json = excluded.capabilities_json,
-                  last_seen_at = excluded.last_seen_at
-                """,
-                (agent_id, team, role, str(Path(project_root).expanduser().resolve()), json.dumps(capabilities), now),
-            )
-        return {"agent_id": agent_id, "team": team, "last_seen_at": now}
+        return self._actors.register_agent(
+            agent_id, team, role, project_root, capabilities, owner=owner
+        )
+
+    def register_actor(
+        self,
+        actor_id: str,
+        kind: str,
+        display_name: str,
+        *,
+        team: str | None = None,
+        role: str | None = None,
+        project_root: str | None = None,
+        runtime: str | None = None,
+        spawn: dict | None = None,
+        capabilities: list[str] | None = None,
+        system_class: str | None = None,
+        system_instance: str | None = None,
+        dispatch_cap: int | None = None,
+        protected: bool | None = None,
+        owner: str | None = None,
+    ) -> dict:
+        return self._actors.register_actor(
+            actor_id,
+            kind,
+            display_name,
+            team=team,
+            role=role,
+            project_root=project_root,
+            runtime=runtime,
+            spawn=spawn,
+            capabilities=capabilities,
+            system_class=system_class,
+            system_instance=system_instance,
+            dispatch_cap=dispatch_cap,
+            protected=protected,
+            owner=owner,
+        )
+
+    def register_agent_actor(
+        self,
+        agent_id: str,
+        team: str,
+        role: str,
+        project_root: str,
+        capabilities: list[str],
+        *,
+        display_name: str | None = None,
+        runtime: str | None = None,
+        spawn: dict | None = None,
+        protected: bool | None = None,
+        owner: str | None = None,
+    ) -> dict:
+        return self._actors.register_agent_actor(
+            agent_id,
+            team,
+            role,
+            project_root,
+            capabilities,
+            display_name=display_name,
+            runtime=runtime,
+            spawn=spawn,
+            protected=protected,
+            owner=owner,
+        )
+
+    def whoami(self, actor_id: str) -> dict:
+        return self._actors.whoami(actor_id)
+
+    def transfer_worker(self, worker: str, owner: str) -> dict:
+        return self._actors.transfer_worker(worker, owner)
 
     def list_agents(self) -> list[dict]:
-        self.init()
-        with self.connect() as conn:
-            rows = conn.execute("select * from agents order by team, id").fetchall()
-        return [self._agent_row(row) for row in rows]
+        return self._actors.list_agents()
+
+    def list_actors(self) -> list[dict]:
+        return self._actors.list_actors()
+
+    def update_actor_spawn(self, actor_id: str, spawn: dict) -> bool:
+        """Update only a registered actor's spawn block."""
+        self._db.init()
+        with self._db.connection() as conn:
+            cursor = conn.execute(
+                "UPDATE actors SET spawn_json = ? WHERE id = ?",
+                (json.dumps(spawn, sort_keys=True), actor_id),
+            )
+        return cursor.rowcount == 1
+
+    def list_dispatches(self, *args, **kwargs):
+        return self._dispatch.list_dispatches(*args, **kwargs)
+
+    def project_dispatch(self, *args, **kwargs):
+        return self._dispatch.project_dispatch(*args, **kwargs)
+
+    def require_agent(self, agent_id: str) -> None:
+        return self._actors.require_agent(agent_id)
+
+    def require_launchable_actor(self, actor_id: str) -> None:
+        return self._actors.require_launchable_actor(actor_id)
+
+    def actor_protection(self, actor_id: str) -> dict | None:
+        return self._actors.actor_protection(actor_id)
 
     def send_message(
         self,
         from_agent: str,
         to_agents: list[str],
         subject: str,
-        body: str,
+        body: str | None,
         refs: list[dict],
         priority: str = "normal",
         requires_ack: bool = False,
         parent_message_id: str | None = None,
+        *,
+        body_file: str | None = None,
     ) -> dict:
-        self.init()
-        priority = validate_priority(priority)
-        subject = subject.strip()
-        body = body.strip()
-        if not subject:
-            raise ValidationError("subject must not be empty")
-        if not body:
-            raise ValidationError("body must not be empty")
-        if not to_agents:
-            raise ValidationError("to_agents must not be empty")
+        return self._mailbox.send_message(
+            from_agent,
+            to_agents,
+            subject,
+            body,
+            refs,
+            priority,
+            requires_ack,
+            parent_message_id,
+            body_file=body_file,
+        )
 
-        with self.connect() as conn:
-            self._require_agent(conn, from_agent)
-            for to_agent in to_agents:
-                self._require_agent(conn, to_agent)
-            project_roots = [
-                Path(row["project_root"])
-                for row in conn.execute("select project_root from agents").fetchall()
-            ]
-            refs = validate_refs(refs, project_roots)
-            if parent_message_id:
-                self._require_message(conn, parent_message_id)
+    def dispatch_agent(self, *args, **kwargs):
+        return self._dispatch.dispatch_agent(*args, **kwargs)
 
-            message_id = f"msg_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
-            now = utc_now()
-            conn.execute(
-                """
-                insert into messages(id, from_agent, subject, body, refs_json, priority, requires_ack, created_at)
-                values(?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (message_id, from_agent, subject, body, json.dumps(refs), priority, int(requires_ack), now),
-            )
-            conn.execute(
-                "insert into message_threads(message_id, parent_message_id) values(?, ?)",
-                (message_id, parent_message_id),
-            )
-            for to_agent in to_agents:
-                conn.execute(
-                    "insert into message_recipients(message_id, to_agent, status) values(?, ?, 'sent')",
-                    (message_id, to_agent),
-                )
+    def start_queued_dispatches(self, *args, **kwargs):
+        return self._dispatch.start_queued_dispatches(*args, **kwargs)
 
-        return {"id": message_id, "from": from_agent, "to": to_agents, "created_at": now}
+    def retry_spawn(self, *args, **kwargs):
+        return self._dispatch.retry_spawn(*args, **kwargs)
 
-    def list_inbox(self, agent_id: str, unread_only: bool = True, include_closed: bool = False, limit: int = 20) -> list[dict]:
-        self.init()
-        with self.connect() as conn:
-            self._require_agent(conn, agent_id)
-            clauses = ["mr.to_agent = ?"]
-            params: list[object] = [agent_id]
-            if unread_only:
-                clauses.append("mr.status = 'sent'")
-            if not include_closed:
-                clauses.append("mr.status != 'closed'")
-            params.append(limit)
-            rows = conn.execute(
-                f"""
-                select m.*, mr.to_agent, mr.status, mt.parent_message_id
-                from message_recipients mr
-                join messages m on m.id = mr.message_id
-                left join message_threads mt on mt.message_id = m.id
-                where {' and '.join(clauses)}
-                order by m.created_at desc
-                limit ?
-                """,
-                params,
-            ).fetchall()
-        return [self._message_row(row) for row in rows]
+    def reconcile_dispatches(self, *args, **kwargs):
+        return self._dispatch.reconcile_dispatches(*args, **kwargs)
 
-    def list_unread(self, limit: int = 100) -> list[dict]:
-        self.init()
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                select m.*, mr.to_agent, mr.status, mt.parent_message_id
-                from message_recipients mr
-                join messages m on m.id = mr.message_id
-                left join message_threads mt on mt.message_id = m.id
-                where mr.status = 'sent'
-                order by
-                  case m.priority
-                    when 'blocker' then 0
-                    when 'high' then 1
-                    when 'normal' then 2
-                    else 3
-                  end,
-                  m.created_at desc
-                limit ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [self._message_row(row) for row in rows]
+    def request_cancellation(self, *args, **kwargs):
+        return self._dispatch.request_cancellation(*args, **kwargs)
 
-    def read_message(self, agent_id: str, message_id: str) -> dict:
-        self.init()
+    def settle_dispatch_preview(self, *args, **kwargs):
+        return self._dispatch.settle_dispatch_preview(*args, **kwargs)
+
+    def settle_dispatch_execute(self, *args, **kwargs):
+        return self._dispatch.settle_dispatch_execute(*args, **kwargs)
+
+    def worker_usage_candidates(self, *args, **kwargs):
+        return self._dispatch.worker_usage_candidates(*args, **kwargs)
+
+    def write_worker_usage(self, *args, **kwargs):
+        return self._dispatch.write_worker_usage(*args, **kwargs)
+
+    def upsert_monitor_heartbeat(self, *, interval_seconds: float, monitor_version: str) -> dict:
+        self._db.init()
         now = utc_now()
-        with self.connect() as conn:
-            self._require_recipient(conn, agent_id, message_id)
+        pid = os.getpid()
+        with self._db.connection() as conn:
             conn.execute(
                 """
-                update message_recipients
-                set status = case when status = 'sent' then 'read' else status end,
-                    read_at = coalesce(read_at, ?)
-                where to_agent = ? and message_id = ?
+                insert into monitor_heartbeat(
+                  id, last_pass_at, pid, interval_seconds, monitor_version, last_stale_page_at
+                )
+                values(1, ?, ?, ?, ?, NULL)
+                on conflict(id) do update set
+                  last_pass_at = excluded.last_pass_at,
+                  pid = excluded.pid,
+                  interval_seconds = excluded.interval_seconds,
+                  monitor_version = excluded.monitor_version
                 """,
-                (now, agent_id, message_id),
+                (now, pid, interval_seconds, monitor_version),
             )
+        return {
+            "last_pass_at": now,
+            "pid": pid,
+            "interval_seconds": interval_seconds,
+            "monitor_version": monitor_version,
+        }
+
+    def monitor_heartbeat(self) -> dict | None:
+        self._db.init()
+        with self._db.connection() as conn:
             row = conn.execute(
                 """
-                select m.*, mr.to_agent, mr.status, mt.parent_message_id
-                from message_recipients mr
-                join messages m on m.id = mr.message_id
-                left join message_threads mt on mt.message_id = m.id
-                where mr.to_agent = ? and mr.message_id = ?
-                """,
-                (agent_id, message_id),
+                select last_pass_at, pid, interval_seconds, monitor_version, last_stale_page_at
+                from monitor_heartbeat
+                where id = 1
+                """
             ).fetchone()
-        return self._message_row(row)
+        if row is None:
+            return None
+        return {
+            "last_pass_at": row["last_pass_at"],
+            "pid": row["pid"],
+            "interval_seconds": row["interval_seconds"],
+            "monitor_version": row["monitor_version"],
+            "last_stale_page_at": row["last_stale_page_at"],
+        }
+
+    def claim_monitor_stale_page(self, *, stale_page_interval_seconds: int = 3600) -> str | None:
+        self._db.init()
+        now = utc_now()
+        throttle_before = (datetime.now(timezone.utc) - timedelta(seconds=stale_page_interval_seconds)).isoformat(
+            timespec="seconds"
+        )
+        with self._db.connection() as conn:
+            conn.execute("begin immediate")
+            conn.execute(
+                """
+                insert into monitor_heartbeat(id, last_stale_page_at)
+                values(1, NULL)
+                on conflict(id) do nothing
+                """
+            )
+            cursor = conn.execute(
+                """
+                update monitor_heartbeat
+                set last_stale_page_at = ?
+                where id = 1
+                  and (
+                    last_stale_page_at is null
+                    or last_stale_page_at <= ?
+                  )
+                """,
+                (now, throttle_before),
+            )
+            if cursor.rowcount != 1:
+                return None
+        return now
+
+    def list_inbox(self, agent_id: str, unread_only: bool = True, include_closed: bool = False, limit: int = 20) -> list[dict]:
+        return self._mailbox.list_inbox(agent_id, unread_only, include_closed, limit)
+
+    def list_unread(self, limit: int = 100) -> list[dict]:
+        return self._mailbox.list_unread(limit)
+
+    def read_message(self, agent_id: str, message_id: str) -> dict:
+        return self._mailbox.read_message(agent_id, message_id)
 
     def ack_message(self, agent_id: str, message_id: str, response: str) -> dict:
-        self.init()
-        now = utc_now()
-        with self.connect() as conn:
-            self._require_recipient(conn, agent_id, message_id)
-            conn.execute(
-                """
-                update message_recipients
-                set status = 'acknowledged',
-                    read_at = coalesce(read_at, ?),
-                    acked_at = ?,
-                    ack_response = ?
-                where to_agent = ? and message_id = ?
-                """,
-                (now, now, response.strip(), agent_id, message_id),
-            )
-        return {"message_id": message_id, "agent_id": agent_id, "status": "acknowledged", "acked_at": now}
+        return self._mailbox.ack_message(agent_id, message_id, response)
 
     def close_message(self, agent_id: str, message_id: str, response: str = "") -> dict:
-        """Close a recipient's copy of a message, marking it read if needed."""
-        self.init()
-        now = utc_now()
-        with self.connect() as conn:
-            self._require_recipient(conn, agent_id, message_id)
-            conn.execute(
-                """
-                update message_recipients
-                set status = 'closed',
-                    read_at = coalesce(read_at, ?),
-                    closed_at = ?,
-                    ack_response = case when ? = '' then ack_response else ? end
-                where to_agent = ? and message_id = ?
-                """,
-                (now, now, response.strip(), response.strip(), agent_id, message_id),
-            )
-        return {"message_id": message_id, "agent_id": agent_id, "status": "closed", "closed_at": now}
+        return self._mailbox.close_message(agent_id, message_id, response)
+
+    def close_dispatch(self, agent_id: str, **kwargs) -> dict:
+        return self._mailbox.close_dispatch(agent_id, **kwargs)
 
     def wait_for_reply(
         self,
@@ -300,16 +311,15 @@ class Store:
         after_message_id: str | None = None,
         timeout_seconds: float = 30.0,
         poll_interval_seconds: float = 1.0,
+        full: bool = False,
     ) -> dict:
-        self.init()
-        deadline = time.monotonic() + max(timeout_seconds, 0.0)
-        while True:
-            messages = self._list_unread_for_wait(agent_id, after_message_id)
-            if messages:
-                return {"timed_out": False, "messages": messages}
-            if time.monotonic() >= deadline:
-                return {"timed_out": True, "messages": []}
-            time.sleep(max(poll_interval_seconds, 0.1))
+        return self._mailbox.wait_for_reply(
+            agent_id,
+            after_message_id=after_message_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            full=full,
+        )
 
     def post_status(
         self,
@@ -318,113 +328,45 @@ class Store:
         current_files: list[str],
         blocked_on: str = "",
         next_step: str = "",
+        dispatch_id: str | None = None,
+        thread_ref: str | None = None,
     ) -> dict:
-        self.init()
-        with self.connect() as conn:
-            self._require_agent(conn, agent_id)
-            status_id = f"status_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
-            now = utc_now()
-            conn.execute(
-                """
-                insert into statuses(id, agent_id, summary, current_files_json, blocked_on, next_step, created_at)
-                values(?, ?, ?, ?, ?, ?, ?)
-                """,
-                (status_id, agent_id, summary.strip(), json.dumps(current_files), blocked_on.strip(), next_step.strip(), now),
-            )
-        return {"id": status_id, "agent_id": agent_id, "created_at": now}
+        return self._status.post_status(
+            agent_id,
+            summary,
+            current_files,
+            blocked_on,
+            next_step,
+            dispatch_id,
+            thread_ref,
+        )
 
     def list_status(self) -> list[dict]:
-        self.init()
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                select s.*
-                from statuses s
-                join (
-                  select agent_id, max(created_at) as max_created_at
-                  from statuses
-                  group by agent_id
-                ) latest on latest.agent_id = s.agent_id and latest.max_created_at = s.created_at
-                order by s.agent_id
-                """
-            ).fetchall()
-        return [self._status_row(row) for row in rows]
+        return self._status.list_status()
 
-    def _require_agent(self, conn: sqlite3.Connection, agent_id: str) -> None:
-        if conn.execute("select 1 from agents where id = ?", (agent_id,)).fetchone() is None:
-            raise ValidationError(f"unknown agent: {agent_id}")
+    def post_handoff(
+        self,
+        actor_id: str,
+        body: str,
+        refs: list[dict] | None = None,
+        *,
+        created_by_actor_id: str,
+    ) -> dict:
+        return self._handoff.post_handoff(
+            actor_id,
+            body,
+            refs,
+            created_by_actor_id=created_by_actor_id,
+        )
 
-    def _require_message(self, conn: sqlite3.Connection, message_id: str) -> None:
-        if conn.execute("select 1 from messages where id = ?", (message_id,)).fetchone() is None:
-            raise ValidationError(f"unknown message: {message_id}")
+    def read_handoff(self, actor_id: str) -> dict | None:
+        return self._handoff.read_handoff(actor_id)
 
-    def _require_recipient(self, conn: sqlite3.Connection, agent_id: str, message_id: str) -> None:
-        row = conn.execute(
-            "select 1 from message_recipients where to_agent = ? and message_id = ?",
-            (agent_id, message_id),
-        ).fetchone()
-        if row is None:
-            raise ValidationError(f"message {message_id} is not addressed to {agent_id}")
+    def list_handoffs(self, actor_id: str) -> list[dict]:
+        return self._handoff.list_handoffs(actor_id)
 
-    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
-        if column not in columns:
-            conn.execute(f"alter table {table} add column {column} {definition}")
+    def session_start_handoff(self, actor_id: str) -> str:
+        return self._handoff.session_start_text(actor_id)
 
-    def _list_unread_for_wait(self, agent_id: str, after_message_id: str | None) -> list[dict]:
-        with self.connect() as conn:
-            self._require_agent(conn, agent_id)
-            clauses = ["mr.to_agent = ?", "mr.status = 'sent'"]
-            params: list[object] = [agent_id]
-            if after_message_id:
-                clauses.append("mt.parent_message_id = ?")
-                params.append(after_message_id)
-            rows = conn.execute(
-                f"""
-                select m.*, mr.to_agent, mr.status, mt.parent_message_id
-                from message_recipients mr
-                join messages m on m.id = mr.message_id
-                left join message_threads mt on mt.message_id = m.id
-                where {' and '.join(clauses)}
-                order by m.created_at desc
-                limit 20
-                """,
-                params,
-            ).fetchall()
-        return [self._message_row(row) for row in rows]
-
-    def _agent_row(self, row: sqlite3.Row) -> dict:
-        return {
-            "id": row["id"],
-            "team": row["team"],
-            "role": row["role"],
-            "project_root": row["project_root"],
-            "capabilities": json.loads(row["capabilities_json"]),
-            "last_seen_at": row["last_seen_at"],
-        }
-
-    def _message_row(self, row: sqlite3.Row) -> dict:
-        return {
-            "id": row["id"],
-            "from": row["from_agent"],
-            "to": row["to_agent"],
-            "subject": row["subject"],
-            "body": row["body"],
-            "refs": json.loads(row["refs_json"]),
-            "priority": row["priority"],
-            "requires_ack": bool(row["requires_ack"]),
-            "status": row["status"],
-            "parent_message_id": row["parent_message_id"],
-            "created_at": row["created_at"],
-        }
-
-    def _status_row(self, row: sqlite3.Row) -> dict:
-        return {
-            "id": row["id"],
-            "agent_id": row["agent_id"],
-            "summary": row["summary"],
-            "current_files": json.loads(row["current_files_json"]),
-            "blocked_on": row["blocked_on"],
-            "next_step": row["next_step"],
-            "created_at": row["created_at"],
-        }
+    def _dispatch_by_idempotency_key_fresh(self, *args, **kwargs):
+        return self._dispatch._dispatch_by_idempotency_key_fresh(*args, **kwargs)

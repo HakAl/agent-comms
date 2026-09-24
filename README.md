@@ -2,16 +2,29 @@
 
 A local mailbox for coordinating multiple terminal-based AI coding agents — Claude Code, Codex CLI, Gemini CLI, or anything else that speaks MCP.
 
-When you run several agent CLIs in parallel (one per team or one per repo) and they need to coordinate, you end up relaying messages by hand: "the routing team found X, tell the sensor team." `agent-comms` replaces that relay with a tiny local SQLite mailbox that every CLI can read and write through standard MCP tools.
+When you run several agent CLIs in parallel (one per team or one per repo) and they need to coordinate, you end up relaying messages by hand: "team A found X, tell team B." `agent-comms` replaces that relay with a tiny local SQLite mailbox that every CLI can read and write through standard MCP tools.
 
-## What it is
+## Development direction
+
+This checkout still implements the original mailbox. The full local workflow
+(bounded dispatch, review by a different model family, and signed human
+approval) already runs in the maintainer's own deployment and is being ported
+here, **macOS first, then Linux**. Until that lands, those capabilities are not
+in this repository.
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) to help.
+[The roadmap](docs/ROADMAP.md) describes the layers, milestones, and release
+checks. Basic messaging remains useful on its own and does not require both
+Claude and Codex.
+
+## What it is today
 
 - A **SQLite mailbox** (`messages`, `statuses`, `agents` tables) with WAL enabled.
 - A **stdio MCP server** exposing 10 tools: `send_message`, `list_inbox`, `read_message`, `ack_message`, `close_message`, `wait_for_reply`, `post_status`, `list_status`, `register_agent`, `list_agents`.
 - A **CLI** (`agent-comms`) for human inspection and scripting.
 - **No daemons, no networking, no cloud.** Everything runs locally on one workstation.
 
-## What it isn't
+## Current boundaries
 
 - Not an orchestrator. Architects still drive themselves.
 - Not a replacement for A2A or BeeAI ACP. The schema borrows ideas (agent cards, refs, tasks) but the implementation is intentionally smaller.
@@ -20,14 +33,16 @@ When you run several agent CLIs in parallel (one per team or one per repo) and t
 
 ## Status
 
-| Phase | Component                          | Status   |
-|-------|------------------------------------|----------|
-| 1     | SQLite mailbox + CLI               | Shipped  |
-| 2     | MCP stdio server                   | Shipped  |
-| 3     | Architect prompt integration       | Shipped (see `docs/architect-prompt.md`) |
-| 4     | tmux wake layer + receiver state   | Designed (see `docs/DESIGN.md`) |
-| 5     | Operator dashboard                 | Designed |
-| 6     | A2A export/import                  | Designed |
+| Component | State in this checkout |
+|-----------|------------------------|
+| SQLite mailbox + CLI | Implemented |
+| MCP stdio server | Implemented; caller-supplied identity |
+| Architect prompt integration | Available in `docs/architect-prompt.md` |
+| Full local execution workflow and reliable upgrades | Planned in [ROADMAP.md](docs/ROADMAP.md) |
+
+The original tmux/dashboard/A2A proposals in [DESIGN.md](docs/DESIGN.md) are
+historical context, not the current implementation queue. Platform certification
+is a release goal, not a claim made by this status table.
 
 Known gap: per-architect MCP identity is server-derived only in design. Today the architect passes its `agent_id` per call; nothing structurally prevents spoofing. Fine for a trusted single-workstation setup; consequential if you ever expose this beyond localhost.
 
@@ -124,10 +139,14 @@ If you want a full session manager with TUI/web dashboard, look at Agent of Empi
 ## Testing
 
 ```bash
-uv run python -m unittest discover -s tests
+make test
 ```
 
-Includes a real MCP stdio round-trip test (initialize → tools/call → parse response).
+Every test process runs in a scratch home and never touches `~/.agent-comms`.
+Tests that need a real runtime login are skipped. `make gate` runs every
+check a push must pass. See
+[the contributor test instructions](CONTRIBUTING.md#development-setup-and-tests)
+and [the gates](CONTRIBUTING.md#gates).
 
 ## License
 

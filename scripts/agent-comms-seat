@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Launch an interactive architect seat with explicit substrate identity."""
+
+import json
+import os
+from pathlib import Path
+import sys
+
+
+def usage() -> int:
+    print("usage: agent-comms-seat <actor-id> [--] <runtime argv...>", file=sys.stderr)
+    return 2
+
+
+def guard(actor_id: str) -> bool:
+    config_path = Path(os.environ.get("AGENT_COMMS_CLAUDE_CONFIG", "~/.claude.json")).expanduser()
+    try:
+        data = json.loads(config_path.read_text())
+    except FileNotFoundError:
+        print(f"warning: expected actor id {actor_id!r}; no config at {config_path}", file=sys.stderr)
+        return True
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"warning: expected actor id {actor_id!r}; could not parse {config_path}: {exc}", file=sys.stderr)
+        return True
+
+    cwd = os.getcwd()
+    keys = {cwd, os.path.realpath(cwd)}
+    projects = data.get("projects", {})
+    entries = [projects[key] for key in keys if isinstance(projects, dict) and key in projects]
+    if not entries:
+        print(
+            f"warning: expected actor id {actor_id!r}; no project entry in {config_path} "
+            f"for {sorted(keys)!r}",
+            file=sys.stderr,
+        )
+        return True
+
+    found = []
+    malformed = False
+    for entry in entries:
+        servers = entry.get("mcpServers", {}) if isinstance(entry, dict) else {}
+        for server in servers.values() if isinstance(servers, dict) else ():
+            args = server.get("args", []) if isinstance(server, dict) else []
+            if not isinstance(args, list):
+                continue
+            positions = [i for i, value in enumerate(args) if value == "--actor-id"]
+            if len(positions) > 1:
+                malformed = True
+            for position in positions:
+                if position + 1 >= len(args):
+                    malformed = True
+                else:
+                    found.append(str(args[position + 1]))
+
+    distinct = set(found)
+    if malformed or distinct != {actor_id}:
+        print(
+            f"refusing launch: requested actor id {actor_id!r}; discovered ids "
+            f"{sorted(distinct)!r} in {config_path}; malformed={malformed}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        return usage()
+    actor_id = sys.argv[1]
+    runtime = sys.argv[2:]
+    if runtime[:1] == ["--"]:
+        runtime = runtime[1:]
+    if not runtime:
+        return usage()
+    if not guard(actor_id):
+        return 3
+    os.environ["AGENT_COMMS_ACTOR_ID"] = actor_id
+    os.environ["AGENT_COMMS_LAUNCH_KIND"] = "architect_interactive"
+    os.environ["AGENT_COMMS_INSTALL_ROOT"] = str(Path(__file__).resolve().parents[1])
+    try:
+        os.execvp(runtime[0], runtime)
+    except OSError as exc:
+        print(f"agent-comms-seat: failed to execute {runtime[0]!r}: {exc}", file=sys.stderr)
+        return 127
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

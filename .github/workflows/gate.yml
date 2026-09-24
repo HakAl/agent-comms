@@ -1,0 +1,46 @@
+# The same gates as `make gate`, minus preverify: CI already is a fresh clone.
+name: gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gate:
+    name: hygiene and lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Resolve the commit range base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            echo "GATES_BASE=origin/$BASE_REF" >> "$GITHUB_ENV"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+              && git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then
+            echo "GATES_BASE=$BEFORE" >> "$GITHUB_ENV"
+          elif git rev-parse -q --verify "HEAD~1^{commit}" >/dev/null; then
+            # A new branch, or a rewritten one: at least the pushed head is scanned.
+            echo "GATES_BASE=HEAD~1" >> "$GITHUB_ENV"
+          fi
+      - run: make hygiene lint
+
+  test:
+    name: test (Python ${{ matrix.python }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: make test
