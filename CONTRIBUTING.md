@@ -58,7 +58,7 @@ public push must pass; each can also run on its own. `make help` lists them.
 | Target | What it checks | Needs |
 |---|---|---|
 | `make hygiene` | Every tracked file, and every commit beyond `origin/main` (message, author and committer identities, added diff lines, files added or changed), for personal paths, email addresses, machine hostnames, key and token material, and the tracked layout (nothing under `data/`, `logs/`, `local/`, only `*.example*` under `config/`, no `.env` files, no binaries outside the allowlist). Commit identities must use an `example.*`, `noreply` or reserved-domain address. | git |
-| `make lint` | ruff (pinned through `uvx`) against `scripts/gates/ruff-baseline.txt`; fails when a file gains findings of a rule or a new file and rule pair appears. Fewer findings pass; `make lint-baseline` records the lower count. | uv |
+| `make lint` | ruff (pinned through `uvx`) against `scripts/gates/ruff-baseline.txt`; fails when a file gains findings of a rule or a new file and rule pair appears. Fewer findings pass; `make lint-baseline` records the lower count. Also fails when a GitHub Action in `.github/workflows/` is not pinned to a full commit SHA with a `# vN` version comment. | uv |
 | `make test` | The isolated suite with the pinned test extra. `PYTHON=3.11` selects an interpreter. | uv |
 | `make preverify` | A fresh clone of HEAD under `local/preverify/`, the suite on Python 3.11 and 3.14, then lint and hygiene inside the clone. Refuses a dirty tree unless `PREVERIFY_ARGS=--allow-dirty`. | uv, network for missing interpreters |
 

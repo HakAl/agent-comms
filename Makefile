@@ -12,7 +12,7 @@ help:
 		'Targets:' \
 		'  make gate           Run every gate: hygiene, lint, test, preverify' \
 		'  make hygiene        Scrub tracked files and the commit range for personal data and secrets' \
-		'  make lint           Run ruff; fail on any finding beyond scripts/gates/ruff-baseline.txt' \
+		'  make lint           Run ruff; fail beyond scripts/gates/ruff-baseline.txt or on an unpinned GitHub Action' \
 		'  make lint-baseline  Rewrite the ruff baseline from the current tree' \
 		'  make test           Run the isolated test suite (cell tests skip without logins)' \
 		'  make preverify      Fresh clone of HEAD: suite on Python 3.11 and 3.14, then lint and hygiene' \
