@@ -22,7 +22,9 @@ process. Humans and scripts use the `agent-comms` CLI.
   check (`scripts/guarded-push`), so nothing pushes without a human approval
   signed with an SSH key.
 - **Gates.** `make gate` runs hygiene, lint, the isolated test suite, and a
-  fresh-clone preverify. CI runs the same checks on macOS.
+  fresh-clone preverify. `make hooks` installs a pre-push hook that runs
+  hygiene and lint on the commits about to be published and refuses the
+  push on a finding. CI mirrors the same checks on macOS.
 
 ## What is not here yet
 
@@ -158,7 +160,8 @@ make test
 
 Every test process runs in a scratch home and never touches `~/.agent-comms`.
 Tests that need a real runtime login are skipped and reported as skipped.
-`make gate` runs every check a push must pass. See
+`make gate` runs every check a push must pass, and `make hooks` installs
+the pre-push hook that enforces hygiene and lint at push time. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the gates, and how to report a
 failure.
 

@@ -16,6 +16,7 @@ Use Python 3.11 or newer, Git, and `uv`. From a development checkout:
 ```sh
 uv sync --extra test
 make test
+make hooks
 ```
 
 `make test` runs the whole isolated suite with the pinned test dependencies;
@@ -54,6 +55,9 @@ Claude/Codex account. Do not delete or reset live data to make tests pass.
 
 Run `make gate` before any push. It runs, in order, the four checks that a
 public push must pass; each can also run on its own. `make help` lists them.
+The checks exist to keep personal data and secrets out of a public
+repository, so they have to run before a push, not after: once a commit is
+on GitHub, a finding is a leak report, not a block.
 
 | Target | What it checks | Needs |
 |---|---|---|
@@ -72,8 +76,26 @@ token-shaped, such as a test value, carries the marker `hygiene:allow`
 in a comment; the marker exempts that line from the pattern checks only,
 never from the private lists.
 
+### The pre-push hook
+
+`make hooks` installs `scripts/hooks/pre-push` as `.git/hooks/pre-push`
+(a symlink, so it follows the tracked script). On every `git push` the hook
+runs hygiene on exactly the commits the push would publish (the remote
+branch's current commit is the range base; a new branch falls back to
+`origin/main`) and then lint, and refuses the push when either fails. The
+test suite and preverify are not in the hook; they take minutes and `make
+gate` remains the full check. The hook scans the checkout, so the pushed
+branch must be the checked-out one, and pushing another branch is refused
+with a message rather than scanned wrongly. Deletions and tags are not
+scanned. `git push --no-verify` bypasses it; do not do that for a public
+remote. A global `core.hooksPath` that dispatches to `.git/hooks` keeps
+working, since the hook is installed there rather than by changing the
+config.
+
 The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint
-and the test matrix on every pull request and push to `main`.
+and the test matrix on every pull request and push to `main`. It is a mirror
+of the local gates on a fresh macOS runner, not a gate in front of the push:
+a failure there means something already public needs fixing.
 
 ## Scope and review
 
