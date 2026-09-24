@@ -1,4 +1,4 @@
-.PHONY: help gate hygiene lint lint-baseline test preverify
+.PHONY: help gate hygiene lint lint-baseline test preverify hooks
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
 
@@ -16,6 +16,7 @@ help:
 		'  make lint-baseline  Rewrite the ruff baseline from the current tree' \
 		'  make test           Run the isolated test suite (cell tests skip without logins)' \
 		'  make preverify      Fresh clone of HEAD: suite on Python 3.11 and 3.14, then lint and hygiene' \
+		'  make hooks          Install the pre-push hook (hygiene and lint before any push) into .git/hooks' \
 		'Variables: PYTHON=3.11 (make test), PREVERIFY_ARGS=--allow-dirty, GATES_BASE=<ref>, GATES_PRIVATE_DIR=<dir>'
 
 gate: hygiene lint test preverify
@@ -34,3 +35,8 @@ test:
 
 preverify:
 	sh scripts/gates/preverify.sh $(PREVERIFY_ARGS)
+
+hooks:
+	hooks_dir="$$(git rev-parse --git-common-dir)/hooks"; mkdir -p "$$hooks_dir" \
+	  && ln -sfn "$$(pwd)/scripts/hooks/pre-push" "$$hooks_dir/pre-push" \
+	  && echo "installed $$hooks_dir/pre-push -> scripts/hooks/pre-push"

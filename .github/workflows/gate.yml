@@ -1,4 +1,6 @@
 # The same gates as `make gate`, minus preverify: CI already is a fresh clone.
+# This is a mirror on a fresh runner, not the gate in front of a push; that is
+# the pre-push hook (`make hooks`), which runs before anything is public.
 name: gate
 
 on:

@@ -53,7 +53,8 @@ missing review as a completion blocker; never claim it passed.
   conversation.
 - Finish when the outcome is met, relevant checks pass, and review findings are
   resolved or accounted for. For anything that will be pushed, relevant checks
-  means `make gate`. Report the result, verification, and remaining limits
+  means `make gate`; the pre-push hook (`make hooks`) enforces hygiene and
+  lint at push time. Report the result, verification, and remaining limits
   concisely.
 
 ## Checkpoints
