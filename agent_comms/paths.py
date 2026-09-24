@@ -79,8 +79,15 @@ def hooks_path() -> Path:
 
 
 def dispatch_log_dir() -> Path:
-    """Directory for per-dispatch worker stdout/stderr logs."""
-    path = REPO_ROOT / "logs" / "dispatch"
+    """Directory for per-dispatch worker stdout/stderr logs.
+
+    Lives under the checkout-independent runtime root, next to the ledger,
+    so a test run never writes into the source tree and an installed package
+    without a checkout has somewhere to write. ``AGENT_COMMS_DISPATCH_LOG_DIR``
+    redirects it (tests, or an operator who wants the logs elsewhere).
+    """
+    override = os.environ.get("AGENT_COMMS_DISPATCH_LOG_DIR")
+    path = Path(override).expanduser() if override else runtime_root() / "logs" / "dispatch"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

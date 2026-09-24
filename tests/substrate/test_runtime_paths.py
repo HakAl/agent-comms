@@ -79,6 +79,25 @@ class RuntimePathsTest(unittest.TestCase):
         self.assertEqual(captured["db_path"], self.canonical)
         self.assertTrue(captured["is_default_db_open"])
 
+    def test_dispatch_logs_live_under_the_runtime_root_not_the_checkout(self) -> None:
+        # Regression for ac-cca: logs landed in <checkout>/logs/dispatch, so a
+        # test run dirtied the source tree and an installed package without a
+        # checkout had nowhere to write.
+        log_dir = paths.dispatch_log_dir()
+        self.assertEqual(log_dir, self.home / ".agent-comms" / "logs" / "dispatch")
+        self.assertTrue(log_dir.is_dir())
+        self.assertFalse(log_dir.is_relative_to(self.repo))
+        log = paths.dispatch_log_path("dispatch_20260609_011536_cdd9b013")
+        self.assertEqual(log.parent, log_dir.resolve())
+        self.assertEqual(paths.dispatch_events_path("dispatch_20260609_011536_cdd9b013").parent, log_dir.resolve())
+
+    def test_dispatch_log_dir_honours_the_environment_override(self) -> None:
+        override = self.root / "elsewhere" / "dispatch-logs"
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_DISPATCH_LOG_DIR": str(override)}):
+            self.assertEqual(paths.dispatch_log_dir(), override)
+            self.assertTrue(override.is_dir())
+            self.assertEqual(paths.dispatch_log_path("dispatch_20260609_011536_cdd9b013").parent, override.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

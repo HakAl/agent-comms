@@ -96,9 +96,9 @@ def _mcp_functions() -> dict[str, ast.FunctionDef]:
 
 class DeadWorkerContractInvariantsTest(unittest.TestCase):
     def test_contract_version_is_nineteen(self) -> None:
-        self.assertEqual(code_identity.CONTRACT_VERSION, 21)
-        self.assertEqual(code_identity.LOADED_CONTRACT_VERSION, 21)
-        self.assertEqual(code_identity.current_contract_version(), 21)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 22)
+        self.assertEqual(code_identity.LOADED_CONTRACT_VERSION, 22)
+        self.assertEqual(code_identity.current_contract_version(), 22)
 
     def test_contract_surface_digest_matches_declaration(self) -> None:
         self.assertEqual(

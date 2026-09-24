@@ -107,11 +107,11 @@ and the architect's inbox holds a reply from the fake worker parented to the
 dispatch message. If the worker log shows `No module named 'agent_comms'`,
 the PATH step above was skipped.
 
-Two things about this walkthrough are known defects, not design: the
-dispatch logs land in `logs/dispatch/` inside the checkout instead of under
-`~/.agent-comms`, and the fake worker depends on `python3` resolving to an
-interpreter that can import this package. Both are fixed by the installable
-package work.
+Worker logs for each dispatch land under `~/.agent-comms/logs/dispatch/`
+(`AGENT_COMMS_DISPATCH_LOG_DIR` moves them). One thing about this walkthrough
+is a known defect, not design: the fake worker depends on `python3` resolving
+to an interpreter that can import this package. The installable package work
+fixes it.
 
 ## MCP tool surface
 

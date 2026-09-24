@@ -174,9 +174,14 @@ def _store(root: Path, spawn: dict) -> Store:
     return store
 
 
+def _dispatch_logs_in(temp_dir: str):
+    """Point the dispatch log directory at ``<temp_dir>/logs/dispatch``."""
+    return mock.patch.dict(os.environ, {"AGENT_COMMS_DISPATCH_LOG_DIR": str(Path(temp_dir) / "logs" / "dispatch")})
+
+
 class SpawnHardeningTest(unittest.TestCase):
     def test_f1_log_capture_success(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
+        with tempfile.TemporaryDirectory() as temp_dir, _dispatch_logs_in(temp_dir):
             with _supervised_launch():
                 result = TestAdapter().dispatch(_context(Path(temp_dir), spawn=_spawn("print('worker-out')")))
             self.assertIsInstance(result, DispatchStart)
@@ -184,12 +189,12 @@ class SpawnHardeningTest(unittest.TestCase):
             self.assertEqual(worker_log.read_text(), "worker-out\n")
 
     def test_f1_path_rejects_traversal(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
+        with tempfile.TemporaryDirectory() as temp_dir, _dispatch_logs_in(temp_dir):
             with self.assertRaises(ValueError):
                 paths.dispatch_log_path("../dispatch_20260609_011536_cdd9b013")
 
     def test_f1_path_accepts_real_id(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
+        with tempfile.TemporaryDirectory() as temp_dir, _dispatch_logs_in(temp_dir):
             path = paths.dispatch_log_path("dispatch_20260609_011536_cdd9b013")
 
         self.assertEqual(path.name, "dispatch_20260609_011536_cdd9b013.log")

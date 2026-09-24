@@ -95,7 +95,15 @@ config.
 The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint
 and the test matrix on every pull request and push to `main`. It is a mirror
 of the local gates on a fresh macOS runner, not a gate in front of the push:
-a failure there means something already public needs fixing.
+a failure there means something already public needs fixing. The test jobs
+also prove the suite's isolation: `scripts/gates/leftovers.sh before` takes a
+snapshot of `HOME` and the checkout, and `leftovers.sh after` fails the job
+if the run added anything to either (bytecode caches excepted) or wrote under
+`~/.agent-comms`, `~/.codex` or `~/.claude`. The same two commands work
+around a local `make test`; on a machine with a live deployment the
+protected-root part reports that deployment's own writes, so the CI run is
+the authoritative one. Skipped tests appear in the unittest summary as
+`OK (skipped=N)`.
 
 ## Scope and review
 
