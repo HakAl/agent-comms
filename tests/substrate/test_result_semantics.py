@@ -115,7 +115,7 @@ class ResultSchemaTest(unittest.TestCase):
         # binding and the reply-snapshot table are additive, and prior readers
         # refuse a payload-capable ledger; it stays at 3 under contract 21
         # because no on-disk ledger change is involved.
-        self.assertEqual(code_identity.CONTRACT_VERSION, 22)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 23)
         self.assertEqual(policies.WORKER_DISPATCH_POLICY_VERSION, "v2")
         self.assertEqual(review.SCHEMA_VERSION, 2)
         self.assertEqual(mailbox.CLOSEOUT_PROTOCOL_VERSION, 1)

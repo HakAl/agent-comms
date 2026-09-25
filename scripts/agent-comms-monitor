@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec "${AGENT_COMMS_PYTHON:-python3}" -m agent_comms.monitor "$@"
+# The monitor spawns workers on its own interpreter, so it runs on the
+# checkout's environment by default rather than whatever python3 is first on
+# PATH; AGENT_COMMS_PYTHON overrides (tests point it at a stub).
+python="${AGENT_COMMS_PYTHON:-}"
+if [ -z "$python" ] && [ -x .venv/bin/python ]; then
+  python=.venv/bin/python
+fi
+exec "${python:-python3}" -m agent_comms.monitor "$@"
