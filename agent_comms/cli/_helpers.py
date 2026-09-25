@@ -12,7 +12,7 @@ from .. import paths
 from ..schema import ValidationError
 from ..spawn import render_spawn
 
-DEFAULT_CONFIG = paths.REPO_ROOT / "config" / "actors.json"
+DEFAULT_CONFIG = paths.actors_config_path()
 ADMIN_TOKEN_PATH = Path.home() / ".agent-comms" / "admin-token"
 _ADMIN_TOKEN_PATH_DEFAULT = ADMIN_TOKEN_PATH
 ADMIN_CREDENTIAL_ERROR = "admin write paths require an operator credential; not available to workers."
@@ -196,14 +196,14 @@ def expand_path_value(value: str) -> str:
     unchanged, so existing configs and already-bootstrapped DB rows resolve
     identically. Lets operators express deployment roots as ``~/dev/X`` or
     ``${PROJECT_ROOT}`` instead of baking one machine's absolute path
-    into config. ``${AGENT_COMMS_ROOT}`` is always available (the repo root),
-    so in-repo deployment roots need no operator setup.
+    into config. Only the process environment is consulted; there is no
+    implicit variable for the agent-comms location, which has no meaning for
+    an installed package.
 
     A variable that is referenced but unset is a loud failure, not a silently
     broken ``project_root`` (invariant 5: no silent failure paths).
     """
-    environment = {**os.environ, "AGENT_COMMS_ROOT": str(paths.REPO_ROOT)}
-    expanded = os.path.expanduser(string.Template(value).safe_substitute(environment))
+    expanded = os.path.expanduser(string.Template(value).safe_substitute(os.environ))
     if "$" in expanded:
         raise ValidationError(
             f"unresolved environment variable in config path {value!r}; "
@@ -249,7 +249,13 @@ def load_actor_config(config_path: Path) -> dict:
 
     legacy_path = config_path.with_name("agents.json")
     if not legacy_path.exists():
-        return {"actors": {}}
+        # A missing registry is an error, not an empty team: bootstrap would
+        # otherwise report success having registered nobody.
+        hint = "start from config/actors.example.json"
+        checkout_config = paths.REPO_ROOT / "config" / "actors.json"
+        if checkout_config.exists():
+            hint = f"the registry now lives under the runtime root; copy {checkout_config} there or pass --config"
+        raise ValidationError(f"actor registry not found at {config_path}; {hint}")
 
     legacy = json.loads(legacy_path.read_text())
     actors = {}

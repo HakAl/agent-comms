@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_comms.paths import REPO_ROOT
 from agent_comms.reviewing.contracts import ReviewError
 
 
@@ -38,8 +37,23 @@ def git_head(repo: Path) -> str:
     return run_git(repo, "rev-parse", "HEAD")
 
 
+INTEGRATION_CHECKOUT_ENV = "AGENT_COMMS_MAIN"
+
+
 def integration_checkout() -> Path:
-    return Path(os.environ.get("AGENT_COMMS_MAIN") or REPO_ROOT).resolve()
+    """The clean main-branch checkout that cycle-land merges reviewed work into.
+
+    Named by ``AGENT_COMMS_MAIN``. There is no default: the project under
+    review is operator data, and the old fallback to the agent-comms source
+    tree only ever described the maintainer's own setup.
+    """
+    configured = os.environ.get(INTEGRATION_CHECKOUT_ENV, "").strip()
+    if not configured:
+        raise ReviewError(
+            f"{INTEGRATION_CHECKOUT_ENV} is not set; export it as the absolute path of the "
+            "clean main-branch checkout that cycle-land merges reviewed work into"
+        )
+    return Path(configured).expanduser().resolve()
 
 
 def git_proc(repo: Path, *args: str) -> subprocess.CompletedProcess:

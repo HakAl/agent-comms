@@ -15,7 +15,9 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -30,6 +32,7 @@ from agent_comms.cli import bootstrap_store, expand_path_value
 from agent_comms.onboarding import onboard_worker
 from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION, compile_policy
 from agent_comms.schema import ValidationError
+from agent_comms.spawn import claude_settings_for_policy
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 from tests import dispatch_cell_harness
 
@@ -97,8 +100,12 @@ class ExpandPathValueTest(unittest.TestCase):
         # Backward-compat: existing configs with absolute paths resolve as-is.
         self.assertEqual(expand_path_value("/opt/legacy/abs"), "/opt/legacy/abs")
 
-    def test_repo_root_var_is_always_available(self) -> None:
-        self.assertEqual(expand_path_value("${AGENT_COMMS_ROOT}"), str(paths.REPO_ROOT))
+    def test_no_implicit_agent_comms_root_variable(self) -> None:
+        # The checkout location is not a config variable: an installed package
+        # has no checkout, so the value must come from the operator's shell.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValidationError, "unresolved environment variable"):
+                expand_path_value("${AGENT_COMMS_ROOT}")
 
     @mock.patch.dict(os.environ, {"PROJECT_A_ROOT": "/srv/ds"})
     def test_operator_var_expands(self) -> None:
@@ -154,7 +161,15 @@ class SpawnPlaceholderResolutionTest(unittest.TestCase):
 
         settings = json.loads(resolved[resolved.index("--settings") + 1])
         hook_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        self.assertEqual(hook_cmd, f"python3 {paths.hooks_path()}")
+        self.assertEqual(hook_cmd, f"{shlex.quote(sys.executable)} {shlex.quote(str(paths.hooks_path()))}")
+        self.assertEqual(shlex.split(hook_cmd), [sys.executable, str(paths.hooks_path())])
+
+    def test_hook_command_with_spaces_in_paths_stays_two_arguments(self) -> None:
+        hooks_path = "/opt/with space/agent_comms/hooks/pre_tool_use.py"
+        python = "/opt/tool venvs/agent-comms/bin/python"
+        settings = json.loads(claude_settings_for_policy(compile_policy(WORKER_DISPATCH_POLICY), hooks_path, python))
+        hook_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertEqual(shlex.split(hook_cmd), [python, hooks_path])
 
     def test_codex_spawn_env_codex_home_resolves_from_repo(self) -> None:
         alpha_worker = self.actors["alpha-codex-worker"]
@@ -174,8 +189,10 @@ class SpawnPlaceholderResolutionTest(unittest.TestCase):
         )
         self.assertNotEqual(alpha_env["CODEX_HOME"], team_c_env["CODEX_HOME"])
 
-    def test_fake_worker_project_root_is_repo_root(self) -> None:
-        self.assertEqual(self.actors["alpha-fake-worker"]["project_root"], str(paths.REPO_ROOT))
+    def test_fake_worker_project_root_comes_from_operator_variable(self) -> None:
+        # No implicit checkout root: the fixture's fake worker uses the same
+        # operator variable as every other roster entry.
+        self.assertEqual(self.actors["alpha-fake-worker"]["project_root"], "/srv/project-a")
 
 
 class CodexProvisioningTest(unittest.TestCase):

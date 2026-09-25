@@ -22,6 +22,17 @@ HOOK = ROOT / "scripts" / "hooks" / "architect-session-start.sh"
 ORIENTATION_SENTINEL = "coordinate its workers through agent-comms"
 
 
+class ProjectRootTests(unittest.TestCase):
+    def test_claude_project_dir_wins_else_cwd_never_the_package(self) -> None:
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "/srv/project"}):
+            self.assertEqual(session_start._project_root(), Path("/srv/project"))
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            with mock.patch("agent_comms.hooks.session_start.Path.cwd", return_value=Path(temp_dir)):
+                self.assertEqual(session_start._project_root(), Path(temp_dir))
+            self.assertNotEqual(Path(temp_dir), Path(session_start.__file__).resolve().parents[2])
+
+
 class SessionStartHookTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

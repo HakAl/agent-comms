@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent_comms import paths
 from agent_comms.cli import bootstrap_store, load_actor_config
 from agent_comms.policies import compile_policy
 from agent_comms.schema import ValidationError
@@ -63,6 +64,19 @@ class ActorConfigTest(unittest.TestCase):
             self.assertEqual(actors["alpha-architect"]["role"], "architect")
             self.assertIsNone(actors["alpha-architect"]["runtime"])
             self.assertEqual(actors["alpha-architect"]["spawn"], {})
+
+    def test_missing_registry_fails_loudly_instead_of_registering_nobody(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with self.assertRaisesRegex(ValidationError, "actor registry not found at .*actors.example.json"):
+                load_actor_config(root / "actors.json")
+            # A checkout that still has the pre-move registry gets told where it went.
+            checkout = root / "checkout"
+            (checkout / "config").mkdir(parents=True)
+            (checkout / "config" / "actors.json").write_text("{}")
+            with mock.patch.object(paths, "REPO_ROOT", checkout):
+                with self.assertRaisesRegex(ValidationError, "copy .*checkout/config/actors.json there or pass --config"):
+                    load_actor_config(root / "actors.json")
 
     def test_legacy_agents_json_is_normalized_once(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

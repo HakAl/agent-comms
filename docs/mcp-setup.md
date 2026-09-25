@@ -13,8 +13,9 @@ terminals.
    ```
 3. Describe your actors and register them:
    ```sh
-   cp config/actors.example.json config/actors.json
-   $EDITOR config/actors.json
+   mkdir -p ~/.agent-comms
+   cp config/actors.example.json ~/.agent-comms/actors.json
+   $EDITOR ~/.agent-comms/actors.json
    scripts/agent-comms bootstrap
    ```
 

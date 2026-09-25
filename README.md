@@ -20,7 +20,10 @@ process. Humans and scripts use the `agent-comms` CLI.
   that needs no login and exists for demos and tests.
 - **Review and landing.** A review gate runner and a signed push approval
   check (`scripts/guarded-push`), so nothing pushes without a human approval
-  signed with an SSH key.
+  signed with an SSH key. Landing needs two paths from the operator's shell:
+  `AGENT_COMMS_MAIN`, the clean main-branch checkout reviewed work merges
+  into, and `AGENT_COMMS_APPROVAL_SIGNERS_REPO`, the checkout whose history
+  carries `config/approval-signers` (see `config/approval-signers.example`).
 - **Gates.** `make gate` runs hygiene, lint, the isolated test suite, and a
   fresh-clone preverify. `make hooks` installs a pre-push hook that runs
   hygiene and lint on the commits about to be published and refuses the
@@ -52,8 +55,9 @@ Requirements: macOS, Python 3.11 or newer, Git, and
 uv sync --extra mcp
 
 # 2. Describe your actors: one human, one architect per team, and workers
-cp config/actors.example.json config/actors.json
-$EDITOR config/actors.json
+mkdir -p ~/.agent-comms
+cp config/actors.example.json ~/.agent-comms/actors.json
+$EDITOR ~/.agent-comms/actors.json
 export PROJECT_A_ROOT=/absolute/path/to/your/project   # referenced by the example
 
 # 3. Register them in the mailbox at ~/.agent-comms/agent-comms.sqlite
@@ -61,7 +65,8 @@ scripts/agent-comms bootstrap
 scripts/agent-comms actors
 ```
 
-`config/actors.json` is ignored by git. Worker entries declare a `runtime`;
+`~/.agent-comms/actors.json` is the default registry (`--config` names
+another). Worker entries declare a `runtime`;
 the spawn command is rendered from it, never written by hand. Project roots
 may use `~` and `${ENV}` expansion.
 

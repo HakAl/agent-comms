@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import difflib
+import shlex
 import sys
 
 from .policies import WORKER_DISPATCH_POLICY_VERSION, compile_policy
@@ -266,7 +267,19 @@ def _claude_mcp_config() -> str:
     )
 
 
-def claude_settings_for_policy(policy, hooks_path: str) -> str:  # type: ignore[no-untyped-def]
+def claude_settings_for_policy(policy, hooks_path: str, python: str, *, quote: bool = True) -> str:  # type: ignore[no-untyped-def]
+    """Render the Claude ``--settings`` JSON for a compiled policy.
+
+    The PreToolUse hook runs as a shell command, so at dispatch both the
+    interpreter and the hook path are ``shlex.quote``d: an install under a
+    path with a space is one argument, not two. The spawn template passes
+    the ``{python}`` and ``{hooks_path}`` placeholders with ``quote=False``;
+    the adapter re-renders the real values at dispatch.
+    """
+    if quote:
+        hook_command = f"{shlex.quote(python)} {shlex.quote(hooks_path)}"
+    else:
+        hook_command = f"{python} {hooks_path}"
     allowed_tools = [
         f"mcp__agent-comms__{tool_name}"
         for tool_name in sorted(policy.mcp_allowed_tools)
@@ -277,7 +290,7 @@ def claude_settings_for_policy(policy, hooks_path: str) -> str:  # type: ignore[
                 {
                     "hooks": [
                         {
-                            "command": f"python3 {hooks_path}",
+                            "command": hook_command,
                             "type": "command",
                         }
                     ],
@@ -321,7 +334,9 @@ def claude_settings_for_policy(policy, hooks_path: str) -> str:  # type: ignore[
 
 
 def _claude_settings() -> str:
-    return claude_settings_for_policy(compile_policy(WORKER_DISPATCH_POLICY), "{hooks_path}")
+    return claude_settings_for_policy(
+        compile_policy(WORKER_DISPATCH_POLICY), "{hooks_path}", "{python}", quote=False
+    )
 
 
 def _fake_spawn() -> dict:

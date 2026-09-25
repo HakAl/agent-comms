@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from agent_comms.paths import REPO_ROOT
+from agent_comms import paths
 from agent_comms.review import (
     ReviewError,
     approval_key_path,
@@ -29,7 +29,7 @@ from agent_comms.review import (
 SCHEMA_VERSION = 1
 PUSH_APPROVAL_NAMESPACE = "agent-comms-push-approval"
 PUSH_APPROVAL_VERSION = "agent-comms-push-approval-v1"
-PUSH_APPROVAL_ROOT = REPO_ROOT / "local" / "dispatch" / "push-approvals"
+PUSH_APPROVAL_ROOT = paths.push_approval_root()
 PUSH_APPROVAL_KIND = "push-approval"
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _SIGNED_FIELDS = ("approved_head", "target_ref", "repo_identity", "approver", "approved_at")

@@ -91,6 +91,23 @@ class RuntimePathsTest(unittest.TestCase):
         self.assertEqual(log.parent, log_dir.resolve())
         self.assertEqual(paths.dispatch_events_path("dispatch_20260609_011536_cdd9b013").parent, log_dir.resolve())
 
+    def test_config_review_and_approval_roots_live_under_the_runtime_root(self) -> None:
+        # ac-4ao.2: nothing an installed command reads or writes may resolve
+        # under the source tree or the package directory.
+        runtime = self.home / ".agent-comms"
+        self.assertEqual(paths.actors_config_path(), runtime / "actors.json")
+        self.assertEqual(paths.review_root(), runtime / "dispatch" / "reviews")
+        self.assertEqual(paths.push_approval_root(), runtime / "dispatch" / "push-approvals")
+        for resolved in (paths.actors_config_path(), paths.review_root(), paths.push_approval_root()):
+            self.assertFalse(resolved.is_relative_to(self.repo), resolved)
+            self.assertFalse(resolved.is_relative_to(paths.PACKAGE_ROOT), resolved)
+
+    def test_hook_script_is_package_relative_not_checkout_relative(self) -> None:
+        hook = paths.hooks_path()
+        self.assertEqual(hook, paths.PACKAGE_ROOT / "hooks" / "pre_tool_use.py")
+        self.assertTrue(hook.is_file())
+        self.assertFalse(hook.is_relative_to(self.repo))
+
     def test_dispatch_log_dir_honours_the_environment_override(self) -> None:
         override = self.root / "elsewhere" / "dispatch-logs"
         with mock.patch.dict(os.environ, {"AGENT_COMMS_DISPATCH_LOG_DIR": str(override)}):

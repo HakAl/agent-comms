@@ -1,10 +1,13 @@
 """Single source of truth for agent-comms-internal paths.
 
-Every path that points *inside this repository* is derived here from the
-package location, never hardcoded. Moving the repo (or running from a clone at
-a different prefix) requires changing nothing. External deployment paths
-(a worker's `project_root`) are operator data and are NOT derived here — they
-come from config with `~`/`${ENV}` expansion.
+Two kinds of path live here. Package-relative paths (the hook script, the
+code-identity surface) are derived from the package location so they resolve
+the same from a checkout and from an installed wheel. Runtime paths (the
+ledger, config, logs, review and approval records) live under the runtime
+root ``~/.agent-comms`` and never under the source tree or the package
+directory, so deleting the source tree cannot affect an install. External
+deployment paths (a worker's ``project_root``) are operator data and are NOT
+derived here: they come from config with ``~``/``${ENV}`` expansion.
 """
 
 from __future__ import annotations
@@ -15,8 +18,11 @@ from pathlib import Path
 
 from .schema import ValidationError, identity_to_path_segment
 
-# agent_comms/paths.py -> repo root is two parents up.
+# The directory containing the ``agent_comms`` package: the checkout root in
+# development, ``site-packages`` when installed. Only development-time
+# consumers (release git info, tests) may treat it as a checkout.
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = Path.home() / ".agent-comms" / "agent-comms.sqlite"
 DISPATCH_ID_RE = re.compile(r"dispatch_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")
 
@@ -43,6 +49,21 @@ def db_path() -> Path:
 def canonical_db_path() -> Path:
     """Checkout-independent default SQLite database path."""
     return runtime_root() / "agent-comms.sqlite"
+
+
+def actors_config_path() -> Path:
+    """Default actor registry read by ``agent-comms bootstrap``."""
+    return runtime_root() / "actors.json"
+
+
+def review_root() -> Path:
+    """Review-cycle records (``reviewing.store``) under the runtime root."""
+    return runtime_root() / "dispatch" / "reviews"
+
+
+def push_approval_root() -> Path:
+    """Signed push-approval records under the runtime root."""
+    return runtime_root() / "dispatch" / "push-approvals"
 
 
 def codex_custody_root() -> Path:
@@ -74,8 +95,8 @@ def cli_command() -> Path:
 
 
 def hooks_path() -> Path:
-    """The Claude `PreToolUse` hook script."""
-    return REPO_ROOT / "agent_comms" / "hooks" / "pre_tool_use.py"
+    """The Claude `PreToolUse` hook script, package-relative."""
+    return PACKAGE_ROOT / "hooks" / "pre_tool_use.py"
 
 
 def dispatch_log_dir() -> Path:

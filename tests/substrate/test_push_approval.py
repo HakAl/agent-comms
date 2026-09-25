@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import importlib.machinery
+import os
 import subprocess
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import delta_manifest, push_approval, review
-from agent_comms.reviewing import approval, store
+from agent_comms.reviewing import store
 
 
 class PushApprovalTest(unittest.TestCase):
@@ -73,9 +74,12 @@ class PushApprovalTest(unittest.TestCase):
         patch = mock.patch.object(review, "REPO_ROOT", self.repo)
         patch.start()
         self.addCleanup(patch.stop)
-        approval_patch = mock.patch.object(approval, "REPO_ROOT", self.repo)
-        approval_patch.start()
-        self.addCleanup(approval_patch.stop)
+        main_patch = mock.patch.dict(
+            os.environ,
+            {"AGENT_COMMS_MAIN": str(self.repo), "AGENT_COMMS_APPROVAL_SIGNERS_REPO": str(self.repo)},
+        )
+        main_patch.start()
+        self.addCleanup(main_patch.stop)
         return key_path
 
     def sign_push_payload(

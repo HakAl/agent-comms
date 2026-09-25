@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from agent_comms.paths import REPO_ROOT
+from agent_comms import paths
 from agent_comms.reviewing.contracts import (
     PRE_APPROVAL_STATES,
     Paths,
@@ -30,7 +30,7 @@ from agent_comms.reviewing.contracts import (
 from agent_comms.reviewing.briefs import brief_sha256, dod_drift
 
 
-REVIEW_ROOT = REPO_ROOT / "local" / "dispatch" / "reviews"
+REVIEW_ROOT = paths.review_root()
 
 
 def utc_now() -> str:

@@ -346,15 +346,20 @@ class ReviewToolTest(unittest.TestCase):
         # Signers live on the pinned integration ref; the integration
         # checkout itself stays on its own branch (the ff destination).
         self.git("checkout", "integration-main", cwd=self.integration)
-        # The committed approval-signer read resolves REPO_ROOT from its owner
-        # module (approval); integration_checkout resolves it from its own, and
-        # the facade keeps its own for record reads, so these globals rebind
-        # together.
-        for module in (review, approval, git_evidence):
-            patch = mock.patch.object(module, "REPO_ROOT", self.integration)
-            patch.start()
-            self.addCleanup(patch.stop)
+        # Signers are read from the pinned ref of the repository named by
+        # AGENT_COMMS_APPROVAL_SIGNERS_REPO (here the integration checkout,
+        # already named by AGENT_COMMS_MAIN in setUp); the facade keeps
+        # REPO_ROOT for the status binding, so only that one rebinds.
+        self.name_signers_repo(self.integration)
+        patch = mock.patch.object(review, "REPO_ROOT", self.integration)
+        patch.start()
+        self.addCleanup(patch.stop)
         return key_path
+
+    def name_signers_repo(self, repo: Path) -> None:
+        env_patch = mock.patch.dict(os.environ, {"AGENT_COMMS_APPROVAL_SIGNERS_REPO": str(repo)})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
 
     def cycle_destination(self, integration: Path | None = None) -> tuple[str, str]:
         # Mirror approval.derive_cycle_destination against a chosen integration
@@ -612,23 +617,35 @@ class ReviewToolTest(unittest.TestCase):
     def test_respawn_binding_failure_wins_over_brief_drift(self) -> None:
         self._assert_transition_binding_precedes_brief_drift("respawn")
 
-    def test_open_refuses_integration_checkout_and_writes_no_record(self) -> None:
+    def test_unset_landing_variables_name_themselves(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("AGENT_COMMS_MAIN", None)
-            with mock.patch.object(git_evidence, "REPO_ROOT", self.repo):
-                rc, _stdout, stderr = self.run_review_capture(
-                    "open",
-                    "--dispatch-id",
-                    "D-integration",
-                    "--brief",
-                    str(self.brief),
-                    "--dod",
-                    str(self.dod),
-                    "--repo",
-                    str(self.repo),
-                )
+            os.environ.pop("AGENT_COMMS_APPROVAL_SIGNERS_REPO", None)
+            with self.assertRaisesRegex(review.ReviewError, "AGENT_COMMS_MAIN is not set"):
+                git_evidence.integration_checkout()
+            with self.assertRaisesRegex(review.ReviewError, "AGENT_COMMS_APPROVAL_SIGNERS_REPO is not set"):
+                approval.approval_signers_repo()
+            with self.assertRaisesRegex(review.ReviewError, "AGENT_COMMS_APPROVAL_SIGNERS_REPO is not set"):
+                approval.committed_approval_signers()
+
+    def test_open_without_agent_comms_main_names_the_variable_and_writes_no_record(self) -> None:
+        # No fallback to the agent-comms source tree: the integration checkout
+        # is operator data, and an installed package has no checkout.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_COMMS_MAIN", None)
+            rc, _stdout, stderr = self.run_review_capture(
+                "open",
+                "--dispatch-id",
+                "D-integration",
+                "--brief",
+                str(self.brief),
+                "--dod",
+                str(self.dod),
+                "--repo",
+                str(self.repo),
+            )
         self.assertNotEqual(rc, 0)
-        self.assertIn("is the integration checkout that cycle-land merges INTO", stderr)
+        self.assertIn("AGENT_COMMS_MAIN is not set", stderr)
         self.assertFalse((self.review_root / "D-integration.json").exists())
 
     def test_open_integration_guard_honors_agent_comms_main(self) -> None:
@@ -1612,9 +1629,7 @@ class ReviewToolTest(unittest.TestCase):
 
     def test_missing_or_empty_signers_fail_closed(self) -> None:
         key_path = self.generate_approval_key()
-        patch = mock.patch.object(approval, "REPO_ROOT", self.integration)
-        patch.start()
-        self.addCleanup(patch.stop)
+        self.name_signers_repo(self.integration)
         self.to_execution_reviewed()
         self.run_review("clean", "--dispatch-id", "D1")
         state = self.record()
@@ -1824,9 +1839,7 @@ class ReviewToolTest(unittest.TestCase):
         )
         self.git("add", "config/approval-signers", cwd=self.integration)
         self.git("commit", "-m", "hostile ambient signers", cwd=self.integration)
-        patch = mock.patch.object(approval, "REPO_ROOT", self.integration)
-        patch.start()
-        self.addCleanup(patch.stop)
+        self.name_signers_repo(self.integration)
         # Keep the reviewed head fast-forwardable from the hostile ambient
         # HEAD so the operator-key case still exercises signer resolution
         # from the pinned ref, not from whatever HEAD has checked out.

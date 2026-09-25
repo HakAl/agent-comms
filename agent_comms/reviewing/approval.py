@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from agent_comms.paths import REPO_ROOT
 from agent_comms.reviewing.contracts import (
     CYCLE_PAYLOAD_VERSION,
     LOCAL_WORKTREE_PREFIX,
@@ -168,11 +167,32 @@ def approval_integration_ref() -> str:
     )
 
 
+APPROVAL_SIGNERS_REPO_ENV = "AGENT_COMMS_APPROVAL_SIGNERS_REPO"
+
+
+def approval_signers_repo() -> Path:
+    """The git checkout whose pinned ref carries ``config/approval-signers``.
+
+    Signers are read from committed history, never from a working tree, so a
+    hostile checkout cannot add a key. The list is centralized per install
+    rather than per team, so the repository is named by
+    ``AGENT_COMMS_APPROVAL_SIGNERS_REPO``; there is no default, since the old
+    one (the agent-comms source tree) does not exist for an installed package.
+    """
+    configured = os.environ.get(APPROVAL_SIGNERS_REPO_ENV, "").strip()
+    if not configured:
+        raise ReviewError(
+            f"{APPROVAL_SIGNERS_REPO_ENV} is not set; export it as the absolute path of the git "
+            f"checkout whose {approval_integration_ref()} ref commits config/approval-signers"
+        )
+    return Path(configured).expanduser().resolve()
+
+
 def committed_approval_signers() -> str:
     ref = approval_integration_ref()
     proc = subprocess.run(
         ["git", "show", f"{ref}:config/approval-signers"],
-        cwd=str(REPO_ROOT),
+        cwd=str(approval_signers_repo()),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
