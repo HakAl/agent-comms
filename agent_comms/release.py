@@ -76,12 +76,29 @@ def repo_git_info(repo_root=None) -> dict:
     }
 
 
+def platform_pins(manifest: dict, platform: str) -> dict[str, str | None]:
+    """Certified version per runtime on ``platform``, ``None`` where unlisted.
+
+    Read from the manifest as data, not through the raising resolver, so
+    ``agent-comms version`` answers "is this machine certified" on every
+    platform instead of failing on the ones that are not.
+    """
+    return {
+        runtime: (entry.get("platforms") or {}).get(platform, {}).get("version")
+        for runtime, entry in sorted(manifest.get("runtimes", {}).items())
+    }
+
+
 def release_info() -> dict:
+    manifest = runtime_pins.load_runtime_pins()
+    platform = runtime_pins.current_platform()
     return {
         "version": __version__,
         "code_identity": code_identity.LOADED_CODE_IDENTITY,
         "contract_version": code_identity.CONTRACT_VERSION,
-        "certified_runtimes": runtime_pins.load_runtime_pins(),
+        "platform": platform,
+        "platform_pins": platform_pins(manifest, platform),
+        "certified_runtimes": manifest,
         **repo_git_info(paths.REPO_ROOT),
     }
 

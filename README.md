@@ -35,8 +35,7 @@ Milestone 1 of [the roadmap](docs/ROADMAP.md) is in progress. The pieces
 that still need to land before a new user can run this without a checkout:
 
 - `agent-comms setup` and `agent-comms doctor`.
-- Runtime version pins per platform, and upgrades from the original 0.1.0
-  mailbox.
+- Upgrades from the original 0.1.0 mailbox.
 - A proper quickstart, concepts page, and runbook. This README is the
   interim version.
 

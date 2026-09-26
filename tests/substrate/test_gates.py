@@ -15,6 +15,7 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -512,6 +513,52 @@ class InstallSmokeScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("INSTALL_SMOKE_SOURCE must be head or worktree, not 'stash'", result.stderr)
         self.assertFalse((self.repo / "local").exists())
+
+    def test_version_check_requires_pins_for_the_reported_platform(self) -> None:
+        # ac-4ao.3: the installed wheel must carry the pin entry for the
+        # machine it runs on. The check is the script's embedded Python block,
+        # run here against `agent-comms version` payloads without a wheel.
+        script = (GATES / "install-smoke.sh").read_text()
+        match = re.search(r'\npython3 - "\$UV_TOOL_DIR" <<\'PY\'[^\n]*\n(.*?)\nPY\n', script, re.S)
+        self.assertIsNotNone(match, "version check block not found in install-smoke.sh")
+        check = match.group(1)
+        tool_dir = self.repo / "tool"
+        base = {
+            "repo_root": str(tool_dir / "agent-comms" / "lib" / "agent_comms"),
+            "git_commit": "unknown",
+            "git_branch": "unknown",
+            "git_describe": "unknown",
+            "git_head_state": "unknown",
+            "certified_runtimes": {"schema": 2, "runtimes": {}},
+        }
+
+        def run(**fields: object) -> subprocess.CompletedProcess:
+            (self.repo / "version.json").write_text(json.dumps({**base, **fields}))
+            return subprocess.run(
+                [sys.executable, "-", str(tool_dir)],
+                input=check,
+                cwd=self.repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        certified = run(platform="darwin-arm64", platform_pins={"claude": "2.1.195", "codex": "0.157.0"})
+        self.assertEqual(certified.returncode, 0, certified.stderr)
+
+        unlisted = run(platform="linux-x86_64", platform_pins={"claude": None, "codex": None})
+        self.assertEqual(unlisted.returncode, 1, unlisted.stderr)
+        self.assertIn("platform_pins lacks codex for linux-x86_64", unlisted.stderr)
+        self.assertIn("platform_pins lacks claude for linux-x86_64", unlisted.stderr)
+
+        half = run(platform="darwin-arm64", platform_pins={"claude": None, "codex": "0.157.0"})
+        self.assertEqual(half.returncode, 1, half.stderr)
+        self.assertIn("lacks claude for darwin-arm64", half.stderr)
+        self.assertNotIn("lacks codex", half.stderr)
+
+        stale = run()
+        self.assertEqual(stale.returncode, 1, stale.stderr)
+        self.assertIn("platform is missing from version", stale.stderr)
 
 
 class LintBaselineTests(unittest.TestCase):

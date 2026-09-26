@@ -106,6 +106,49 @@ protected-root part reports that deployment's own writes, so the CI run is
 the authoritative one. Skipped tests appear in the unittest summary as
 `OK (skipped=N)`.
 
+## Runtime pins
+
+`agent_comms/runtime_pins.json` records which runtime versions the gated
+cells certified, and it ships inside the wheel. It is schema 2: for each
+runtime a `boundary` (`exact` or `minor`, how strictly an installed version
+must match) and `platforms`, a map from a platform key to the certified
+`version`, the date it was certified (`certified_on`) and, for the Claude
+binary kept under runtime custody, its `sha256`. A platform key is the OS
+and CPU architecture as Python reports them, `<sys.platform>-<machine>`:
+`darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-aarch64`. On a
+shell, `uname -m` prints the second half. `agent-comms version` prints the
+key it resolved as `platform` and, under `platform_pins`, the certified
+version per runtime for it, `null` where there is none.
+
+An entry is a claim that the gated cells passed on that platform with that
+version, so a platform is listed only with that evidence (see AGENTS.md).
+Where the manifest has no entry for the current platform every consumer of
+a pin fails closed with one message that names the platform, the platforms
+that are certified, and this section: a Claude dispatch refuses before it
+touches the disk, `tests/cells/test_cell_version_drift.py` and the Claude
+cells skip with that message, and the skip is reported as a skip. Fake and
+Codex dispatches do not read the Claude pin and keep working.
+
+To certify a platform that is not listed yet, or to re-certify one after a
+runtime upgrade, work in a checkout on that machine:
+
+1. Add or update the entry for your platform key under
+   `runtimes.<runtime>.platforms`: the runtime's `--version` as `version`,
+   today's date as `certified_on` and, for Claude, the sha256 of the custody
+   binary at `~/.agent-comms/runtime-custody/<version>`. This working-tree
+   edit is the provisional pin; nothing outside the checkout is needed.
+2. Refresh `CONTRACT_SURFACE_DIGEST` in `agent_comms/code_identity.py`
+   (the manifest is on the contract surface);
+   `tests/substrate/test_code_identity.py` prints the computed digest when
+   it differs.
+3. Run the gated cells under `tests/cells` with real logins and the
+   live-home switch described under "Development setup and tests", from
+   your own shell, never from an agent. Then run `make test`.
+4. Commit only if the cells for that runtime ran and passed rather than
+   skipped: the unittest summary must not count them under `skipped=N`. A
+   run that skipped is not evidence, and the entry must not be published
+   on it.
+
 ## Scope and review
 
 Start with the issue's observable outcome. For features, put a short plan in
