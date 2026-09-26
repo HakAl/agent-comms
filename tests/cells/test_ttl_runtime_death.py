@@ -14,7 +14,7 @@ from unittest import mock
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
-    CLAUDE_PINNED_VERSION,
+    claude_pin,
     CLAUDE_VERSIONS_DIR_ENV,
 )
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
@@ -58,12 +58,12 @@ def wait_for_file(path: Path, timeout_seconds: float = 5.0) -> None:
 
 def write_claude_pin_stub(root: Path) -> Path:
     versions_dir = root / "claude-versions"
-    binary = versions_dir / CLAUDE_PINNED_VERSION
+    binary = versions_dir / claude_pin().version
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text(
         "#!/bin/sh\n"
         "if [ \"$1\" = \"--version\" ]; then\n"
-        f"  printf 'Claude Code {CLAUDE_PINNED_VERSION}\\n'\n"
+        f"  printf 'Claude Code {claude_pin().version}\\n'\n"
         "  exit 0\n"
         "fi\n"
         "exec \"$@\"\n"
@@ -74,7 +74,7 @@ def write_claude_pin_stub(root: Path) -> Path:
 
 def claude_pin_env(root: Path) -> dict[str, str]:
     versions_dir = write_claude_pin_stub(root)
-    binary = versions_dir / CLAUDE_PINNED_VERSION
+    binary = versions_dir / claude_pin().version
     return {
         CLAUDE_VERSIONS_DIR_ENV: str(versions_dir),
         CLAUDE_PINNED_SHA256_ENV: hashlib.sha256(binary.read_bytes()).hexdigest(),

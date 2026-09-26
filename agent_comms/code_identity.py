@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 23
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "473f92104e0e887b76a6cacc9da6f7227fd77949f81117b1d579caf7e24dde58"
+    "a9865d5d72f352c498347e0878bd93a64d870cd4c419b9793e440c0316a9e428"
 )
 
 

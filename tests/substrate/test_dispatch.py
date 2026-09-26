@@ -16,7 +16,7 @@ from agent_comms.adapters import DispatchContext, DispatchStart
 from agent_comms.cli import ADMIN_CREDENTIAL_ERROR
 from agent_comms.dispatch_ledger import ConcurrencyError
 from agent_comms.policies import compile_policy, scoped_env
-from agent_comms.runtime_pins import CLAUDE_PINNED_SHA256_ENV, CLAUDE_PINNED_VERSION, CLAUDE_VERSIONS_DIR_ENV
+from agent_comms.runtime_pins import CLAUDE_PINNED_SHA256_ENV, CLAUDE_VERSIONS_DIR_ENV, claude_pin
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 
@@ -48,12 +48,12 @@ def operator_env(root: Path, token: str = "operator-secret") -> dict[str, str]:
 
 def write_claude_pin_stub(root: Path) -> Path:
     versions_dir = root / "claude-versions"
-    binary = versions_dir / CLAUDE_PINNED_VERSION
+    binary = versions_dir / claude_pin().version
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text(
         "#!/bin/sh\n"
         "if [ \"$1\" = \"--version\" ]; then\n"
-        f"  printf 'Claude Code {CLAUDE_PINNED_VERSION}\\n'\n"
+        f"  printf 'Claude Code {claude_pin().version}\\n'\n"
         "  exit 0\n"
         "fi\n"
         # Non-version invocation: be a self-contained bounded long-running child.
@@ -68,7 +68,7 @@ def write_claude_pin_stub(root: Path) -> Path:
 
 
 def claude_pin_stub_sha256(versions_dir: Path) -> str:
-    return hashlib.sha256((versions_dir / CLAUDE_PINNED_VERSION).read_bytes()).hexdigest()
+    return hashlib.sha256((versions_dir / claude_pin().version).read_bytes()).hexdigest()
 
 
 class DispatchTest(unittest.TestCase):

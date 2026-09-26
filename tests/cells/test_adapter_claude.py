@@ -45,12 +45,12 @@ def process_exists(pid: int) -> bool:
 class ClaudeAdapterTest(unittest.TestCase):
     def _write_fake_pin(self, root: Path) -> tuple[Path, str]:
         versions_dir = root / "claude-versions"
-        binary = versions_dir / runtime_pins.CLAUDE_PINNED_VERSION
+        binary = versions_dir / runtime_pins.claude_pin().version
         binary.parent.mkdir(parents=True)
         binary.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = \"--version\" ]; then\n"
-            f"  printf 'Claude Code {runtime_pins.CLAUDE_PINNED_VERSION}\\n'\n"
+            f"  printf 'Claude Code {runtime_pins.claude_pin().version}\\n'\n"
             "  exit 0\n"
             "fi\n"
             "exec \"$@\"\n"
@@ -63,7 +63,7 @@ class ClaudeAdapterTest(unittest.TestCase):
             version_runner=lambda _binary: subprocess.CompletedProcess(
                 [str(_binary), "--version"],
                 0,
-                stdout=f"Claude Code {runtime_pins.CLAUDE_PINNED_VERSION}\n",
+                stdout=f"Claude Code {runtime_pins.claude_pin().version}\n",
                 stderr="",
             ),
             expected_sha256=expected_sha256,

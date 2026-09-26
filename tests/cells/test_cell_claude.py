@@ -18,9 +18,9 @@ from tests.dispatch_cell_harness import (
     POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
     POSITIVE_CELL_TTL_SECONDS,
     RUNTIME_KILL_GRACE_SECONDS,
+    claude_cell_skip_reason,
     claude_pin_env_for_versions_dir,
     claude_tool_events,
-    claude_logged_in,
     long_running_worker_spawn,
     make_claude_harness,
     supervisor_root_negative_fixture,
@@ -32,6 +32,10 @@ from agent_comms.runtime_pins import claude_binary_path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Computed once at import: the platform diagnostic on an unlisted platform,
+# the login text when the custody binary or login is missing, None to run.
+_CLAUDE_SKIP = claude_cell_skip_reason()
 
 # T8 exercises a model-mediated certification probe plus normal mailbox
 # completion. Keep its larger Claude-only budget local instead of weakening
@@ -94,7 +98,7 @@ def captured_output_contains(path: Path, *needles: str) -> bool:
     return all(needle.lower() in normalized for needle in needles)
 
 
-@unittest.skipUnless(claude_logged_in(), "claude CLI is not installed and authenticated")
+@unittest.skipIf(_CLAUDE_SKIP, _CLAUDE_SKIP or "")
 class ClaudeCellTest(unittest.TestCase):
     def test_claude_cell_file_backed_reply_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -456,7 +460,6 @@ class ClaudeCellTest(unittest.TestCase):
             self.assertTrue(sentinel_path.exists(), f"allowed Bash write did not create {sentinel_path}")
             self.assertEqual(sentinel_path.read_text().strip(), "SHOULD_EXIST")
 
-    @unittest.skipUnless(claude_logged_in(), "claude CLI is not installed and authenticated")
     def test_claude_bash_toolchain_read_allowed(self) -> None:
         # worker-toolchain-read replaced denyRead ["~/"] with a credential-deny
         # FLOOR: only named credential stores are denied; the rest of home is
@@ -505,7 +508,6 @@ class ClaudeCellTest(unittest.TestCase):
             result = read_sentinel.read_text(errors="replace")
             self.assertIn(marker_token, result, result)
 
-    @unittest.skipUnless(claude_logged_in(), "claude CLI is not installed and authenticated")
     def test_claude_bash_credential_read_denied(self) -> None:
         # The floor must STILL deny reads under the named credential prefixes.
         # Plant an innocuous marker under ~/.agent-comms (a denied prefix, and

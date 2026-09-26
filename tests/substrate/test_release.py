@@ -61,8 +61,9 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(payload["code_identity"], code_identity.LOADED_CODE_IDENTITY)
             self.assertEqual(payload["contract_version"], code_identity.CONTRACT_VERSION)
             self.assertEqual(payload["certified_runtimes"], expected_cell_versions)
-            self.assertIn("codex", payload["certified_runtimes"])
-            self.assertIn("claude", payload["certified_runtimes"])
+            self.assertEqual(payload["certified_runtimes"]["schema"], runtime_pins.RUNTIME_PINS_SCHEMA)
+            self.assertIn("codex", payload["certified_runtimes"]["runtimes"])
+            self.assertIn("claude", payload["certified_runtimes"]["runtimes"])
             self.assertEqual(payload["repo_root"], str(paths.REPO_ROOT))
             self.assertIn(payload["git_head_state"], {"live", "detached", "unknown"})
             self.assertIn("git_describe", payload)
@@ -80,8 +81,9 @@ class ReleaseVersionTest(unittest.TestCase):
         self.assertTrue(runtime_pins.RUNTIME_PINS_PATH.is_file())
         self.assertFalse((paths.REPO_ROOT / "tests" / "cells" / "cell_versions.json").exists())
         pins = runtime_pins.load_runtime_pins()
-        self.assertEqual(pins["claude"]["last_verified"], runtime_pins.CLAUDE_PINNED_VERSION)
-        self.assertEqual(pins["claude"]["sha256"], runtime_pins.CLAUDE_PINNED_SHA256)
+        entry = pins["runtimes"]["claude"]["platforms"][runtime_pins.current_platform()]
+        self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
+        self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
         self.assertTrue(code_identity.is_included_surface("agent_comms/runtime_pins.json"))
 
     def test_release_version_files_remain_off_dispatch_surface(self) -> None:
