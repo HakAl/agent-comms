@@ -643,7 +643,7 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
         binary = spawn_fixture._write_claude_pin_stub(versions_dir)
         adapter = ClaudeAdapter(
             version_runner=lambda _: spawn_fixture._version_result(
-                spawn_fixture.runtime_pins.CLAUDE_PINNED_VERSION
+                spawn_fixture.runtime_pins.claude_pin().version
             ),
             expected_sha256=spawn_fixture._sha256(binary),
         )

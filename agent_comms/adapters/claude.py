@@ -8,8 +8,8 @@ from typing import Callable
 from . import DispatchContext
 from ._base import ProcessSpawnAdapter
 from ..runtime_pins import (
-    CLAUDE_PINNED_VERSION,
     claude_binary_path,
+    claude_pin,
     claude_pinned_sha256,
     custody_binary_digest_matches,
     custody_binary_sha256,
@@ -84,7 +84,7 @@ class ClaudeAdapter(ProcessSpawnAdapter):
         if match is None:
             raise self._pin_unavailable(binary, f"could not parse pinned Claude --version output: {output!r}")
         installed = match.group(1)
-        if installed != CLAUDE_PINNED_VERSION:
+        if installed != claude_pin().version:
             raise self._pin_drift(binary, installed)
 
     def _validate_rendered_command(self, command: str, context: DispatchContext) -> None:
@@ -117,14 +117,14 @@ class ClaudeAdapter(ProcessSpawnAdapter):
     @staticmethod
     def _pin_unavailable(binary: Path, reason: str) -> RuntimePinUnavailable:
         return RuntimePinUnavailable(
-            f"{reason}; expected claude {CLAUDE_PINNED_VERSION}; path={binary}; "
+            f"{reason}; expected claude {claude_pin().version}; path={binary}; "
             "recover with: install that Claude version at the resolved path, or re-certify and bump the pin"
         )
 
     @staticmethod
     def _pin_drift(binary: Path, installed: str) -> RuntimePinDrift:
         return RuntimePinDrift(
-            f"pinned Claude version drifted: expected {CLAUDE_PINNED_VERSION}, got {installed}; "
+            f"pinned Claude version drifted: expected {claude_pin().version}, got {installed}; "
             f"path={binary}; recover with: install that Claude version at the resolved path, "
             "or re-certify and bump the pin"
         )

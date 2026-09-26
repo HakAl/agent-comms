@@ -103,6 +103,20 @@ def _configured_spawn_grace_seconds() -> float:
         return SPAWN_GRACE_SECONDS
 
 
+class _PlaceholderValues(dict):
+    """Spawn placeholder values; ``lazy`` entries are computed on first access."""
+
+    def __init__(self, values: dict, lazy: dict) -> None:
+        super().__init__(values)
+        self._lazy = lazy
+
+    def __missing__(self, key: str) -> str:
+        if key in self._lazy:
+            value = self[key] = self._lazy[key]()
+            return value
+        raise KeyError(key)
+
+
 class ProcessSpawnAdapter:
     """Shared command-template runner for subprocess-backed runtimes."""
 
@@ -530,22 +544,27 @@ class ProcessSpawnAdapter:
             self._cleanup_zdotdir(zdotdir)
 
     def _format_arg(self, arg: str, context: DispatchContext) -> str:
-        values = {
-            "actor_id": str(context.recipient["id"]),
-            "message_id": str(context.message["id"]),
-            "policy_name": str(context.dispatch["policy_name"]),
-            "project_root": str(context.recipient["project_root"]),
-            "db_path": str(context.db_path),
-            "mcp_command": str(paths.mcp_command()),
-            "hooks_path": str(paths.hooks_path()),
-            "codex_home": str(paths.codex_home(str(context.recipient["id"]))),
-            "claude_binary": str(claude_binary_path()),
-            # The dispatching process's own interpreter: whatever can run this
-            # adapter can import the package, on PATH or not.
-            "python": sys.executable,
-        }
+        values = _PlaceholderValues(
+            {
+                "actor_id": str(context.recipient["id"]),
+                "message_id": str(context.message["id"]),
+                "policy_name": str(context.dispatch["policy_name"]),
+                "project_root": str(context.recipient["project_root"]),
+                "db_path": str(context.db_path),
+                "mcp_command": str(paths.mcp_command()),
+                "hooks_path": str(paths.hooks_path()),
+                "codex_home": str(paths.codex_home(str(context.recipient["id"]))),
+                # The dispatching process's own interpreter: whatever can run this
+                # adapter can import the package, on PATH or not.
+                "python": sys.executable,
+            },
+            # Resolved only by a spawn that names it: the Claude pin is
+            # per platform and fails closed where none is certified, which
+            # must not touch a fake or codex dispatch.
+            lazy={"claude_binary": lambda: str(claude_binary_path())},
+        )
         try:
-            return arg.format(**values)
+            return arg.format_map(values)
         except KeyError as exc:
             allowed = ", ".join(self.allowed_placeholders)
             raise RuntimeError(f"unsupported spawn placeholder {exc}; allowed: {allowed}") from exc

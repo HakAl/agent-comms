@@ -61,8 +61,17 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(payload["code_identity"], code_identity.LOADED_CODE_IDENTITY)
             self.assertEqual(payload["contract_version"], code_identity.CONTRACT_VERSION)
             self.assertEqual(payload["certified_runtimes"], expected_cell_versions)
-            self.assertIn("codex", payload["certified_runtimes"])
-            self.assertIn("claude", payload["certified_runtimes"])
+            self.assertEqual(payload["certified_runtimes"]["schema"], runtime_pins.RUNTIME_PINS_SCHEMA)
+            self.assertIn("codex", payload["certified_runtimes"]["runtimes"])
+            self.assertIn("claude", payload["certified_runtimes"]["runtimes"])
+            self.assertEqual(payload["platform"], runtime_pins.current_platform())
+            self.assertEqual(
+                payload["platform_pins"],
+                {
+                    runtime: entry["platforms"].get(payload["platform"], {}).get("version")
+                    for runtime, entry in expected_cell_versions["runtimes"].items()
+                },
+            )
             self.assertEqual(payload["repo_root"], str(paths.REPO_ROOT))
             self.assertIn(payload["git_head_state"], {"live", "detached", "unknown"})
             self.assertIn("git_describe", payload)
@@ -80,9 +89,33 @@ class ReleaseVersionTest(unittest.TestCase):
         self.assertTrue(runtime_pins.RUNTIME_PINS_PATH.is_file())
         self.assertFalse((paths.REPO_ROOT / "tests" / "cells" / "cell_versions.json").exists())
         pins = runtime_pins.load_runtime_pins()
-        self.assertEqual(pins["claude"]["last_verified"], runtime_pins.CLAUDE_PINNED_VERSION)
-        self.assertEqual(pins["claude"]["sha256"], runtime_pins.CLAUDE_PINNED_SHA256)
+        entry = pins["runtimes"]["claude"]["platforms"][runtime_pins.current_platform()]
+        self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
+        self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
         self.assertTrue(code_identity.is_included_surface("agent_comms/runtime_pins.json"))
+
+    def test_platform_pins_answer_for_the_current_platform_without_raising(self) -> None:
+        # ac-4ao.3: `agent-comms version` must say whether this machine is
+        # certified on every platform, so the per-platform answer is read
+        # from the manifest as data, never through the raising resolver.
+        with patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+            with patch.object(runtime_pins, "pin_for", side_effect=AssertionError("resolver used")):
+                info = release_info()
+        self.assertEqual(info["platform"], "linux-x86_64")
+        self.assertEqual(info["platform_pins"], {"claude": None, "codex": None})
+        self.assertEqual(info["certified_runtimes"], runtime_pins.load_runtime_pins())
+
+        with patch.object(runtime_pins, "current_platform", return_value="darwin-arm64"):
+            info = release_info()
+        self.assertEqual(info["platform"], "darwin-arm64")
+        self.assertEqual(
+            info["platform_pins"],
+            {
+                "claude": runtime_pins.pin_for("claude", "darwin-arm64").version,
+                "codex": runtime_pins.pin_for("codex", "darwin-arm64").version,
+            },
+        )
+        self.assertEqual(list(info["platform_pins"]), ["claude", "codex"])
 
     def test_release_version_files_remain_off_dispatch_surface(self) -> None:
         self.assertFalse(code_identity.is_included_surface("agent_comms/__init__.py"))

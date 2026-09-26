@@ -153,10 +153,17 @@ for key in ("git_commit", "git_branch", "git_describe", "git_head_state"):
         problems.append(f"{key}={info.get(key)!r}, expected 'unknown'")
 if not info.get("certified_runtimes"):
     problems.append("certified_runtimes is empty: the pins did not ship in the wheel")
+platform = info.get("platform")
+pins = info.get("platform_pins") or {}
+if not platform:
+    problems.append("platform is missing from version")
+for runtime in ("codex", "claude"):
+    if not pins.get(runtime):
+        problems.append(f"platform_pins lacks {runtime} for {platform}: the wheel carries no certified pin for this machine")
 if problems:
     sys.exit("FAIL install-smoke: " + "; ".join(problems))
 PY
-info "version: repo_root under the tool venv, git fields unknown, pins present"
+info "version: repo_root under the tool venv, git fields unknown, pins present for this platform"
 
 cp "$root/actors.json" "$HOME/.agent-comms/actors.json"
 "$bin/agent-comms" bootstrap >bootstrap.json || fail "bootstrap failed"

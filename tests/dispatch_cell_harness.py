@@ -25,9 +25,10 @@ from agent_comms.adapters.codex import CodexAdapter
 from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
 from agent_comms.runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
-    CLAUDE_PINNED_VERSION,
     CLAUDE_VERSIONS_DIR_ENV,
+    PlatformNotCertified,
     claude_binary_path,
+    claude_pin,
     custody_binary_digest_matches,
 )
 from agent_comms.spawn import render_spawn
@@ -214,12 +215,12 @@ def fake_worker_args(
 
 def long_running_worker_spawn(pid_file: Path, *, claude_versions_dir: Path | None = None) -> dict:
     if claude_versions_dir is not None:
-        binary = claude_versions_dir / CLAUDE_PINNED_VERSION
+        binary = claude_versions_dir / claude_pin().version
         binary.parent.mkdir(parents=True, exist_ok=True)
         binary.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = \"--version\" ]; then\n"
-            f"  printf 'Claude Code {CLAUDE_PINNED_VERSION}\\n'\n"
+            f"  printf 'Claude Code {claude_pin().version}\\n'\n"
             "  exit 0\n"
             "fi\n"
             "printf '%s' \"$$\" > \"$AGENT_COMMS_TIMEOUT_CHILD_PID_FILE\"\n"
@@ -237,7 +238,7 @@ def long_running_worker_spawn(pid_file: Path, *, claude_versions_dir: Path | Non
 
 
 def claude_pin_env_for_versions_dir(versions_dir: Path) -> dict[str, str]:
-    binary = versions_dir / CLAUDE_PINNED_VERSION
+    binary = versions_dir / claude_pin().version
     return {
         CLAUDE_VERSIONS_DIR_ENV: str(versions_dir),
         CLAUDE_PINNED_SHA256_ENV: hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -709,10 +710,23 @@ def make_fake_harness(
     )
 
 
-def claude_logged_in() -> bool:
-    claude_binary = claude_binary_path()
+CLAUDE_NOT_LOGGED_IN_REASON = "claude CLI is not installed and authenticated"
+
+
+def claude_cell_skip_reason() -> str | None:
+    """Why the Claude cells cannot run here, or ``None`` when they can.
+
+    Evaluated at import by the cell module's skip decorators, so it never
+    raises: on a platform without a certified Claude pin the reason is the
+    :class:`PlatformNotCertified` message (platform, certified platforms,
+    recovery), not the login text, and it is checked before any disk access.
+    """
+    try:
+        claude_binary = claude_binary_path()
+    except PlatformNotCertified as exc:
+        return str(exc)
     if not custody_binary_digest_matches(claude_binary):
-        return False
+        return CLAUDE_NOT_LOGGED_IN_REASON
     result = subprocess.run(
         [str(claude_binary), "auth", "status"],
         text=True,
@@ -721,11 +735,12 @@ def claude_logged_in() -> bool:
         timeout=10,
     )
     if result.returncode != 0:
-        return False
+        return CLAUDE_NOT_LOGGED_IN_REASON
     try:
-        return bool(json.loads(result.stdout).get("loggedIn"))
+        logged_in = bool(json.loads(result.stdout).get("loggedIn"))
     except json.JSONDecodeError:
-        return False
+        return CLAUDE_NOT_LOGGED_IN_REASON
+    return None if logged_in else CLAUDE_NOT_LOGGED_IN_REASON
 
 
 def make_claude_harness(

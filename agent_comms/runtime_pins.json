@@ -1,11 +1,24 @@
 {
-  "codex": {
-    "last_verified": "0.157.0",
-    "boundary": "exact"
-  },
-  "claude": {
-    "last_verified": "2.1.195",
-    "boundary": "exact",
-    "sha256": "8b45adad93f336ab95f33e714494b19fd3377a494eb05c122c8677bc895876ad"
+  "schema": 2,
+  "runtimes": {
+    "codex": {
+      "boundary": "exact",
+      "platforms": {
+        "darwin-arm64": {
+          "version": "0.157.0",
+          "certified_on": "2026-09-26"
+        }
+      }
+    },
+    "claude": {
+      "boundary": "exact",
+      "platforms": {
+        "darwin-arm64": {
+          "version": "2.1.195",
+          "sha256": "8b45adad93f336ab95f33e714494b19fd3377a494eb05c122c8677bc895876ad",
+          "certified_on": "2026-09-26"
+        }
+      }
+    }
   }
 }

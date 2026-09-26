@@ -66,12 +66,12 @@ def _sha256(path: Path) -> str:
 
 
 def _write_claude_pin_stub(versions_dir: Path) -> Path:
-    pinned_binary = versions_dir / runtime_pins.CLAUDE_PINNED_VERSION
+    pinned_binary = versions_dir / runtime_pins.claude_pin().version
     pinned_binary.parent.mkdir(parents=True)
     pinned_binary.write_text(
         "#!/bin/sh\n"
         "if [ \"$1\" = \"--version\" ]; then\n"
-        f"  printf 'Claude Code {runtime_pins.CLAUDE_PINNED_VERSION}\\n'\n"
+        f"  printf 'Claude Code {runtime_pins.claude_pin().version}\\n'\n"
         "  exit 0\n"
         "fi\n"
         "exec \"$@\"\n"
@@ -212,7 +212,7 @@ class RenderSpawnTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(self.tmp / "claude-versions")}):
             self.assertEqual(
                 runtime_pins.claude_binary_path(),
-                self.tmp / "claude-versions" / runtime_pins.CLAUDE_PINNED_VERSION,
+                self.tmp / "claude-versions" / runtime_pins.claude_pin().version,
             )
 
     def test_claude_versions_dir_default_is_runtime_custody(self) -> None:
@@ -223,11 +223,38 @@ class RenderSpawnTest(unittest.TestCase):
                     self.tmp / "home" / ".agent-comms" / "runtime-custody",
                 )
 
+    def test_format_arg_resolves_claude_pin_only_when_named(self) -> None:
+        # ac-4ao.3: the Claude pin is per platform and fails closed where none
+        # is certified. Fake and codex spawns never name {claude_binary}, so
+        # they must not resolve it; only an argument that names it does.
+        recipient = dict(self.actors["alpha-fake-worker"])
+        context = _context(recipient, self.tmp / "agent-comms.sqlite")
+        adapter = FakeAdapter()
+        with mock.patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+            self.assertEqual(adapter._format_arg("{actor_id}", context), "alpha-fake-worker")
+            with self.assertRaisesRegex(runtime_pins.PlatformNotCertified, "linux-x86_64"):
+                adapter._format_arg("{claude_binary}", context)
+            with self.assertRaisesRegex(RuntimeError, "unsupported spawn placeholder"):
+                adapter._format_arg("{no_such_placeholder}", context)
+
+    def test_claude_preflight_fails_closed_on_unlisted_platform_before_disk(self) -> None:
+        recipient = dict(self.actors["alpha-claude-worker"])
+        recipient["spawn"] = render_spawn("claude", "alpha-claude-worker")
+        with mock.patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+            with mock.patch.object(runtime_pins, "claude_versions_dir") as versions_dir:
+                with self.assertRaises(runtime_pins.PlatformNotCertified) as raised:
+                    ClaudeAdapter()._preflight(_context(recipient, self.tmp / "agent-comms.sqlite"))
+        versions_dir.assert_not_called()
+        message = str(raised.exception)
+        self.assertIn("claude has no certified pin for linux-x86_64", message)
+        self.assertIn("(certified: ", message)
+        self.assertIn("recover with:", message)
+
     def test_claude_preflight_fails_closed_when_pin_missing(self) -> None:
         recipient = dict(self.actors["alpha-claude-worker"])
         recipient["spawn"] = render_spawn("claude", "alpha-claude-worker")
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(self.tmp / "missing")}):
-            with self.assertRaisesRegex(RuntimePinUnavailable, runtime_pins.CLAUDE_PINNED_VERSION):
+            with self.assertRaisesRegex(RuntimePinUnavailable, runtime_pins.claude_pin().version):
                 ClaudeAdapter()._preflight(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
     def test_claude_preflight_fails_closed_on_version_drift(self) -> None:
@@ -241,7 +268,7 @@ class RenderSpawnTest(unittest.TestCase):
                 version_runner=lambda _binary: _version_result("2.1.190"),
                 expected_sha256=_sha256(pinned_binary),
             )
-            with self.assertRaisesRegex(RuntimePinDrift, f"expected {runtime_pins.CLAUDE_PINNED_VERSION}"):
+            with self.assertRaisesRegex(RuntimePinDrift, f"expected {runtime_pins.claude_pin().version}"):
                 adapter._preflight(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
     def test_claude_preflight_fails_closed_on_digest_mismatch_before_version_exec(self) -> None:
@@ -253,7 +280,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         def version_runner(binary: Path) -> subprocess.CompletedProcess[str]:
             calls.append(binary)
-            return _version_result(runtime_pins.CLAUDE_PINNED_VERSION)
+            return _version_result(runtime_pins.claude_pin().version)
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             adapter = ClaudeAdapter(version_runner=version_runner, expected_sha256="f" * 64)
@@ -270,7 +297,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )._preflight(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
@@ -288,7 +315,7 @@ class RenderSpawnTest(unittest.TestCase):
             },
         ):
             ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
             )._preflight(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
     def test_claude_dispatch_resolves_command_to_pinned_binary(self) -> None:
@@ -302,7 +329,7 @@ class RenderSpawnTest(unittest.TestCase):
             with mock.patch.object(paths, "REPO_ROOT", self.tmp):
                 with _supervised_capture(captured):
                     ClaudeAdapter(
-                        version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                        version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                         expected_sha256=_sha256(pinned_binary),
                     ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
@@ -323,7 +350,7 @@ class RenderSpawnTest(unittest.TestCase):
             with mock.patch.object(paths, "REPO_ROOT", self.tmp):
                 with _supervised_capture(captured):
                     ClaudeAdapter(
-                        version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                        version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                         expected_sha256=_sha256(pinned_binary),
                     ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
@@ -344,7 +371,7 @@ class RenderSpawnTest(unittest.TestCase):
             with mock.patch.object(paths, "REPO_ROOT", self.tmp):
                 with _supervised_capture(captured):
                     ClaudeAdapter(
-                        version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                        version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                         expected_sha256=_sha256(pinned_binary),
                     ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
 
@@ -366,7 +393,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             adapter = ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )
             with self.assertRaisesRegex(ClaudeSpawnRowNotPinnedError, "render_spawn\\('claude', actor_id\\)"):
@@ -381,7 +408,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             adapter = ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )
             with self.assertRaisesRegex(
@@ -403,7 +430,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             adapter = ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )
             with self.assertRaisesRegex(ClaudeSpawnRowNotPinnedError, "render_spawn\\('claude', actor_id\\)"):
@@ -419,7 +446,7 @@ class RenderSpawnTest(unittest.TestCase):
                 recipient["spawn"] = dict(render_spawn("claude", "alpha-claude-worker"), command=command)
                 with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
                     adapter = ClaudeAdapter(
-                        version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                        version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                         expected_sha256=_sha256(pinned_binary),
                     )
                     with self.assertRaisesRegex(ClaudeSpawnRowNotPinnedError, "render_spawn\\('claude', actor_id\\)"):
@@ -433,7 +460,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             adapter = ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )
             with self.assertRaisesRegex(RuntimeError, "claude recipient requires spawn.command"):
@@ -458,7 +485,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         def adapter_for_runtime(_runtime: str) -> ClaudeAdapter:
             return ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )
 
@@ -497,7 +524,7 @@ class RenderSpawnTest(unittest.TestCase):
         # accept only when the case-variant path resolves to the custody binary.
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             adapter = ClaudeAdapter(
-                version_runner=lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION),
+                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                 expected_sha256=_sha256(pinned_binary),
             )
             if variant_resolves_to_pin:
@@ -518,7 +545,7 @@ class RenderSpawnTest(unittest.TestCase):
         captured: dict = {}
 
         adapter = TempClaudeAdapter(child_pid_file=self.tmp / "child.pid")
-        adapter._version_runner = lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION)
+        adapter._version_runner = lambda _binary: _version_result(runtime_pins.claude_pin().version)
         adapter._expected_sha256 = _sha256(pinned_binary)
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             with mock.patch.object(paths, "REPO_ROOT", self.tmp):
@@ -540,7 +567,7 @@ class RenderSpawnTest(unittest.TestCase):
         recipient["spawn"] = dict(recipient["spawn"], command=sys.executable)
 
         adapter = TempClaudeAdapter(child_pid_file=self.tmp / "child.pid")
-        adapter._version_runner = lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION)
+        adapter._version_runner = lambda _binary: _version_result(runtime_pins.claude_pin().version)
         adapter._expected_sha256 = _sha256(pinned_binary)
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             with self.assertRaisesRegex(ClaudeSpawnRowNotPinnedError, "alpha-claude-worker"):
@@ -558,7 +585,7 @@ class RenderSpawnTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
             harness = make_claude_harness(root, child_pid_file=self.tmp / "child.pid", spawn=stale_spawn)
-            harness.adapter._version_runner = lambda _binary: _version_result(runtime_pins.CLAUDE_PINNED_VERSION)
+            harness.adapter._version_runner = lambda _binary: _version_result(runtime_pins.claude_pin().version)
             harness.adapter._expected_sha256 = _sha256(pinned_binary)
 
             dispatch = harness.dispatch_and_wait(
@@ -571,10 +598,11 @@ class RenderSpawnTest(unittest.TestCase):
         self.assertIn("render_spawn('claude', actor_id)", dispatch["failure_reason"])
 
     def test_cell_versions_claude_pin_matches_runtime_source(self) -> None:
-        cell_versions = json.loads(runtime_pins.RUNTIME_PINS_PATH.read_text())
+        manifest = json.loads(runtime_pins.RUNTIME_PINS_PATH.read_text())
+        entry = manifest["runtimes"]["claude"]["platforms"][runtime_pins.current_platform()]
 
-        self.assertEqual(cell_versions["claude"]["last_verified"], runtime_pins.CLAUDE_PINNED_VERSION)
-        self.assertEqual(cell_versions["claude"]["sha256"], runtime_pins.CLAUDE_PINNED_SHA256)
+        self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
+        self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
 
     def test_claude_settings_allows_policy_tools_only(self) -> None:
         policy = compile_policy(WORKER_DISPATCH_POLICY)

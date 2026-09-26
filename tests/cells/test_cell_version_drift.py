@@ -2,22 +2,22 @@ from __future__ import annotations
 
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
-import json
 import re
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
-from agent_comms.runtime_pins import RUNTIME_PINS_PATH, claude_binary_path, custody_binary_digest_matches
+from agent_comms.runtime_pins import (
+    PlatformNotCertified,
+    RuntimePin,
+    claude_binary_path,
+    custody_binary_digest_matches,
+    pin_for,
+)
 
 
-VERSIONS_PATH = RUNTIME_PINS_PATH
 SEMVER_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
-
-
-def load_manifest() -> dict[str, dict[str, str]]:
-    return json.loads(VERSIONS_PATH.read_text())
 
 
 def runtime_version(runtime: str) -> str:
@@ -54,24 +54,28 @@ def comparable(version: str, boundary: str) -> str:
 
 class CellVersionDriftTest(unittest.TestCase):
     def assert_runtime_not_drifted(self, runtime: str) -> None:
+        # The pin is per platform. Where this platform has no entry the cell
+        # cannot say anything about it, so it skips with the message that
+        # names the platform and the certification procedure.
+        try:
+            pin: RuntimePin = pin_for(runtime)
+        except PlatformNotCertified as exc:
+            self.skipTest(str(exc))
         command = runtime_command(runtime)
-        manifest = load_manifest()
-        self.assertIn(runtime, manifest)
         if runtime == "claude":
-            if not custody_binary_digest_matches(Path(command), manifest[runtime]["sha256"]):
+            if not custody_binary_digest_matches(Path(command), pin.sha256):
                 self.skipTest(f"{runtime} pinned CLI is absent or does not match recorded sha256 at {command}")
         elif shutil.which(command) is None:
             self.skipTest(f"{runtime} CLI is not installed")
 
-        last_verified = manifest[runtime]["last_verified"]
-        boundary = manifest[runtime]["boundary"]
         installed = runtime_version(runtime)
 
-        if comparable(installed, boundary) != comparable(last_verified, boundary):
+        if comparable(installed, pin.boundary) != comparable(pin.version, pin.boundary):
             self.fail(
-                f"VERSION DRIFT: {runtime} installed {installed}, "
-                f"last verified {last_verified} -- re-cert required "
-                f"(run the gated cell, then bump agent_comms/runtime_pins.json)"
+                f"VERSION DRIFT: {runtime} installed {installed} on {pin.platform}, "
+                f"certified {pin.version} -- re-cert required "
+                f"(run the gated cell, then bump runtimes.{runtime}.platforms.{pin.platform} "
+                "in agent_comms/runtime_pins.json)"
             )
 
     def test_codex_version_has_not_drifted(self) -> None:
