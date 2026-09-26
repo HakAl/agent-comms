@@ -104,6 +104,37 @@ class OnboardingRepoRootTest(unittest.TestCase):
             self.assertIn(str(candidate), str(caught.exception))
         self.assertEqual(list(self.worktrees.iterdir()), [])
 
+    def test_explicit_repo_root_may_be_a_string(self) -> None:
+        # Review finding: a str crashed on .expanduser() instead of being a path.
+        explicit = self.git_checkout(self.root / "explicit")
+        self.store.register_agent("alpha-architect", "alpha", "architect", str(self.root), [])
+        result = self.onboard(repo_root=str(explicit))
+        common = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"], cwd=result["worktree_path"], check=True, text=True, capture_output=True
+        ).stdout.strip()
+        self.assertEqual(Path(common).resolve(), (explicit / ".git").resolve())
+
+    def test_subdirectory_of_a_checkout_places_the_worktree_beside_the_checkout(self) -> None:
+        # Review finding: a project_root inside a checkout (a monorepo service
+        # directory) passed the git check, and the default worktree location,
+        # the parent of the repo root, then landed inside the repository.
+        checkout = self.git_checkout(self.root / "mono")
+        service = checkout / "services" / "backend"
+        service.mkdir(parents=True)
+        self.store.register_agent("alpha-architect", "alpha", "architect", str(service), [])
+        for index, repo_root in enumerate((None, service, str(service))):
+            with self.subTest(repo_root=repo_root):
+                result = self.onboard(worktree_root=None, repo_root=repo_root, actor_id=f"alpha-fake-worker-{index}")
+                worktree = Path(result["worktree_path"])
+                self.assertEqual(worktree.parent, checkout.parent.resolve())
+                self.assertNotIn(checkout.resolve(), worktree.parents)
+                subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=checkout, check=True, capture_output=True)
+                subprocess.run(["git", "branch", "-D", result["branch"]], cwd=checkout, check=True, capture_output=True)
+        self.assertEqual(
+            subprocess.run(["git", "status", "--porcelain"], cwd=checkout, check=True, text=True, capture_output=True).stdout,
+            "",
+        )
+
     def test_explicit_repo_root_wins_over_the_owner(self) -> None:
         self.git_checkout(self.root / "owner")
         explicit = self.git_checkout(self.root / "explicit")
