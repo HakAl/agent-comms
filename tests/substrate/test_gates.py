@@ -472,6 +472,48 @@ class PreverifyScriptTests(unittest.TestCase):
         self.assertIn("usage:", result.stderr)
 
 
+class InstallSmokeScriptTests(unittest.TestCase):
+    """Only the refusals run here; the full gate builds and installs a wheel (``make install-smoke``)."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="gates-")
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / "repo"
+        (self.repo / "scripts" / "gates").mkdir(parents=True)
+        script = self.repo / "scripts" / "gates" / "install-smoke.sh"
+        script.write_text((GATES / "install-smoke.sh").read_text())
+        git(self.repo, "init", "-q", "-b", "main")
+        (self.repo / "README.md").write_text("# Example\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "initial commit")
+
+    def install_smoke(self, env: dict | None = None) -> subprocess.CompletedProcess:
+        base_env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ["HOME"]}
+        base_env.update(env or {})
+        return subprocess.run(
+            ["sh", "scripts/gates/install-smoke.sh"],
+            cwd=self.repo,
+            env=base_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_dirty_tree_is_refused_in_head_mode_before_anything_runs(self) -> None:
+        (self.repo / "scratch.txt").write_text("uncommitted\n")
+        result = self.install_smoke()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("FAIL install-smoke: working tree is dirty", result.stderr)
+        self.assertIn("INSTALL_SMOKE_SOURCE=worktree", result.stderr)
+        self.assertFalse((self.repo / "local").exists())
+
+    def test_unknown_source_is_refused(self) -> None:
+        result = self.install_smoke(env={"INSTALL_SMOKE_SOURCE": "stash"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("INSTALL_SMOKE_SOURCE must be head or worktree, not 'stash'", result.stderr)
+        self.assertFalse((self.repo / "local").exists())
+
+
 class LintBaselineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.lint = load("lint")
@@ -572,13 +614,16 @@ class MakefileTests(unittest.TestCase):
     def test_documented_gate_targets_exist(self) -> None:
         text = (REPO_ROOT / "Makefile").read_text()
         phony = re.search(r"^\.PHONY:(.*)$", text, re.M).group(1).split()
-        for target in ("help", "gate", "hygiene", "lint", "test", "preverify"):
+        for target in ("help", "gate", "hygiene", "lint", "test", "preverify", "install-smoke"):
             self.assertIn(target, phony)
             self.assertRegex(text, rf"(?m)^{target}:", f"target {target} is not defined")
         self.assertRegex(text, r"(?m)^\.NOTPARALLEL:")
         self.assertIn("scripts/gates/hygiene.py", text)
         self.assertIn("scripts/gates/lint.py", text)
         self.assertIn("scripts/gates/preverify.sh $(PREVERIFY_ARGS)", text)
+        self.assertIn("scripts/gates/install-smoke.sh", text)
+        gate_line = re.search(r"^gate:(.*)$", text, re.M).group(1).split()
+        self.assertEqual(gate_line, ["hygiene", "lint", "test", "preverify", "install-smoke"])
         self.assertIn("--frozen --extra test python -m unittest discover -s tests -t .", text)
 
 

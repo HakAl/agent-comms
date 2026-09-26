@@ -121,6 +121,28 @@ class ReleaseVersionTest(unittest.TestCase):
         self.assertEqual(tagged_info["git_exact_tag"], "v-test")
         self.assertTrue(tagged_info["pin_worktree"])
 
+    def test_repo_git_info_ignores_an_enclosing_repository(self) -> None:
+        # Found by the install-smoke gate: the package installed under a
+        # scratch directory inside the checkout reported the checkout's
+        # commit. Only the worktree top describes itself; anything nested
+        # (an installed site-packages, a home directory under git) is unknown.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir) / "live"
+            self._init_git_repo(live)
+            nested = live / "tools" / "site-packages"
+            nested.mkdir(parents=True)
+            plain = Path(temp_dir) / "plain"
+            plain.mkdir()
+
+            self.assertEqual(repo_git_info(live)["git_head_state"], "live")
+            for root in (nested, plain):
+                with self.subTest(root=root):
+                    info = repo_git_info(root)
+                    self.assertEqual(info["repo_root"], str(root))
+                    for key in ("git_commit", "git_branch", "git_describe", "git_head_state", "pin_worktree"):
+                        self.assertEqual(info[key], "unknown", key)
+                    self.assertIsNone(info["git_exact_tag"])
+
     def _init_git_repo(self, root: Path) -> None:
         root.mkdir()
         subprocess.run(["git", "-C", str(root), "init", "-b", "main"], check=True, stdout=subprocess.PIPE)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from . import __version__, code_identity, paths, runtime_pins
 
@@ -23,12 +24,31 @@ def _run_git(repo_root, *args: str) -> str | None:
     return value or None
 
 
+def _is_own_checkout(root) -> bool:
+    """True when ``root`` is itself the top of a git worktree.
+
+    ``git -C <dir>`` walks up to any enclosing repository, so an installed
+    package under a user's git-tracked home, or under a checkout's ignored
+    scratch directory, would otherwise report that foreign repository's
+    commit as its own. Only a root that is the worktree top describes itself.
+    """
+    toplevel = _run_git(root, "rev-parse", "--show-toplevel")
+    if toplevel is None:
+        return False
+    try:
+        return Path(toplevel).resolve() == Path(root).resolve()
+    except OSError:
+        return False
+
+
 def repo_git_info(repo_root=None) -> dict:
     root = paths.REPO_ROOT if repo_root is None else repo_root
-    commit = _run_git(root, "rev-parse", "--short=12", "HEAD")
-    branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
-    exact_tag = _run_git(root, "describe", "--tags", "--exact-match")
-    describe = _run_git(root, "describe", "--tags", "--always", "--dirty")
+    commit = branch = exact_tag = describe = None
+    if _is_own_checkout(root):
+        commit = _run_git(root, "rev-parse", "--short=12", "HEAD")
+        branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
+        exact_tag = _run_git(root, "describe", "--tags", "--exact-match")
+        describe = _run_git(root, "describe", "--tags", "--always", "--dirty")
     if commit is None:
         head_state = "unknown"
         branch_name = "unknown"

@@ -34,8 +34,6 @@ process. Humans and scripts use the `agent-comms` CLI.
 Milestone 1 of [the roadmap](docs/ROADMAP.md) is in progress. The pieces
 that still need to land before a new user can run this without a checkout:
 
-- An installable package with installed launchers. Today everything runs
-  from a synced development checkout.
 - `agent-comms setup` and `agent-comms doctor`.
 - Runtime version pins per platform, and upgrades from the original 0.1.0
   mailbox.
@@ -44,6 +42,32 @@ that still need to land before a new user can run this without a checkout:
 
 Known gaps in the current dispatch path are tracked in the maintainer's
 issue tracker and summarized at the end of the walkthrough below.
+
+## Install without a checkout
+
+Requirements: macOS, Python 3.11 or newer, Git, and
+[uv](https://docs.astral.sh/uv/) (or `pipx`). There is no PyPI release yet;
+the package installs from a wheel built out of a clone or from a git tag.
+
+```sh
+git clone https://github.com/HakAl/agent-comms.git
+uv build --project agent-comms --out-dir wheels
+uv tool install wheels/agent_comms-*.whl
+# Keep the example registry: the source tree goes away next
+mkdir -p ~/.agent-comms
+cp agent-comms/config/actors.example.json ~/.agent-comms/actors.json
+rm -rf agent-comms wheels      # the install does not depend on the source tree
+agent-comms version
+```
+
+`uv tool install` puts `agent-comms`, `agent-comms-mcp`, `agent-comms-monitor`
+and `agent-comms-seat` on `PATH`. Everything the installed commands read or
+write lives under `~/.agent-comms` (`AGENT_COMMS_DB` moves the ledger); the
+runtime pins ship inside the package, so `agent-comms version` works without
+a checkout and reports its git fields as `unknown`. From here the quickstart
+below applies from its step 2 (the registry is already copied) with
+`agent-comms` in place of `.venv/bin/agent-comms`. `make install-smoke` is the
+check that this path works; it runs in CI on every change.
 
 ## Quickstart from a checkout
 
