@@ -10,7 +10,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-LAUNCHER = ROOT / "scripts" / "agent-comms-seat"
+# The console script is `agent_comms.seat:main`; the module form runs the same
+# code on the same interpreter, whose sys.prefix is the install root it exports.
+LAUNCHER = [sys.executable, "-m", "agent_comms.seat"]
+INSTALL_ROOT = sys.prefix
 
 
 class SeatLauncherTests(unittest.TestCase):
@@ -25,8 +28,8 @@ class SeatLauncherTests(unittest.TestCase):
 
     def run_launcher(self, *args, cwd=None, config=None):
         env = os.environ.copy()
-        env.update(PROBE_RESULT=str(self.result), AGENT_COMMS_CLAUDE_CONFIG=str(config or self.config))
-        return subprocess.run([sys.executable, str(LAUNCHER), *args], cwd=cwd or self.path, env=env, text=True, capture_output=True)
+        env.update(PROBE_RESULT=str(self.result), AGENT_COMMS_CLAUDE_CONFIG=str(config or self.config), PYTHONPATH=str(ROOT))
+        return subprocess.run([*LAUNCHER, *args], cwd=cwd or self.path, env=env, text=True, capture_output=True)
 
     def write_config(self, key, vectors):
         servers = {str(i): {"args": args} for i, args in enumerate(vectors)}
@@ -37,7 +40,7 @@ class SeatLauncherTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0); self.assertIn("warning", proc.stderr)
         got = json.loads(self.result.read_text())
         self.assertEqual(got["argv"], [str(self.probe), "--flag=x", "-v"])
-        self.assertEqual(got["env"], {"AGENT_COMMS_ACTOR_ID":"some-actor", "AGENT_COMMS_LAUNCH_KIND":"architect_interactive", "AGENT_COMMS_INSTALL_ROOT":str(ROOT)})
+        self.assertEqual(got["env"], {"AGENT_COMMS_ACTOR_ID":"some-actor", "AGENT_COMMS_LAUNCH_KIND":"architect_interactive", "AGENT_COMMS_INSTALL_ROOT":INSTALL_ROOT})
 
     def test_l2_optional_separator(self):
         proc = self.run_launcher("some-actor", sys.executable, str(self.probe), "x")

@@ -35,15 +35,16 @@ coordination, not authority transfer.
 
 ## CLI fallback when MCP is unavailable
 
-Read-side commands work for any registered actor:
+Read-side commands work for any registered actor (`agent-comms` is on `PATH`
+for an installed package; from a checkout it is `.venv/bin/agent-comms`):
 
 ```sh
-scripts/agent-comms inbox <actor-id>
-scripts/agent-comms read <actor-id> <message-id>
-scripts/agent-comms ack <actor-id> <message-id> --response "..."
-scripts/agent-comms close <actor-id> <message-id>
-scripts/agent-comms post-status <actor-id> --summary "..." --next-step "..."
+agent-comms inbox <actor-id>
+agent-comms read <actor-id> <message-id>
+agent-comms ack <actor-id> <message-id> --response "..."
+agent-comms close <actor-id> <message-id>
+agent-comms post-status <actor-id> --summary "..." --next-step "..."
 ```
 
 Sending and dispatching from the shell are operator actions under
-`scripts/agent-comms admin` and require the admin token.
+`agent-comms admin` and require the admin token.

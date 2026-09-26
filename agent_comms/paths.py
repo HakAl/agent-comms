@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 
 from .schema import ValidationError, identity_to_path_segment
@@ -84,14 +85,34 @@ def codex_custody_root() -> Path:
     return runtime_root() / "codex-homes"
 
 
+def console_script(name: str) -> Path:
+    """The installed console script ``name`` next to this interpreter.
+
+    The four commands are ``[project.scripts]`` entry points, so they live in
+    the ``bin`` directory of whatever environment holds the package: the
+    checkout's ``.venv`` after ``uv sync``, or the tool venv of an installed
+    wheel. A missing script is refused loudly rather than rendered into a
+    worker's MCP configuration, where it would only fail at the worker's start.
+    """
+    # Not resolved: .venv/bin/python is a symlink to the base interpreter, and
+    # the scripts live next to the symlink, not next to its target.
+    path = Path(sys.executable).parent / name
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{name} is not installed next to {sys.executable}; a checkout recovers "
+            "with: uv sync; an installed package by reinstalling it"
+        )
+    return path
+
+
 def mcp_command() -> Path:
-    """The `agent-comms-mcp` launcher MCP clients exec."""
-    return REPO_ROOT / "scripts" / "agent-comms-mcp"
+    """The `agent-comms-mcp` command MCP clients exec."""
+    return console_script("agent-comms-mcp")
 
 
 def cli_command() -> Path:
-    """The `agent-comms` CLI launcher."""
-    return REPO_ROOT / "scripts" / "agent-comms"
+    """The `agent-comms` CLI command."""
+    return console_script("agent-comms")
 
 
 def hooks_path() -> Path:

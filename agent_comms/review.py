@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from agent_comms import paths as runtime_paths
-from agent_comms.paths import REPO_ROOT
 from agent_comms.reviewing.contracts import (
     EVIDENCE_ONLY_CHECK_IDS,
     EXECUTABLE_CHECK_IDS,
@@ -297,7 +296,10 @@ def command_summary(args: argparse.Namespace) -> None:
 
 
 def command_status(args: argparse.Namespace) -> None:
-    actual = REPO_ROOT.resolve()
+    # The review store binds to the install, not to a checkout: sys.prefix is
+    # the .venv of a checkout or the tool venv of an installed package, and it
+    # is what agent-comms-seat exports as AGENT_COMMS_INSTALL_ROOT.
+    actual = Path(sys.prefix).resolve()
     expected_value = args.expected_repo_root or os.environ.get("AGENT_COMMS_INSTALL_ROOT")
     expected_source = "arg" if args.expected_repo_root else ("env" if expected_value else None)
     expected = Path(expected_value).expanduser().resolve() if expected_value else None

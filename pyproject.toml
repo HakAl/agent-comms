@@ -13,7 +13,12 @@ dependencies = ["mcp[cli]>=1.0,<2"]
 test = ["mcp[cli]==1.27.1"]
 
 [project.scripts]
+# The four commands an install puts on PATH. A checkout has the same four
+# under .venv/bin after `uv sync`; there are no shell launchers under scripts/.
 agent-comms = "agent_comms.cli:main"
+agent-comms-mcp = "agent_comms.mcp_server:main"
+agent-comms-monitor = "agent_comms.monitor:main"
+agent-comms-seat = "agent_comms.seat:main"
 
 [build-system]
 requires = ["setuptools>=68"]

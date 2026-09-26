@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
+import sys
+
 import ast
 import contextlib
 import io
@@ -1016,7 +1018,7 @@ class DispatchConsumptionTest(ReviewIntentEnv):
             "--dispatch-id",
             "B7",
             "--expected-repo-root",
-            str(review.REPO_ROOT),
+            sys.prefix,
         )
         self.assertEqual(rc, 0, err)
         view = json.loads(out)["intent"]

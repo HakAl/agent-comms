@@ -365,9 +365,13 @@ class ReviewEnv(unittest.TestCase):
         text = text.replace(str(self.root.resolve()), "<ROOT>").replace(
             str(self.root), "<ROOT>"
         )
-        return text.replace(sys.executable, "<INTERP>").replace(
-            str(review.REPO_ROOT), "<REPO>"
-        )
+        # Longest first: the interpreter sits under the install prefix (the
+        # checkout's .venv here), which sits under the checkout root, and a
+        # resolved prefix (/private/var/...) contains the unresolved one.
+        text = text.replace(sys.executable, "<INTERP>")
+        for prefix in sorted({str(Path(sys.prefix).resolve()), sys.prefix}, key=len, reverse=True):
+            text = text.replace(prefix, "<PREFIX>")
+        return text.replace(str(REPO_ROOT), "<REPO>")
 
     def _mask_err(self, text: str) -> str:
         """Mask the volatile values an error emits: temp paths plus the exact review-worktree and integration-checkout HEADs (exact-string, not regex)."""
@@ -673,9 +677,10 @@ class StatusBindingCharacterizationTest(ReviewEnv):
         self.assertEqual(before, after)  # status is a pure read: byte-identical
         payload = json.loads(out)
         binding = payload["binding"]
-        # Raw cross-checks that normalization would otherwise collapse:
-        self.assertEqual(binding["actual_repo_root"], binding["cwd"])
-        self.assertEqual(binding["actual_repo_root"], str(review.REPO_ROOT.resolve()))
+        # Raw cross-checks that normalization would otherwise collapse: the
+        # binding is to the install prefix, never to a checkout or the cwd.
+        self.assertEqual(binding["actual_repo_root"], str(Path(sys.prefix).resolve()))
+        self.assertNotEqual(binding["actual_repo_root"], binding["cwd"])
         self.assertEqual(binding["interpreter"], sys.executable)
         norm_binding = {
             k: (self._mask_paths(v) if k in self._STATUS_MASKED else v)
@@ -686,7 +691,7 @@ class StatusBindingCharacterizationTest(ReviewEnv):
         self.assertEqual(
             norm_binding,
             {
-                "actual_repo_root": "<REPO>",
+                "actual_repo_root": "<PREFIX>",
                 "cwd": "<REPO>",
                 "cwd_shadow": False,
                 "expected_repo_root": None,
@@ -846,7 +851,7 @@ class SchemaOnePriorReadOnlyTest(ReviewEnv):
             "--dispatch-id",
             "s1",
             "--expected-repo-root",
-            str(review.REPO_ROOT),
+            sys.prefix,
         )
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads(out)["diagnosis"], "prior_schema_read_only")

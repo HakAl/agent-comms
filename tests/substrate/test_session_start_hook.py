@@ -174,6 +174,45 @@ class SessionStartHookTests(unittest.TestCase):
         self.assertIn("Traceback", stderr.getvalue())
         self.assertIn("board failure", stderr.getvalue())
 
+    def stub_python(self, directory: Path, name: str = "python") -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        stub = directory / name
+        stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > \"$HOOK_RECORD\"\nexit 0\n")
+        stub.chmod(0o755)
+        return stub
+
+    def run_hook_script(self, **environment: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        record = self.root / "argv.txt"
+        env = {"HOOK_RECORD": str(record), "PATH": "/usr/bin:/bin", **environment}
+        proc = subprocess.run([str(HOOK)], env=env, text=True, capture_output=True)
+        lines = record.read_text().splitlines() if record.exists() else []
+        return proc, lines
+
+    def test_hook_runs_on_the_install_prefix_interpreter(self) -> None:
+        # The seat exports its sys.prefix; the hook must run on that prefix's
+        # python (spaces included), not on whatever python3 is first on PATH.
+        prefix = self.root / "prefix with space"
+        stub = self.stub_python(prefix / "bin")
+        proc, lines = self.run_hook_script(AGENT_COMMS_INSTALL_ROOT=str(prefix))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(lines, [str(stub), "-m", "agent_comms.hooks.session_start"])
+
+    def test_explicit_python_override_beats_the_install_prefix(self) -> None:
+        prefix = self.root / "prefix"
+        self.stub_python(prefix / "bin")
+        override = self.stub_python(self.root / "override")
+        proc, lines = self.run_hook_script(
+            AGENT_COMMS_INSTALL_ROOT=str(prefix), AGENT_COMMS_PYTHON=str(override)
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(lines[0], str(override))
+
+    def test_without_prefix_or_override_python3_on_path_is_the_fallback(self) -> None:
+        fallback = self.stub_python(self.root / "path-bin", "python3")
+        proc, lines = self.run_hook_script(PATH=f"{fallback.parent}:/usr/bin:/bin")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(lines[0], str(fallback))
+
     def test_stub_invocation_and_executed_delegation(self) -> None:
         env = os.environ.copy()
         for key in (

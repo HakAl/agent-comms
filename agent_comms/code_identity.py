@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 23
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "dcec44e4dd6b78ebd09330971d73a16f5c136a580c054ab9c41a2d4ddaa2055a"
+    "473f92104e0e887b76a6cacc9da6f7227fd77949f81117b1d579caf7e24dde58"
 )
 
 
@@ -113,6 +113,7 @@ EXCLUDED_WITH_REASON = {
     "agent_comms/provisioning.py": "separate provisioning CLI helper, off the dispatch spawn path",
     "agent_comms/review.py": "separate review CLI workflow, off the dispatch spawn path",
     "agent_comms/reviewing/**": "review CLI implementation, off the dispatch spawn path",
+    "agent_comms/seat.py": "interactive architect seat launcher, off the dispatch spawn path",
     "agent_comms/push_approval.py": "separate guarded-push approval workflow, off the dispatch spawn path",
     "agent_comms/release.py": "release metadata self-reporting for operator CLI, off the dispatch spawn path",
     "agent_comms/status.py": "Store imports it, but it has no dispatch allow-decision or worker-execution dependency",

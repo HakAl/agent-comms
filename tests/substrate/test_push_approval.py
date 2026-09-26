@@ -71,9 +71,6 @@ class PushApprovalTest(unittest.TestCase):
         self.git("add", "config/approval-signers")
         self.git("commit", "-m", "approval signers")
         self.git("checkout", "-B", "work")
-        patch = mock.patch.object(review, "REPO_ROOT", self.repo)
-        patch.start()
-        self.addCleanup(patch.stop)
         main_patch = mock.patch.dict(
             os.environ,
             {"AGENT_COMMS_MAIN": str(self.repo), "AGENT_COMMS_APPROVAL_SIGNERS_REPO": str(self.repo)},

@@ -168,7 +168,7 @@ class ReviewToolTest(unittest.TestCase):
         """Supply newly required bindings for legacy lifecycle fixtures."""
         values = list(args)
         if values[0] == "status" and "--expected-repo-root" not in values:
-            values.extend(("--expected-repo-root", str(review.REPO_ROOT)))
+            values.extend(("--expected-repo-root", sys.prefix))
         if values[0] == "open":
             if "--expected-producer" not in values:
                 values.extend(("--expected-producer", "gamma-architect"))
@@ -348,12 +348,9 @@ class ReviewToolTest(unittest.TestCase):
         self.git("checkout", "integration-main", cwd=self.integration)
         # Signers are read from the pinned ref of the repository named by
         # AGENT_COMMS_APPROVAL_SIGNERS_REPO (here the integration checkout,
-        # already named by AGENT_COMMS_MAIN in setUp); the facade keeps
-        # REPO_ROOT for the status binding, so only that one rebinds.
+        # already named by AGENT_COMMS_MAIN in setUp). The status binding
+        # compares sys.prefix, which no checkout path stands in for.
         self.name_signers_repo(self.integration)
-        patch = mock.patch.object(review, "REPO_ROOT", self.integration)
-        patch.start()
-        self.addCleanup(patch.stop)
         return key_path
 
     def name_signers_repo(self, repo: Path) -> None:
@@ -700,27 +697,26 @@ class ReviewToolTest(unittest.TestCase):
         self.assertEqual(self.record()["state"], "drafted_brief")
 
     def test_open_refuses_foreign_repo_with_integration_branch_name(self) -> None:
-        with mock.patch.object(review, "REPO_ROOT", self.integration):
-            shared_branch = self.git("branch", "--show-current", cwd=self.integration)
-            foreign = self.root / "foreign-same-branch"
-            self.init_repo(foreign)
-            self.git("checkout", "-B", shared_branch, cwd=foreign)
-            (foreign / "tracked.txt").write_text("foreign\n", encoding="utf-8")
-            self.git("add", "tracked.txt", cwd=foreign)
-            self.git("commit", "-m", "foreign", cwd=foreign)
+        shared_branch = self.git("branch", "--show-current", cwd=self.integration)
+        foreign = self.root / "foreign-same-branch"
+        self.init_repo(foreign)
+        self.git("checkout", "-B", shared_branch, cwd=foreign)
+        (foreign / "tracked.txt").write_text("foreign\n", encoding="utf-8")
+        self.git("add", "tracked.txt", cwd=foreign)
+        self.git("commit", "-m", "foreign", cwd=foreign)
 
-            self.assertNotEqual(foreign.resolve(), self.integration.resolve())
-            rc, _stdout, stderr = self.run_review_capture(
-                "open",
-                "--dispatch-id",
-                "D-foreign",
-                "--brief",
-                str(self.brief),
-                "--dod",
-                str(self.dod),
-                "--repo",
-                str(foreign),
-            )
+        self.assertNotEqual(foreign.resolve(), self.integration.resolve())
+        rc, _stdout, stderr = self.run_review_capture(
+            "open",
+            "--dispatch-id",
+            "D-foreign",
+            "--brief",
+            str(self.brief),
+            "--dod",
+            str(self.dod),
+            "--repo",
+            str(foreign),
+        )
         self.assertEqual(rc, 1)
         self.assertIn("review_repo_worker_root_mismatch", stderr)
         self.assertFalse((self.review_root / "D-foreign.json").exists())
@@ -1428,8 +1424,7 @@ class ReviewToolTest(unittest.TestCase):
         event = [item for item in record["history"] if item["event"] == "correction-gate-epoch"][-1]
         self.assertEqual((event["old_gate_epoch"], event["new_gate_epoch"]), (0, 1))
         self.run_review("gates", "--dispatch-id", dispatch_id, "--check", "green")
-        with mock.patch.object(review, "REPO_ROOT", self.integration):
-            self.run_review("clean", "--dispatch-id", dispatch_id, ok=False)
+        self.run_review("clean", "--dispatch-id", dispatch_id, ok=False)
 
     def test_unknown_check_prevalidation_leaves_no_partial_state(self) -> None:
         self.to_executed("matrix-atomic")
@@ -4519,7 +4514,7 @@ raise SystemExit(review.main([
             return real_read(path, *args, **kwargs)
         with mock.patch.object(Path, "read_text", audited_read):
             rc, payload, _ = self._run_review_raw(
-                "status", "--expected-repo-root", str(review.REPO_ROOT),
+                "status", "--expected-repo-root", sys.prefix,
                 "--dispatch-id", "definitely-absent",
             )
         self.assertEqual(rc, 1)
@@ -4766,7 +4761,7 @@ raise SystemExit(review.main([
                 mutate(record)
                 self.write_record(record, "schema-matrix")
                 rc, payload, stderr = self._run_review_raw(
-                    "status", "--expected-repo-root", str(review.REPO_ROOT),
+                    "status", "--expected-repo-root", sys.prefix,
                     "--dispatch-id", "schema-matrix",
                 )
                 self.assertEqual((rc, payload["diagnosis"]), (1, "record_invalid"))
@@ -4782,7 +4777,7 @@ raise SystemExit(review.main([
                 self.write_record(record, "prior-state-unhashable")
                 rc, payload, stderr = self._run_review_raw(
                     "status",
-                    "--expected-repo-root", str(review.REPO_ROOT),
+                    "--expected-repo-root", sys.prefix,
                     "--dispatch-id", "prior-state-unhashable",
                 )
                 self.assertEqual((rc, payload["diagnosis"]), (1, "record_invalid"))
@@ -4824,7 +4819,7 @@ raise SystemExit(review.main([
                 record["state"] = state
                 self.write_record(record, "execution-state-matrix")
                 rc, payload, stderr = self._run_review_raw(
-                    "status", "--expected-repo-root", str(review.REPO_ROOT),
+                    "status", "--expected-repo-root", sys.prefix,
                     "--dispatch-id", "execution-state-matrix",
                 )
                 self.assertEqual((rc, payload["diagnosis"]), (0, "ok"))
@@ -4841,7 +4836,7 @@ raise SystemExit(review.main([
                         record.pop(missing)
                     self.write_record(record, "execution-state-matrix")
                     rc, payload, stderr = self._run_review_raw(
-                        "status", "--expected-repo-root", str(review.REPO_ROOT),
+                        "status", "--expected-repo-root", sys.prefix,
                         "--dispatch-id", "execution-state-matrix",
                     )
                     self.assertEqual((rc, payload["diagnosis"]), (1, "record_invalid"))
@@ -4865,7 +4860,7 @@ raise SystemExit(review.main([
                     record[field][0]["note"] = "state-matrix fixture"
                 self.write_record(record, "execution-state-matrix")
                 rc, payload, stderr = self._run_review_raw(
-                    "status", "--expected-repo-root", str(review.REPO_ROOT),
+                    "status", "--expected-repo-root", sys.prefix,
                     "--dispatch-id", "execution-state-matrix",
                 )
                 self.assertEqual((rc, payload["diagnosis"]), (0, "ok"))
@@ -4876,7 +4871,7 @@ raise SystemExit(review.main([
                 record["worker_evidence"] = []
                 self.write_record(record, "execution-state-matrix")
                 rc, payload, stderr = self._run_review_raw(
-                    "status", "--expected-repo-root", str(review.REPO_ROOT),
+                    "status", "--expected-repo-root", sys.prefix,
                     "--dispatch-id", "execution-state-matrix",
                 )
                 self.assertEqual((rc, payload["diagnosis"]), (1, "record_invalid"))
@@ -4929,7 +4924,7 @@ raise SystemExit(review.main([
                 delta["entries"], delta["status_counts"] = entries, counts
                 self.write_record(record, "delta-summary-matrix")
                 rc, payload, stderr = self._run_review_raw(
-                    "status", "--expected-repo-root", str(review.REPO_ROOT),
+                    "status", "--expected-repo-root", sys.prefix,
                     "--dispatch-id", "delta-summary-matrix",
                 )
                 self.assertEqual((rc, payload["diagnosis"]), (1, "record_invalid"))

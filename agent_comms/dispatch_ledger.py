@@ -2579,7 +2579,7 @@ class DispatchLedger:
         """
         return (
             'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
-            '"$AGENT_COMMS_INSTALL_ROOT/.venv/bin/python" -m agent_comms.cli admin '
+            '"$AGENT_COMMS_INSTALL_ROOT/bin/agent-comms" admin '
             "settle-dispatch "
             f"--from-actor-id {shlex.quote(actor_id)} "
             f"--dispatch-id {shlex.quote(dispatch_id)} "
@@ -3099,7 +3099,7 @@ class DispatchLedger:
         """
         return (
             'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
-            '"$AGENT_COMMS_INSTALL_ROOT/.venv/bin/python" -m agent_comms.cli admin '
+            '"$AGENT_COMMS_INSTALL_ROOT/bin/agent-comms" admin '
             "settle-dispatch --from-actor-id <ADMIN_ACTOR_ID> "
             f"--dispatch-id {dispatch_id} --reason \"<reason>\" --dry-run"
         )

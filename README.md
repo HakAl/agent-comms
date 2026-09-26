@@ -51,7 +51,8 @@ Requirements: macOS, Python 3.11 or newer, Git, and
 [uv](https://docs.astral.sh/uv/).
 
 ```sh
-# 1. Sync the environment
+# 1. Sync the environment; this puts agent-comms, agent-comms-mcp,
+#    agent-comms-monitor and agent-comms-seat under .venv/bin
 uv sync
 
 # 2. Describe your actors: one human, one architect per team, and workers
@@ -61,12 +62,14 @@ $EDITOR ~/.agent-comms/actors.json
 export PROJECT_A_ROOT=/absolute/path/to/your/project   # referenced by the example
 
 # 3. Register them in the mailbox at ~/.agent-comms/agent-comms.sqlite
-scripts/agent-comms bootstrap
-scripts/agent-comms actors
+.venv/bin/agent-comms bootstrap
+.venv/bin/agent-comms actors
 ```
 
-`~/.agent-comms/actors.json` is the default registry (`--config` names
-another). Worker entries declare a `runtime`;
+The commands are console scripts of the environment that holds the package:
+`.venv/bin/<command>` in a checkout, plain `agent-comms` and friends on `PATH`
+when the package is installed. `~/.agent-comms/actors.json` is the default
+registry (`--config` names another). Worker entries declare a `runtime`;
 the spawn command is rendered from it, never written by hand. Project roots
 may use `~` and `${ENV}` expansion.
 
@@ -86,7 +89,7 @@ architect session in the loop. In normal use the architect calls the
 export AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)"
 
 # Dispatch from the example architect to the example fake worker
-scripts/agent-comms admin dispatch \
+.venv/bin/agent-comms admin dispatch \
     --from-actor-id team-a-architect \
     --target-actor-id team-a-fake-worker \
     --idempotency-key demo-1 \
@@ -95,12 +98,12 @@ scripts/agent-comms admin dispatch \
     --subject ping --body "Reply with PONG."
 
 # Reconcile until the dispatch reaches a terminal state
-scripts/agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG \
+.venv/bin/agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG \
     --interval 1 --max-passes 15
 
 # Inspect the outcome and the worker's reply
-scripts/agent-comms dispatch-status
-scripts/agent-comms inbox team-a-architect
+.venv/bin/agent-comms dispatch-status
+.venv/bin/agent-comms inbox team-a-architect
 ```
 
 Expected result: the dispatch row shows `closed` with result `satisfied`,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -107,6 +108,28 @@ class RuntimePathsTest(unittest.TestCase):
         self.assertEqual(hook, paths.PACKAGE_ROOT / "hooks" / "pre_tool_use.py")
         self.assertTrue(hook.is_file())
         self.assertFalse(hook.is_relative_to(self.repo))
+
+    def test_commands_are_console_scripts_next_to_the_interpreter(self) -> None:
+        # The shell launchers under scripts/ are gone: MCP clients and rendered
+        # worker configurations exec the entry points of the environment that
+        # holds the package (the checkout's .venv, or an installed tool venv).
+        bin_dir = Path(sys.executable).parent
+        self.assertEqual(paths.mcp_command(), bin_dir / "agent-comms-mcp")
+        self.assertEqual(paths.cli_command(), bin_dir / "agent-comms")
+        for command in (paths.mcp_command(), paths.cli_command()):
+            self.assertTrue(command.is_file(), command)
+            self.assertNotIn("scripts", command.parts)
+
+    def test_missing_console_script_is_refused_with_recovery(self) -> None:
+        fake_bin = self.root / "prefix with space" / "bin"
+        fake_bin.mkdir(parents=True)
+        with mock.patch.object(sys, "executable", str(fake_bin / "python")):
+            with self.assertRaises(FileNotFoundError) as caught:
+                paths.mcp_command()
+            self.assertIn("agent-comms-mcp", str(caught.exception))
+            self.assertIn("uv sync", str(caught.exception))
+            (fake_bin / "agent-comms-mcp").write_text("#!/bin/sh\n")
+            self.assertEqual(paths.mcp_command(), fake_bin / "agent-comms-mcp")
 
     def test_dispatch_log_dir_honours_the_environment_override(self) -> None:
         override = self.root / "elsewhere" / "dispatch-logs"
