@@ -16,7 +16,7 @@
         "darwin-arm64": {
           "version": "2.1.195",
           "sha256": "8b45adad93f336ab95f33e714494b19fd3377a494eb05c122c8677bc895876ad",
-          "certified_on": "2026-09-23"
+          "certified_on": "2026-09-26"
         }
       }
     }
