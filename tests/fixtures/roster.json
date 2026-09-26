@@ -110,7 +110,7 @@
       "display_name": "alpha-fake-worker",
       "kind": "agent",
       "owner": "alpha-architect",
-      "project_root": "${AGENT_COMMS_ROOT}",
+      "project_root": "${PROJECT_A_ROOT}",
       "role": "worker",
       "runtime": "fake",
       "team": "alpha"

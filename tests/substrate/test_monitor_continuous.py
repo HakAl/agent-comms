@@ -3,7 +3,6 @@ from __future__ import annotations
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import io
-import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -15,7 +14,6 @@ import agent_comms.monitor as monitor
 from agent_comms.store import Store
 
 HUMAN_ID = "01M36YTJV9XBW95S6ZWV47C4RG"
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class StubAdapter:
@@ -264,27 +262,6 @@ class MonitorContinuousTest(unittest.TestCase):
             self.assertLessEqual(log_file.stat().st_size, 80)
             self.assertEqual(err_file.read_text(), "")
             self.assertTrue((Path(temp_dir) / "monitor.log.1").exists())
-
-    def test_agent_comms_monitor_honors_python_override(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            record = root / "argv.txt"
-            stub = root / "python-stub"
-            stub.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' \"$@\" > \"$AGENT_COMMS_RECORD\"\n"
-                "exit 0\n"
-            )
-            stub.chmod(0o755)
-            env = {"AGENT_COMMS_PYTHON": str(stub), "AGENT_COMMS_RECORD": str(record), "PATH": "/usr/bin:/bin"}
-            subprocess.run(
-                ["scripts/agent-comms-monitor", "--check-heartbeat"],
-                cwd=REPO_ROOT,
-                env=env,
-                check=True,
-            )
-
-            self.assertEqual(record.read_text().splitlines(), ["-m", "agent_comms.monitor", "--check-heartbeat"])
 
 
 if __name__ == "__main__":

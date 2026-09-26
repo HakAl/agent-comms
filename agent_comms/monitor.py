@@ -221,7 +221,7 @@ def _safe_exception_summary(error: Exception | None) -> str | None:
 
 
 def _watchdog_paths() -> tuple[Path, Path]:
-    logs = Path.home() / ".agent-comms" / "logs"
+    logs = paths.runtime_root() / "logs"
     return logs / "monitor-watchdog.page.log", logs / "monitor-watchdog.page.marker"
 
 

@@ -1,7 +1,8 @@
 # SSH allowed_signers file for review approvals (see ssh-keygen(1), ALLOWED SIGNERS).
-# Copy to config/approval-signers in the agent-comms checkout, replace the placeholder
-# with the approver's public key, and commit it on the approval integration branch
-# (default: main, override with AGENT_COMMS_APPROVAL_INTEGRATION_REF). Approval reads the
-# committed file from that branch, not the working tree. The principal must stay
+# Copy to config/approval-signers in the git checkout named by
+# AGENT_COMMS_APPROVAL_SIGNERS_REPO, replace the placeholder with the approver's
+# public key, and commit it on the approval integration branch (default: main,
+# override with AGENT_COMMS_APPROVAL_INTEGRATION_REF). Approval reads the committed
+# file from that branch, not the working tree. The principal must stay
 # agent-comms-approver.
 agent-comms-approver ssh-ed25519 REPLACE_WITH_APPROVER_PUBLIC_KEY approver@example.com

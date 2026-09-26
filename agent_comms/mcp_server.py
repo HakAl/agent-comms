@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -254,7 +256,50 @@ def create_server(db_path: str | None = None, actor_id: str | None = None, *, db
     return mcp
 
 
+MISSING_MCP_MESSAGE = (
+    f"agent-comms-mcp: {sys.executable} cannot import mcp; recover with: uv sync "
+    "(a checkout) or reinstall the package"
+)
+STARTUP_REPORT_FALLBACK = "agent-comms startup: release_info=unknown"
+
+
+def preflight_mcp_import() -> None:
+    """Refuse to start when the ``mcp`` package is absent from this interpreter.
+
+    ``mcp`` is a dependency, so this only fails for a broken environment; the
+    message names the interpreter and the recovery instead of letting the
+    server die on the first tool registration.
+    """
+    try:
+        importlib.import_module("mcp")
+    except ImportError:
+        print(MISSING_MCP_MESSAGE, file=sys.stderr)
+        raise SystemExit(1)
+
+
+def print_startup_report() -> None:
+    """One stderr line an MCP client's log can be matched against a release.
+
+    A failure to compute the report is not a reason to refuse service, so it
+    degrades to a fixed line rather than raising.
+    """
+    try:
+        from .release import startup_report
+
+        line = startup_report()
+    except Exception:
+        line = STARTUP_REPORT_FALLBACK
+    print(line, file=sys.stderr)
+
+
 def main() -> None:
+    """Console-script entry point for ``agent-comms-mcp``.
+
+    Preflights the environment, reports the release to stderr, then serves
+    stdio MCP for the bound actor.
+    """
+    preflight_mcp_import()
+
     class ActionableArgumentParser(argparse.ArgumentParser):
         def error(self, message: str) -> None:
             if "--actor-id" in message:
@@ -265,11 +310,19 @@ def main() -> None:
     parser.add_argument("--db", default=None, help="SQLite database path")
     parser.add_argument("--actor-id", required=True, help="Bound actor identity for this MCP server")
     args = parser.parse_args()
-    create_server(
-        db_path=args.db,
-        actor_id=args.actor_id,
-        db_explicit=args.db is not None or bool(os.environ.get("AGENT_COMMS_DB")),
-    ).run()
+    print_startup_report()
+    try:
+        server = create_server(
+            db_path=args.db,
+            actor_id=args.actor_id,
+            db_explicit=args.db is not None or bool(os.environ.get("AGENT_COMMS_DB")),
+        )
+    except ValidationError as exc:
+        # An unregistered or unlaunchable actor is an operator error, reported
+        # as one line rather than a traceback in the MCP client's log.
+        print(f"agent-comms-mcp: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    server.run()
 
 
 if __name__ == "__main__":

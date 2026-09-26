@@ -14,8 +14,8 @@ real ``python -m agent_comms.mcp_server`` subprocess doing ``initialize`` ->
 * the operator-mailbox session is mailbox-only: ``cancel_dispatch`` is absent
   from discovery and its call is an error (no admin mutation MCP surface).
 
-Requires the ``mcp`` extra (FastMCP) in the interpreter, exactly like
-``test_mcp_stdio.py``; run under the standard ``uv run --extra mcp`` gate.
+Requires the ``mcp`` dependency (FastMCP) in the interpreter, exactly like
+``test_mcp_stdio.py``; run under the standard ``uv run --extra test`` gate.
 """
 
 from __future__ import annotations

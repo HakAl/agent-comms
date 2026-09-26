@@ -9,10 +9,10 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from agent_comms.runtime_pins import claude_binary_path, custody_binary_digest_matches
+from agent_comms.runtime_pins import RUNTIME_PINS_PATH, claude_binary_path, custody_binary_digest_matches
 
 
-VERSIONS_PATH = Path(__file__).with_name("cell_versions.json")
+VERSIONS_PATH = RUNTIME_PINS_PATH
 SEMVER_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
 
 
@@ -71,7 +71,7 @@ class CellVersionDriftTest(unittest.TestCase):
             self.fail(
                 f"VERSION DRIFT: {runtime} installed {installed}, "
                 f"last verified {last_verified} -- re-cert required "
-                f"(run the gated cell, then bump tests/cells/cell_versions.json)"
+                f"(run the gated cell, then bump agent_comms/runtime_pins.json)"
             )
 
     def test_codex_version_has_not_drifted(self) -> None:

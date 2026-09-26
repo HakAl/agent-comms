@@ -1,22 +1,29 @@
 """Single source of truth for agent-comms-internal paths.
 
-Every path that points *inside this repository* is derived here from the
-package location, never hardcoded. Moving the repo (or running from a clone at
-a different prefix) requires changing nothing. External deployment paths
-(a worker's `project_root`) are operator data and are NOT derived here — they
-come from config with `~`/`${ENV}` expansion.
+Two kinds of path live here. Package-relative paths (the hook script, the
+code-identity surface) are derived from the package location so they resolve
+the same from a checkout and from an installed wheel. Runtime paths (the
+ledger, config, logs, review and approval records) live under the runtime
+root ``~/.agent-comms`` and never under the source tree or the package
+directory, so deleting the source tree cannot affect an install. External
+deployment paths (a worker's ``project_root``) are operator data and are NOT
+derived here: they come from config with ``~``/``${ENV}`` expansion.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 
 from .schema import ValidationError, identity_to_path_segment
 
-# agent_comms/paths.py -> repo root is two parents up.
+# The directory containing the ``agent_comms`` package: the checkout root in
+# development, ``site-packages`` when installed. Only development-time
+# consumers (release git info, tests) may treat it as a checkout.
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = Path.home() / ".agent-comms" / "agent-comms.sqlite"
 DISPATCH_ID_RE = re.compile(r"dispatch_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")
 
@@ -45,6 +52,21 @@ def canonical_db_path() -> Path:
     return runtime_root() / "agent-comms.sqlite"
 
 
+def actors_config_path() -> Path:
+    """Default actor registry read by ``agent-comms bootstrap``."""
+    return runtime_root() / "actors.json"
+
+
+def review_root() -> Path:
+    """Review-cycle records (``reviewing.store``) under the runtime root."""
+    return runtime_root() / "dispatch" / "reviews"
+
+
+def push_approval_root() -> Path:
+    """Signed push-approval records under the runtime root."""
+    return runtime_root() / "dispatch" / "push-approvals"
+
+
 def codex_custody_root() -> Path:
     """The runtime custody root for provisioned per-worker Codex homes.
 
@@ -63,19 +85,39 @@ def codex_custody_root() -> Path:
     return runtime_root() / "codex-homes"
 
 
+def console_script(name: str) -> Path:
+    """The installed console script ``name`` next to this interpreter.
+
+    The four commands are ``[project.scripts]`` entry points, so they live in
+    the ``bin`` directory of whatever environment holds the package: the
+    checkout's ``.venv`` after ``uv sync``, or the tool venv of an installed
+    wheel. A missing script is refused loudly rather than rendered into a
+    worker's MCP configuration, where it would only fail at the worker's start.
+    """
+    # Not resolved: .venv/bin/python is a symlink to the base interpreter, and
+    # the scripts live next to the symlink, not next to its target.
+    path = Path(sys.executable).parent / name
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{name} is not installed next to {sys.executable}; a checkout recovers "
+            "with: uv sync; an installed package by reinstalling it"
+        )
+    return path
+
+
 def mcp_command() -> Path:
-    """The `agent-comms-mcp` launcher MCP clients exec."""
-    return REPO_ROOT / "scripts" / "agent-comms-mcp"
+    """The `agent-comms-mcp` command MCP clients exec."""
+    return console_script("agent-comms-mcp")
 
 
 def cli_command() -> Path:
-    """The `agent-comms` CLI launcher."""
-    return REPO_ROOT / "scripts" / "agent-comms"
+    """The `agent-comms` CLI command."""
+    return console_script("agent-comms")
 
 
 def hooks_path() -> Path:
-    """The Claude `PreToolUse` hook script."""
-    return REPO_ROOT / "agent_comms" / "hooks" / "pre_tool_use.py"
+    """The Claude `PreToolUse` hook script, package-relative."""
+    return PACKAGE_ROOT / "hooks" / "pre_tool_use.py"
 
 
 def dispatch_log_dir() -> Path:

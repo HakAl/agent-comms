@@ -1,10 +1,21 @@
-#!/usr/bin/env python3
-"""Launch an interactive architect seat with explicit substrate identity."""
+"""Launch an interactive architect seat with explicit substrate identity.
+
+Console-script entry point for ``agent-comms-seat``. It checks that the
+project's registered MCP server agrees with the requested actor, exports the
+seat identity to the runtime, and execs it. ``AGENT_COMMS_INSTALL_ROOT`` is
+this interpreter's ``sys.prefix``: the ``.venv`` of a checkout or the tool
+venv of an installed package. Hooks started by the runtime use it to find the
+same interpreter, and ``review status`` compares its own prefix against it.
+"""
+
+from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 import sys
+
+INSTALL_ROOT = sys.prefix
 
 
 def usage() -> int:
@@ -63,11 +74,12 @@ def guard(actor_id: str) -> bool:
     return True
 
 
-def main() -> int:
-    if len(sys.argv) < 2 or not sys.argv[1]:
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else list(argv)
+    if not args or not args[0]:
         return usage()
-    actor_id = sys.argv[1]
-    runtime = sys.argv[2:]
+    actor_id = args[0]
+    runtime = args[1:]
     if runtime[:1] == ["--"]:
         runtime = runtime[1:]
     if not runtime:
@@ -76,7 +88,7 @@ def main() -> int:
         return 3
     os.environ["AGENT_COMMS_ACTOR_ID"] = actor_id
     os.environ["AGENT_COMMS_LAUNCH_KIND"] = "architect_interactive"
-    os.environ["AGENT_COMMS_INSTALL_ROOT"] = str(Path(__file__).resolve().parents[1])
+    os.environ["AGENT_COMMS_INSTALL_ROOT"] = INSTALL_ROOT
     try:
         os.execvp(runtime[0], runtime)
     except OSError as exc:

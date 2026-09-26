@@ -20,7 +20,10 @@ process. Humans and scripts use the `agent-comms` CLI.
   that needs no login and exists for demos and tests.
 - **Review and landing.** A review gate runner and a signed push approval
   check (`scripts/guarded-push`), so nothing pushes without a human approval
-  signed with an SSH key.
+  signed with an SSH key. Landing needs two paths from the operator's shell:
+  `AGENT_COMMS_MAIN`, the clean main-branch checkout reviewed work merges
+  into, and `AGENT_COMMS_APPROVAL_SIGNERS_REPO`, the checkout whose history
+  carries `config/approval-signers` (see `config/approval-signers.example`).
 - **Gates.** `make gate` runs hygiene, lint, the isolated test suite, and a
   fresh-clone preverify. `make hooks` installs a pre-push hook that runs
   hygiene and lint on the commits about to be published and refuses the
@@ -31,8 +34,6 @@ process. Humans and scripts use the `agent-comms` CLI.
 Milestone 1 of [the roadmap](docs/ROADMAP.md) is in progress. The pieces
 that still need to land before a new user can run this without a checkout:
 
-- An installable package with installed launchers. Today everything runs
-  from a synced development checkout.
 - `agent-comms setup` and `agent-comms doctor`.
 - Runtime version pins per platform, and upgrades from the original 0.1.0
   mailbox.
@@ -42,26 +43,57 @@ that still need to land before a new user can run this without a checkout:
 Known gaps in the current dispatch path are tracked in the maintainer's
 issue tracker and summarized at the end of the walkthrough below.
 
+## Install without a checkout
+
+Requirements: macOS, Python 3.11 or newer, Git, and
+[uv](https://docs.astral.sh/uv/) (or `pipx`). There is no PyPI release yet;
+the package installs from a wheel built out of a clone or from a git tag.
+
+```sh
+git clone https://github.com/HakAl/agent-comms.git
+uv build --project agent-comms --out-dir wheels
+uv tool install wheels/agent_comms-*.whl
+# Keep the example registry: the source tree goes away next
+mkdir -p ~/.agent-comms
+cp agent-comms/config/actors.example.json ~/.agent-comms/actors.json
+rm -rf agent-comms wheels      # the install does not depend on the source tree
+agent-comms version
+```
+
+`uv tool install` puts `agent-comms`, `agent-comms-mcp`, `agent-comms-monitor`
+and `agent-comms-seat` on `PATH`. Everything the installed commands read or
+write lives under `~/.agent-comms` (`AGENT_COMMS_DB` moves the ledger); the
+runtime pins ship inside the package, so `agent-comms version` works without
+a checkout and reports its git fields as `unknown`. From here the quickstart
+below applies from its step 2 (the registry is already copied) with
+`agent-comms` in place of `.venv/bin/agent-comms`. `make install-smoke` is the
+check that this path works; it runs in CI on every change.
+
 ## Quickstart from a checkout
 
 Requirements: macOS, Python 3.11 or newer, Git, and
 [uv](https://docs.astral.sh/uv/).
 
 ```sh
-# 1. Sync the environment (the MCP extra is required for the server)
-uv sync --extra mcp
+# 1. Sync the environment; this puts agent-comms, agent-comms-mcp,
+#    agent-comms-monitor and agent-comms-seat under .venv/bin
+uv sync
 
 # 2. Describe your actors: one human, one architect per team, and workers
-cp config/actors.example.json config/actors.json
-$EDITOR config/actors.json
+mkdir -p ~/.agent-comms
+cp config/actors.example.json ~/.agent-comms/actors.json
+$EDITOR ~/.agent-comms/actors.json
 export PROJECT_A_ROOT=/absolute/path/to/your/project   # referenced by the example
 
 # 3. Register them in the mailbox at ~/.agent-comms/agent-comms.sqlite
-scripts/agent-comms bootstrap
-scripts/agent-comms actors
+.venv/bin/agent-comms bootstrap
+.venv/bin/agent-comms actors
 ```
 
-`config/actors.json` is ignored by git. Worker entries declare a `runtime`;
+The commands are console scripts of the environment that holds the package:
+`.venv/bin/<command>` in a checkout, plain `agent-comms` and friends on `PATH`
+when the package is installed. `~/.agent-comms/actors.json` is the default
+registry (`--config` names another). Worker entries declare a `runtime`;
 the spawn command is rendered from it, never written by hand. Project roots
 may use `~` and `${ENV}` expansion.
 
@@ -81,7 +113,7 @@ architect session in the loop. In normal use the architect calls the
 export AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)"
 
 # Dispatch from the example architect to the example fake worker
-scripts/agent-comms admin dispatch \
+.venv/bin/agent-comms admin dispatch \
     --from-actor-id team-a-architect \
     --target-actor-id team-a-fake-worker \
     --idempotency-key demo-1 \
@@ -90,12 +122,12 @@ scripts/agent-comms admin dispatch \
     --subject ping --body "Reply with PONG."
 
 # Reconcile until the dispatch reaches a terminal state
-scripts/agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG \
+.venv/bin/agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG \
     --interval 1 --max-passes 15
 
 # Inspect the outcome and the worker's reply
-scripts/agent-comms dispatch-status
-scripts/agent-comms inbox team-a-architect
+.venv/bin/agent-comms dispatch-status
+.venv/bin/agent-comms inbox team-a-architect
 ```
 
 Expected result: the dispatch row shows `closed` with result `satisfied`,

@@ -31,8 +31,10 @@ FALLBACK_CONTEXT = (
 
 
 def _project_root() -> Path:
+    # Claude Code names the project directory; without it the hook runs from
+    # that directory as its cwd. The package location is never the project.
     configured = os.environ.get("CLAUDE_PROJECT_DIR")
-    return Path(configured) if configured else Path(__file__).resolve().parents[2]
+    return Path(configured) if configured else Path.cwd()
 
 
 def _brief_metrics(brief: Path) -> tuple[int, int]:

@@ -7,20 +7,26 @@ terminals.
 ## Prerequisites
 
 1. Install [uv](https://docs.astral.sh/uv/).
-2. Sync the environment with the MCP extra:
+2. Sync the environment:
    ```sh
-   uv sync --extra mcp
+   uv sync
    ```
 3. Describe your actors and register them:
    ```sh
-   cp config/actors.example.json config/actors.json
-   $EDITOR config/actors.json
-   scripts/agent-comms bootstrap
+   mkdir -p ~/.agent-comms
+   cp config/actors.example.json ~/.agent-comms/actors.json
+   $EDITOR ~/.agent-comms/actors.json
+   .venv/bin/agent-comms bootstrap
    ```
 
-The launcher `scripts/agent-comms-mcp` executes the checkout's `.venv`
-directly and refuses to start if the environment is missing or the `mcp`
-package is not installed.
+`agent-comms-mcp` is a console script of the environment that holds the
+package: `.venv/bin/agent-comms-mcp` in a checkout after `uv sync`, on `PATH`
+when the package is installed with `uv tool install` or `pipx`. It runs on
+that environment's interpreter, never through `uv run`, prints one
+`agent-comms startup:` line to stderr so a client log can be matched to a
+release, and refuses to start when the `mcp` package cannot be imported.
+The examples below use the checkout form; an installed package uses
+`"$(command -v agent-comms-mcp)"` instead of the `.venv/bin` path.
 
 ## One server per seat, bound to one identity
 
@@ -32,14 +38,14 @@ differently named `agent-comms` servers to the same session.
 ### Claude Code
 
 ```sh
-claude mcp add agent-comms -- /absolute/path/to/scripts/agent-comms-mcp --actor-id team-a-architect
+claude mcp add agent-comms -- /absolute/path/to/checkout/.venv/bin/agent-comms-mcp --actor-id team-a-architect
 claude mcp list
 ```
 
 ### Codex CLI
 
 ```sh
-codex mcp add agent-comms -- /absolute/path/to/scripts/agent-comms-mcp --actor-id team-a-architect
+codex mcp add agent-comms -- /absolute/path/to/checkout/.venv/bin/agent-comms-mcp --actor-id team-a-architect
 codex mcp list
 ```
 
@@ -48,13 +54,13 @@ per-project entry over a global one so each seat keeps its own identity.
 
 ### Any other MCP client
 
-Point it at the same launcher with the same `--actor-id` argument. The server
+Point it at the same command with the same `--actor-id` argument. The server
 speaks plain stdio MCP and needs nothing else.
 
 ## Checking the binding
 
 From inside the agent session, call the `whoami` tool. It returns the bound
-actor. From a shell, `scripts/agent-comms actors` lists every registered
+actor. From a shell, `agent-comms actors` lists every registered
 actor.
 
 ## Workers

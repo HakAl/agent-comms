@@ -53,7 +53,7 @@ Claude/Codex account. Do not delete or reset live data to make tests pass.
 
 ## Gates
 
-Run `make gate` before any push. It runs, in order, the four checks that a
+Run `make gate` before any push. It runs, in order, the five checks that a
 public push must pass; each can also run on its own. `make help` lists them.
 The checks exist to keep personal data and secrets out of a public
 repository, so they have to run before a push, not after: once a commit is
@@ -65,6 +65,7 @@ on GitHub, a finding is a leak report, not a block.
 | `make lint` | ruff (pinned through `uvx`) against `scripts/gates/ruff-baseline.txt`; fails when a file gains findings of a rule or a new file and rule pair appears. Fewer findings pass; `make lint-baseline` records the lower count. Also fails when a GitHub Action in `.github/workflows/` is not pinned to a full commit SHA with a `# vN` version comment. | uv |
 | `make test` | The isolated suite with the pinned test extra. `PYTHON=3.11` selects an interpreter. | uv |
 | `make preverify` | A fresh clone of HEAD under `local/preverify/`, the suite on Python 3.11 and 3.14, then lint and hygiene inside the clone. Refuses a dirty tree unless `PREVERIFY_ARGS=--allow-dirty`. | uv, network for missing interpreters |
+| `make install-smoke` | Exports HEAD under `local/install-smoke/`, builds a wheel with `uv build`, deletes the export, installs the wheel with `uv tool install` into a tool directory and `HOME` whose paths contain a space, then from a directory outside the checkout: `agent-comms bootstrap` with the example registry, a mailbox exchange through `agent-comms-mcp` over stdio, a dispatch to the fake worker, `agent-comms-monitor --once`, `agent-comms wait` for the reply, and `dispatch-status` showing the closed row. `agent-comms version` must report git fields `unknown`. The scratch root is removed unless `INSTALL_SMOKE_KEEP=1`. | uv, git |
 
 Hygiene has two optional inputs. A maintainer may keep private word and
 fragment lists in `local/gates/private-words.txt` and
@@ -92,8 +93,8 @@ remote. A global `core.hooksPath` that dispatches to `.git/hooks` keeps
 working, since the hook is installed there rather than by changing the
 config.
 
-The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint
-and the test matrix on every pull request and push to `main`. It is a mirror
+The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint,
+the test matrix and install-smoke on every pull request and push to `main`. It is a mirror
 of the local gates on a fresh macOS runner, not a gate in front of the push:
 a failure there means something already public needs fixing. The test jobs
 also prove the suite's isolation: `scripts/gates/leftovers.sh before` takes a

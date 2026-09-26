@@ -382,7 +382,9 @@ class ProcessSpawnAdapter:
             if settings_index is not None:
                 if settings_index >= len(resolved):
                     raise RuntimeError("claude spawn args require a value after --settings")
-                resolved[settings_index] = claude_settings_for_policy(policy, str(paths.hooks_path()))
+                resolved[settings_index] = claude_settings_for_policy(
+                    policy, str(paths.hooks_path()), sys.executable
+                )
         return resolved
 
     def _uses_live_worker_prompt(self, context: DispatchContext) -> bool:

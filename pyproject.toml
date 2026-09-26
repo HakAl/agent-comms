@@ -3,16 +3,22 @@ name = "agent-comms"
 version = "0.2.0.dev0"
 description = "Local architect communication relay for multi-agent terminal workflows."
 requires-python = ">=3.11"
-dependencies = []
+# The MCP server is layer 1 of the product, so an install without mcp is not
+# an install; it is a dependency, not an extra.
+dependencies = ["mcp[cli]>=1.0,<2"]
 
 [project.optional-dependencies]
-mcp = ["mcp[cli]>=1.0,<2"]
 # Exact pin, not a floor: an unbounded spec resolves per-interpreter, and
 # mcp 2.0.0 dropped mcp.server.fastmcp. Bump only with a green suite.
 test = ["mcp[cli]==1.27.1"]
 
 [project.scripts]
+# The four commands an install puts on PATH. A checkout has the same four
+# under .venv/bin after `uv sync`; there are no shell launchers under scripts/.
 agent-comms = "agent_comms.cli:main"
+agent-comms-mcp = "agent_comms.mcp_server:main"
+agent-comms-monitor = "agent_comms.monitor:main"
+agent-comms-seat = "agent_comms.seat:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -20,6 +26,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["agent_comms*"]
+
+[tool.setuptools.package-data]
+# Non-Python files are left out of the wheel unless named here.
+agent_comms = ["runtime_pins.json"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]

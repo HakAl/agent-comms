@@ -1,4 +1,6 @@
 # The same gates as `make gate`, minus preverify: CI already is a fresh clone.
+# install-smoke builds a wheel from the checkout, installs it with uv tool and
+# drives it from outside the source tree; its log is the install evidence.
 # This is a mirror on a fresh runner, not the gate in front of a push; that is
 # the pre-push hook (`make hooks`), which runs before anything is public.
 name: gate
@@ -51,3 +53,17 @@ jobs:
       - run: make test
       - name: Nothing left in HOME or the checkout
         run: sh scripts/gates/leftovers.sh after
+
+  install-smoke:
+    name: install-smoke (Python ${{ matrix.python }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: make install-smoke

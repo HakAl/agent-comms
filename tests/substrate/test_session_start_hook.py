@@ -22,6 +22,17 @@ HOOK = ROOT / "scripts" / "hooks" / "architect-session-start.sh"
 ORIENTATION_SENTINEL = "coordinate its workers through agent-comms"
 
 
+class ProjectRootTests(unittest.TestCase):
+    def test_claude_project_dir_wins_else_cwd_never_the_package(self) -> None:
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "/srv/project"}):
+            self.assertEqual(session_start._project_root(), Path("/srv/project"))
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            with mock.patch("agent_comms.hooks.session_start.Path.cwd", return_value=Path(temp_dir)):
+                self.assertEqual(session_start._project_root(), Path(temp_dir))
+            self.assertNotEqual(Path(temp_dir), Path(session_start.__file__).resolve().parents[2])
+
+
 class SessionStartHookTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -162,6 +173,45 @@ class SessionStartHookTests(unittest.TestCase):
         self.assertIn("301 lines", context)
         self.assertIn("Traceback", stderr.getvalue())
         self.assertIn("board failure", stderr.getvalue())
+
+    def stub_python(self, directory: Path, name: str = "python") -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        stub = directory / name
+        stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > \"$HOOK_RECORD\"\nexit 0\n")
+        stub.chmod(0o755)
+        return stub
+
+    def run_hook_script(self, **environment: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        record = self.root / "argv.txt"
+        env = {"HOOK_RECORD": str(record), "PATH": "/usr/bin:/bin", **environment}
+        proc = subprocess.run([str(HOOK)], env=env, text=True, capture_output=True)
+        lines = record.read_text().splitlines() if record.exists() else []
+        return proc, lines
+
+    def test_hook_runs_on_the_install_prefix_interpreter(self) -> None:
+        # The seat exports its sys.prefix; the hook must run on that prefix's
+        # python (spaces included), not on whatever python3 is first on PATH.
+        prefix = self.root / "prefix with space"
+        stub = self.stub_python(prefix / "bin")
+        proc, lines = self.run_hook_script(AGENT_COMMS_INSTALL_ROOT=str(prefix))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(lines, [str(stub), "-m", "agent_comms.hooks.session_start"])
+
+    def test_explicit_python_override_beats_the_install_prefix(self) -> None:
+        prefix = self.root / "prefix"
+        self.stub_python(prefix / "bin")
+        override = self.stub_python(self.root / "override")
+        proc, lines = self.run_hook_script(
+            AGENT_COMMS_INSTALL_ROOT=str(prefix), AGENT_COMMS_PYTHON=str(override)
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(lines[0], str(override))
+
+    def test_without_prefix_or_override_python3_on_path_is_the_fallback(self) -> None:
+        fallback = self.stub_python(self.root / "path-bin", "python3")
+        proc, lines = self.run_hook_script(PATH=f"{fallback.parent}:/usr/bin:/bin")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(lines[0], str(fallback))
 
     def test_stub_invocation_and_executed_delegation(self) -> None:
         env = os.environ.copy()

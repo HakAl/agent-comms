@@ -19,10 +19,18 @@ def onboard_worker(
     owner: str,
     project_root: str | None = None,
     worktree_root: str | None = None,
-    repo_root: Path = paths.REPO_ROOT,
+    repo_root: Path | str | None = None,
     override_protected: str | None = None,
 ) -> dict:
-    """Provision a new dispatchable worker actor and its git worktree."""
+    """Provision a new dispatchable worker actor and its git worktree.
+
+    ``repo_root`` is the git checkout the worker's worktree is created from;
+    a path inside a checkout means that checkout. When it is not given, the
+    owner's registered ``project_root`` is used if it is in a git checkout;
+    otherwise the caller must name one (``--repo-root`` on the CLI). There is
+    no default tied to the agent-comms package: an installed package has no
+    checkout of its own.
+    """
     team = team.strip()
     runtime = runtime.strip()
     if not team:
@@ -30,13 +38,13 @@ def onboard_worker(
     if not actor_id:
         raise ValidationError("actor_id must not be empty")
 
-    repo_root = repo_root.expanduser().resolve()
+    actor_segment = identity_to_path_segment(actor_id)
+    repo_root = _resolve_repo_root(store, owner, repo_root)
     root_for_worktrees = (
         Path(worktree_root).expanduser().resolve()
         if worktree_root is not None
         else repo_root.parent
     )
-    actor_segment = identity_to_path_segment(actor_id)
     worktree_path = root_for_worktrees / f"agent-comms-{actor_segment}"
     branch_name = f"worker/{actor_segment}"
 
@@ -118,6 +126,51 @@ def onboard_worker(
     if override_payload is not None:
         result["override_protected"] = override_payload
     return result
+
+
+def _resolve_repo_root(store: Store, owner: str, repo_root: Path | str | None) -> Path:
+    """The top of the checkout the worktree is created from.
+
+    A path inside a checkout (a service directory of a monorepo as an owner's
+    project_root, say) resolves to the checkout's top level, so the default
+    worktree location, the parent of the repo root, is beside the repository
+    and never inside it.
+    """
+    if repo_root is not None:
+        toplevel = _git_toplevel(Path(repo_root).expanduser())
+        if toplevel is None:
+            raise ValidationError(f"--repo-root {repo_root} is not a git checkout")
+        return toplevel
+    owner_actor = next((actor for actor in store.list_actors() if actor["id"] == owner), None)
+    project_root = (owner_actor or {}).get("project_root")
+    if not project_root:
+        raise ValidationError(
+            f"owner {owner!r} has no registered project_root to create the worktree from; "
+            "pass --repo-root <git checkout>"
+        )
+    toplevel = _git_toplevel(Path(project_root).expanduser())
+    if toplevel is None:
+        raise ValidationError(
+            f"owner {owner!r} project_root {project_root} is not a git checkout; "
+            "pass --repo-root <git checkout>"
+        )
+    return toplevel
+
+
+def _git_toplevel(path: Path) -> Path | None:
+    """The resolved top of the worktree containing ``path``, or None outside git."""
+    if not path.is_dir():
+        return None
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
 
 
 def _preflight(

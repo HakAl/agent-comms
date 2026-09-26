@@ -571,7 +571,7 @@ class RenderSpawnTest(unittest.TestCase):
         self.assertIn("render_spawn('claude', actor_id)", dispatch["failure_reason"])
 
     def test_cell_versions_claude_pin_matches_runtime_source(self) -> None:
-        cell_versions = json.loads((ROOT / "tests" / "cells" / "cell_versions.json").read_text())
+        cell_versions = json.loads(runtime_pins.RUNTIME_PINS_PATH.read_text())
 
         self.assertEqual(cell_versions["claude"]["last_verified"], runtime_pins.CLAUDE_PINNED_VERSION)
         self.assertEqual(cell_versions["claude"]["sha256"], runtime_pins.CLAUDE_PINNED_SHA256)
@@ -603,7 +603,7 @@ class RenderSpawnTest(unittest.TestCase):
                     {
                         "hooks": [
                             {
-                                "command": "python3 {hooks_path}",
+                                "command": "{python} {hooks_path}",
                                 "type": "command",
                             }
                         ],
@@ -677,7 +677,7 @@ class RenderSpawnTest(unittest.TestCase):
             ),
         )
 
-        settings = json.loads(claude_settings_for_policy(policy, "{hooks_path}"))
+        settings = json.loads(claude_settings_for_policy(policy, "{hooks_path}", "{python}", quote=False))
 
         self.assertEqual(
             settings["sandbox"],
@@ -714,7 +714,7 @@ class RenderSpawnTest(unittest.TestCase):
             ),
         )
 
-        settings = json.loads(claude_settings_for_policy(policy, "{hooks_path}"))
+        settings = json.loads(claude_settings_for_policy(policy, "{hooks_path}", "{python}", quote=False))
 
         filesystem = settings["sandbox"]["filesystem"]
         self.assertNotIn("denyRead", filesystem)
@@ -753,7 +753,10 @@ class RenderSpawnTest(unittest.TestCase):
                     claude_sandbox=sandbox,
                 )
 
-                self.assertNotIn("sandbox", json.loads(claude_settings_for_policy(policy, "{hooks_path}")))
+                self.assertNotIn(
+                    "sandbox",
+                    json.loads(claude_settings_for_policy(policy, "{hooks_path}", "{python}", quote=False)),
+                )
 
     def test_claude_dispatch_resolves_settings_for_fresh_and_stale_spawn(self) -> None:
         policy = compile_policy(WORKER_DISPATCH_POLICY)

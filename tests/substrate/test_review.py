@@ -3,6 +3,7 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import argparse
 import json
 import re
+import os
 import subprocess
 import sys
 import tempfile
@@ -385,9 +386,14 @@ class ReviewBriefSectionTest(BaseReviewBriefSectionTest, unittest.TestCase):
                 owner="gamma-architect",
             )
 
+            integration = root / "integration"
+            integration.mkdir()
+            subprocess.run(["git", "init"], cwd=integration, check=True, stdout=subprocess.PIPE)
+
             # Mirrors test_review_tool.py isolation: review records stay in the temp tree.
             with (
                 mock.patch.object(store, "REVIEW_ROOT", root / "reviews"),
+                mock.patch.dict(os.environ, {"AGENT_COMMS_MAIN": str(integration)}),
                 mock.patch.object(
                     review.runtime_paths, "db_path", return_value=ledger_path
                 ) as db_path,
