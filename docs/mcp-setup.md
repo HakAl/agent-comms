@@ -7,9 +7,9 @@ terminals.
 ## Prerequisites
 
 1. Install [uv](https://docs.astral.sh/uv/).
-2. Sync the environment with the MCP extra:
+2. Sync the environment:
    ```sh
-   uv sync --extra mcp
+   uv sync
    ```
 3. Describe your actors and register them:
    ```sh

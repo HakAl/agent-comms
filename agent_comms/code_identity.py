@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 23
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "e4f23246f1536028049b9b21b2709aff549490e0d36746973ac3077a69bbfa9c"
+    "640b89c7ca7ff2a00b412217d17ff02ac9e2de574bd3d623d0c81d9bcbc577ce"
 )
 
 
@@ -47,6 +47,7 @@ INCLUDED_EXPLICIT = frozenset(
         "agent_comms/reviewing/git_evidence.py",
         "agent_comms/reviewing/intents.py",
         "agent_comms/reviewing/reply_snapshots.py",
+        "agent_comms/runtime_pins.json",
         "agent_comms/runtime_pins.py",
         "agent_comms/schema.py",
         "agent_comms/spawn.py",
@@ -87,6 +88,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/reviewing/git_evidence.py",
         "agent_comms/reviewing/intents.py",
         "agent_comms/reviewing/reply_snapshots.py",
+        "agent_comms/runtime_pins.json",
         "agent_comms/runtime_pins.py",
         "agent_comms/schema.py",
         "agent_comms/spawn.py",

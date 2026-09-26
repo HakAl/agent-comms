@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import subprocess
 
-from . import __version__, code_identity, paths
+from . import __version__, code_identity, paths, runtime_pins
 
 
 def _run_git(repo_root, *args: str) -> str | None:
@@ -58,12 +57,11 @@ def repo_git_info(repo_root=None) -> dict:
 
 
 def release_info() -> dict:
-    cell_versions_path = paths.REPO_ROOT / "tests" / "cells" / "cell_versions.json"
     return {
         "version": __version__,
         "code_identity": code_identity.LOADED_CODE_IDENTITY,
         "contract_version": code_identity.CONTRACT_VERSION,
-        "certified_runtimes": json.loads(cell_versions_path.read_text()),
+        "certified_runtimes": runtime_pins.load_runtime_pins(),
         **repo_git_info(paths.REPO_ROOT),
     }
 

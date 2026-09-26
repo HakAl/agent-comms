@@ -6,7 +6,7 @@ set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 # Long-lived entry points execute the pre-synced checkout environment directly.
 if [ ! -x .venv/bin/python ]; then
-  printf '%s\n' "agent-comms: missing .venv/bin/python in $(pwd); recover with: uv sync --extra mcp" >&2
+  printf '%s\n' "agent-comms: missing .venv/bin/python in $(pwd); recover with: uv sync" >&2
   exit 1
 fi
 exec .venv/bin/python -m agent_comms.cli "$@"

@@ -8,11 +8,11 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 # launcher never invokes uv: it executes the checkout's pre-synced .venv
 # directly and refuses loudly when the environment is absent.
 if [ ! -x .venv/bin/python ]; then
-  printf '%s\n' "agent-comms-mcp: missing .venv/bin/python in $(pwd); recover with: uv sync --extra mcp" >&2
+  printf '%s\n' "agent-comms-mcp: missing .venv/bin/python in $(pwd); recover with: uv sync" >&2
   exit 1
 fi
 if ! .venv/bin/python -c 'import mcp' >/dev/null 2>&1; then
-  printf '%s\n' "agent-comms-mcp: .venv/bin/python cannot import mcp in $(pwd); recover with: uv sync --extra mcp" >&2
+  printf '%s\n' "agent-comms-mcp: .venv/bin/python cannot import mcp in $(pwd); recover with: uv sync" >&2
   exit 1
 fi
 .venv/bin/python -c 'from agent_comms.release import startup_report; import sys; print(startup_report(), file=sys.stderr)' || \

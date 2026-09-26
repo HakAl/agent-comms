@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CLI_LAUNCHER = ROOT / "scripts" / "agent-comms"
 MCP_LAUNCHER = ROOT / "scripts" / "agent-comms-mcp"
-RECOVERY = "uv sync --extra mcp"
+RECOVERY = "uv sync"
 
 # Stands in for .venv/bin/python: logs every invocation, answers the
 # `import mcp` probe and the startup_report probe per env knobs.

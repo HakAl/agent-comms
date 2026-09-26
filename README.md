@@ -51,8 +51,8 @@ Requirements: macOS, Python 3.11 or newer, Git, and
 [uv](https://docs.astral.sh/uv/).
 
 ```sh
-# 1. Sync the environment (the MCP extra is required for the server)
-uv sync --extra mcp
+# 1. Sync the environment
+uv sync
 
 # 2. Describe your actors: one human, one architect per team, and workers
 mkdir -p ~/.agent-comms

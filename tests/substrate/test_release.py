@@ -15,7 +15,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_comms import __version__, code_identity, db, paths
+from agent_comms import __version__, code_identity, db, paths, runtime_pins
 from agent_comms.release import release_info, repo_git_info
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store
@@ -29,9 +29,7 @@ class ReleaseVersionTest(unittest.TestCase):
         self.assertNotEqual(__version__, "0.1.0")
 
     def test_release_info_and_cli_resolve_from_repo_root_not_cwd(self) -> None:
-        expected_cell_versions = json.loads(
-            (paths.REPO_ROOT / "tests" / "cells" / "cell_versions.json").read_text()
-        )
+        expected_cell_versions = json.loads(runtime_pins.RUNTIME_PINS_PATH.read_text())
 
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = Path.cwd()
@@ -70,6 +68,21 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertIn("git_describe", payload)
             self.assertIn("git_exact_tag", payload)
             self.assertIn("pin_worktree", payload)
+
+    def test_runtime_pins_ship_inside_the_package(self) -> None:
+        # ac-4ao.2: the pin manifest is package data, so an installed wheel
+        # carries it and nothing reads tests/ at runtime. setuptools omits
+        # non-Python files unless package-data names them.
+        pyproject = tomllib.loads((paths.REPO_ROOT / "pyproject.toml").read_text())
+        package_data = pyproject["tool"]["setuptools"]["package-data"]["agent_comms"]
+        self.assertIn("runtime_pins.json", package_data)
+        self.assertEqual(runtime_pins.RUNTIME_PINS_PATH, paths.PACKAGE_ROOT / "runtime_pins.json")
+        self.assertTrue(runtime_pins.RUNTIME_PINS_PATH.is_file())
+        self.assertFalse((paths.REPO_ROOT / "tests" / "cells" / "cell_versions.json").exists())
+        pins = runtime_pins.load_runtime_pins()
+        self.assertEqual(pins["claude"]["last_verified"], runtime_pins.CLAUDE_PINNED_VERSION)
+        self.assertEqual(pins["claude"]["sha256"], runtime_pins.CLAUDE_PINNED_SHA256)
+        self.assertTrue(code_identity.is_included_surface("agent_comms/runtime_pins.json"))
 
     def test_release_version_files_remain_off_dispatch_surface(self) -> None:
         self.assertFalse(code_identity.is_included_surface("agent_comms/__init__.py"))

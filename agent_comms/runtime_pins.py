@@ -1,11 +1,31 @@
+"""Certified runtime versions, shipped inside the package.
+
+``runtime_pins.json`` is the single record of which runtime versions the
+gated cells last certified (``last_verified``), how strictly a version must
+match (``boundary``), and for the custody-managed Claude binary its sha256.
+It is package data, so an installed wheel carries it; the cell drift test
+and ``agent-comms version`` read the same file. Re-certifying a runtime is
+a one-line edit here plus a contract surface digest refresh.
+"""
+
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
-CLAUDE_PINNED_VERSION = "2.1.195"
-CLAUDE_PINNED_SHA256 = "8b45adad93f336ab95f33e714494b19fd3377a494eb05c122c8677bc895876ad"
+RUNTIME_PINS_PATH = Path(__file__).with_name("runtime_pins.json")
+
+
+def load_runtime_pins() -> dict[str, dict[str, str]]:
+    """The certified runtime manifest, keyed by runtime name."""
+    return json.loads(RUNTIME_PINS_PATH.read_text(encoding="utf-8"))
+
+
+_PINS = load_runtime_pins()
+CLAUDE_PINNED_VERSION = _PINS["claude"]["last_verified"]
+CLAUDE_PINNED_SHA256 = _PINS["claude"]["sha256"]
 CLAUDE_VERSIONS_DIR_ENV = "AGENT_COMMS_CLAUDE_VERSIONS_DIR"
 CLAUDE_PINNED_SHA256_ENV = "AGENT_COMMS_CLAUDE_PINNED_SHA256"
 
