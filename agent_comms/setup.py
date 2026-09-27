@@ -322,7 +322,7 @@ def run_setup(
             problems.append(f"bound to actor {bound['actor_id']!r}")
         elif not mcp_clients.same_ledger(bound["db"], wanted["db"]):
             problems.append(f"binds {architect} to ledger {bound['db']!r}, expected {wanted['db']!r}")
-        if found.command is None or Path(found.command).expanduser() != mcp_command:
+        if not mcp_clients.same_command(found.command, mcp_command):
             problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
         if not problems:
             existing[client] = None

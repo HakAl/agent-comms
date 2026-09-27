@@ -34,7 +34,6 @@ process. Humans and scripts use the `agent-comms` CLI.
 Milestone 1 of [the roadmap](docs/ROADMAP.md) is in progress. The pieces
 that still need to land before a new user can run this without a checkout:
 
-- `agent-comms setup` and `agent-comms doctor`.
 - Upgrades from the original 0.1.0 mailbox.
 - A proper quickstart, concepts page, and runbook. This README is the
   interim version.
@@ -52,9 +51,6 @@ the package installs from a wheel built out of a clone or from a git tag.
 git clone https://github.com/HakAl/agent-comms.git
 uv build --project agent-comms --out-dir wheels
 uv tool install wheels/agent_comms-*.whl
-# Keep the example registry: the source tree goes away next
-mkdir -p ~/.agent-comms
-cp agent-comms/config/actors.example.json ~/.agent-comms/actors.json
 rm -rf agent-comms wheels      # the install does not depend on the source tree
 agent-comms version
 ```
@@ -64,9 +60,9 @@ and `agent-comms-seat` on `PATH`. Everything the installed commands read or
 write lives under `~/.agent-comms` (`AGENT_COMMS_DB` moves the ledger); the
 runtime pins ship inside the package, so `agent-comms version` works without
 a checkout and reports its git fields as `unknown`. From here the quickstart
-below applies from its step 2 (the registry is already copied) with
-`agent-comms` in place of `.venv/bin/agent-comms`. `make install-smoke` is the
-check that this path works; it runs in CI on every change.
+below applies from its step 2 with `agent-comms` in place of
+`.venv/bin/agent-comms`. `make install-smoke` is the check that this path
+works; it runs in CI on every change.
 
 ## Quickstart from a checkout
 
@@ -78,26 +74,77 @@ Requirements: macOS, Python 3.11 or newer, Git, and
 #    agent-comms-monitor and agent-comms-seat under .venv/bin
 uv sync
 
-# 2. Describe your actors: one human, one architect per team, and workers
-mkdir -p ~/.agent-comms
-cp config/actors.example.json ~/.agent-comms/actors.json
-$EDITOR ~/.agent-comms/actors.json
-export PROJECT_A_ROOT=/absolute/path/to/your/project   # referenced by the example
+# 2. Set up a team for your project. This writes the actor registry
+#    (~/.agent-comms/actors.json: you, one architect, one worker per
+#    runtime), registers them in the mailbox at
+#    ~/.agent-comms/agent-comms.sqlite, provisions the codex worker's home,
+#    and binds the architect seat in your own Claude Code and Codex CLIs
+#    through their `mcp add` commands. No file is edited by hand. On a
+#    terminal it asks for anything left out; --yes takes the defaults.
+#    The human id below is the one the walkthrough further down uses.
+.venv/bin/agent-comms setup --project-root /absolute/path/to/your/project \
+    --team team-a --runtimes claude,codex,fake \
+    --human-id 01M36YTJV9XBW95S6ZWV47C4RG
 
-# 3. Register them in the mailbox at ~/.agent-comms/agent-comms.sqlite
-.venv/bin/agent-comms bootstrap
-.venv/bin/agent-comms actors
+# 3. Check the install. Every failing check carries the command that fixes it.
+.venv/bin/agent-comms doctor
 ```
 
 The commands are console scripts of the environment that holds the package:
 `.venv/bin/<command>` in a checkout, plain `agent-comms` and friends on `PATH`
-when the package is installed. `~/.agent-comms/actors.json` is the default
-registry (`--config` names another). Worker entries declare a `runtime`;
-the spawn command is rendered from it, never written by hand. Project roots
-may use `~` and `${ENV}` expansion.
+when the package is installed.
 
-To connect an agent CLI, see [docs/mcp-setup.md](docs/mcp-setup.md). Each
-seat gets one MCP server started with its own `--actor-id`.
+On a terminal, `setup` asks for anything left out, with the runtimes it
+detects on the machine as the suggested answer; `--yes` takes the defaults
+without asking, and off a terminal an omitted `--project-root` or
+`--runtimes` is refused by name. `--clients claude,codex` chooses which of
+your CLIs get the architect seat (default: the native runtimes chosen; `none`
+for no seat), `--human` and `--human-id` name you (default: your login name
+and a generated id, printed under `human`), and a second team on the same
+machine reuses the registered human. A team that already exists is refused;
+`agent-comms bootstrap` re-registers a registry edited by hand
+(`config/actors.example.json` shows the shape, and `--config` names another
+file). Worker entries declare a `runtime`; the spawn command is rendered from
+it, never written by hand.
+
+To connect another agent CLI, or to see what `setup` ran, see
+[docs/mcp-setup.md](docs/mcp-setup.md). Each seat gets one MCP server started
+with its own `--actor-id`.
+
+## Check the install
+
+`agent-comms doctor` checks the install, the runtime root, the registry and
+the ledger, the platform pins, each runtime the team uses (binary, digest,
+version, login), every codex worker's home and any login that refresh could
+not recover, the monitor heartbeat, the architect's MCP seats and the admin
+token. It writes nothing and repairs nothing: every failing check carries the
+command or step that fixes it. The output is one JSON report:
+
+```json
+{
+  "ok": false,
+  "platform": "darwin-arm64",
+  "checks": [
+    {"id": "install", "status": "ok", "detail": "agent-comms-mcp, agent-comms-monitor, agent-comms-seat under ~/.local/share/uv/tools/agent-comms/bin", "fix": null},
+    {"id": "ledger", "status": "ok", "detail": "~/.agent-comms/agent-comms.sqlite: schema 3, 1 human, 1 architect, 2 worker", "fix": null},
+    {"id": "runtime:codex:home:team-a-codex-worker", "status": "fail",
+     "detail": "team-a-codex-worker: ~/.agent-comms/codex-homes/default/team-a-codex-worker: auth.json last_refresh is stale",
+     "fix": "CODEX_HOME=~/.agent-comms/codex-homes/default/team-a-codex-worker codex login"},
+    {"id": "monitor", "status": "warn", "detail": "no monitor heartbeat yet and nothing has been dispatched", "fix": "agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG"}
+  ],
+  "fixes": ["CODEX_HOME=~/.agent-comms/codex-homes/default/team-a-codex-worker codex login"]
+}
+```
+
+Paths in a real report are absolute. The exit code is 0 when no check
+failed and 3 otherwise, and `fixes` lists the fix of every failing check in
+order, so an agent can branch on the exit code and act on the fixes without
+reading the details. A `warn` (the monitor before the first dispatch, a
+missing admin token) does not fail the report; a `skip` names what was not
+applicable (no codex worker registered, say). An expired Codex login that
+refresh could not recover is its own check, `runtime:codex:login:<lineage>`,
+whose fix is the login command for that home. `doctor --clients claude,codex`
+checks those seats whether or not setup recorded them.
 
 ## Try a dispatch without any login
 
@@ -111,7 +158,7 @@ architect session in the loop. In normal use the architect calls the
 (umask 077; head -c 32 /dev/urandom | xxd -p -c 64 > ~/.agent-comms/admin-token)
 export AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)"
 
-# Dispatch from the example architect to the example fake worker
+# Dispatch from the architect to the fake worker setup created for team-a
 .venv/bin/agent-comms admin dispatch \
     --from-actor-id team-a-architect \
     --target-actor-id team-a-fake-worker \
@@ -120,7 +167,9 @@ export AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)"
     --override-reason "fake runtime demo" \
     --subject ping --body "Reply with PONG."
 
-# Reconcile until the dispatch reaches a terminal state
+# Reconcile until the dispatch reaches a terminal state. The human id is
+# the one given to setup (or the one it generated, printed under "human";
+# doctor's monitor check prints this whole command)
 .venv/bin/agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG \
     --interval 1 --max-passes 15
 

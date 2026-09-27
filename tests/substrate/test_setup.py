@@ -575,7 +575,11 @@ class SetupCommandTest(_Scratch):
         self.assertEqual(result["doctor"], {"ok": True, "fixes": []})
 
     def test_already_bound_seat_is_left_alone(self) -> None:
-        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", *self.expected_argv()], cwd=None)
+        # Bound by hand through the symlink an installed package puts on PATH: the same server.
+        link_dir = self.root / "bin on path"
+        link_dir.mkdir()
+        (link_dir / "agent-comms-mcp").symlink_to(MCP_COMMAND)
+        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", str(link_dir / "agent-comms-mcp"), *self.expected_argv()[1:]], cwd=None)
         self.clients.calls.clear()
         rc, result = self.setup("--runtimes", "fake", "--clients", "codex", "--human-id", HUMAN)
         self.assertEqual(rc, 0, result)

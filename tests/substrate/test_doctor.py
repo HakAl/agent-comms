@@ -717,6 +717,22 @@ class McpCheckTest(_Scratch):
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("runs '/elsewhere/agent-comms-mcp'", result["detail"])
 
+    def test_command_matches_by_file_identity_not_spelling(self) -> None:
+        # An installed package puts a symlink to the script on PATH; a seat
+        # added by hand with that path runs the same server. A bare name or a
+        # relative path is resolved by the client, so it is not accepted.
+        link_dir = self.root / "bin on path"
+        link_dir.mkdir()
+        (link_dir / "agent-comms-mcp").symlink_to(MCP_COMMAND)
+        self.write_claude_seat(["--actor-id", "t-architect", "--db", str(self.db)], command=str(link_dir / "agent-comms-mcp"))
+        self.assertEqual(self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]["status"], doctor.OK)
+        for spelled in ("agent-comms-mcp", ".venv/bin/agent-comms-mcp"):
+            self.write_claude_seat(["--actor-id", "t-architect", "--db", str(self.db)], command=spelled)
+            result = self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]
+            self.assertEqual(result["status"], doctor.FAIL, result)
+            self.assertIn(f"runs {spelled!r}", result["detail"])
+        self.assertFalse(mcp_clients.same_command(None, MCP_COMMAND))
+
     def test_codex_seat_absent_wrong_and_present(self) -> None:
         result = self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]
         self.assertEqual(result["status"], doctor.FAIL)

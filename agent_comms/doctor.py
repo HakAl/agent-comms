@@ -553,9 +553,8 @@ def check_mcp(
                 problems.append(f"bound to actor {bound['actor_id']!r}")
             if not mcp_clients.same_ledger(bound["db"], wanted_binding["db"]):
                 problems.append(f"bound to ledger {bound['db']!r}, expected {wanted_binding['db']!r}")
-            command = found.command
-            if command is None or Path(command).expanduser() != mcp_command:
-                problems.append(f"runs {command!r}, expected {str(mcp_command)!r}")
+            if not mcp_clients.same_command(found.command, mcp_command):
+                problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
             if problems:
                 checks.append(check(check_id, FAIL, f"{actor_id} {client} seat in {config.path}: {'; '.join(problems)}", mcp_clients.render_fix(client, project_root, expected, replace=True)))
                 continue

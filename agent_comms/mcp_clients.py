@@ -198,6 +198,23 @@ def same_ledger(stored: str | None, expected: str | None) -> bool:
     return os.path.realpath(stored) == os.path.realpath(os.path.expanduser(str(expected)))
 
 
+def same_command(stored: str | None, expected: str | os.PathLike[str]) -> bool:
+    """Whether a persisted server command is the expected console script.
+
+    The client execs the command as written, so a bare name or a relative
+    path (resolved from the client's PATH or working directory) never
+    matches. Two absolute spellings of one file match: an installed package
+    puts a symlink to the script on PATH (``uv tool install``), and a seat
+    added by hand with that path runs the same server.
+    """
+    if stored is None:
+        return False
+    stored = str(stored)
+    if not os.path.isabs(stored):
+        return False
+    return os.path.realpath(stored) == os.path.realpath(os.path.expanduser(str(expected)))
+
+
 def server_argv(mcp_command: str | os.PathLike[str], actor_id: str, db_path: str | os.PathLike[str] | None = None) -> list[str]:
     """The argv a client runs for the seat: the server, its actor and, for an
     explicit ledger, the ledger path (the server opens the default one
