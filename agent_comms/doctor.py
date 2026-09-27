@@ -34,6 +34,7 @@ from .actors import OPERATOR_ACTOR_ENV
 from .cli._helpers import load_actor_config
 from .codex_home import preflight_home_snapshot
 from .db import LEDGER_SCHEMA_VERSION, Database
+from .dispatch_ledger import DISPATCH_TERMINAL_STATUSES
 from .monitor import heartbeat_is_fresh
 from .runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
@@ -113,6 +114,10 @@ class LedgerSnapshot:
     actors: list[dict] = field(default_factory=list)
     heartbeat: dict | None = None
     dispatch_count: int = 0
+    # Dispatches that need a monitor: every one except a finished dispatch
+    # to a registered fake worker (the demo's). ``None`` (a snapshot built
+    # without it) means every dispatch needs one.
+    monitored_dispatch_count: int | None = None
     dead_credentials: list[dict] = field(default_factory=list)
 
     def humans(self) -> list[dict]:
@@ -150,6 +155,20 @@ def read_ledger(db_path: Path) -> LedgerSnapshot:
             snapshot.heartbeat = dict(row) if row is not None else None
         if _table_exists(conn, "dispatch_ledger"):
             snapshot.dispatch_count = int(conn.execute("select count(*) from dispatch_ledger").fetchone()[0])
+            monitored = "select count(*) from dispatch_ledger"
+            params: tuple[str, ...] = ()
+            if _table_exists(conn, "actors"):
+                # Fail safe: an unknown recipient or a missing runtime counts,
+                # and so does fake work not yet terminal (a queued row only
+                # starts on a reconcile pass).
+                terminal = sorted(DISPATCH_TERMINAL_STATUSES)
+                monitored += (
+                    " d left join actors a on a.id = d.recipient_actor_id"
+                    " where coalesce(a.runtime, '') <> 'fake'"
+                    f" or d.status not in ({', '.join('?' for _ in terminal)})"
+                )
+                params = tuple(terminal)
+            snapshot.monitored_dispatch_count = int(conn.execute(monitored, params).fetchone()[0])
         if _table_exists(conn, "codex_refresh_claims"):
             snapshot.dead_credentials = [
                 dict(row)
@@ -473,6 +492,14 @@ def check_monitor(
     if heartbeat is None or not heartbeat.get("last_pass_at"):
         if snapshot.dispatch_count == 0:
             return check("monitor", WARN, "no monitor heartbeat yet and nothing has been dispatched", fix)
+        monitored = snapshot.dispatch_count if snapshot.monitored_dispatch_count is None else snapshot.monitored_dispatch_count
+        if monitored == 0:
+            # The demo's finished fake dispatches needed no monitor; the first
+            # real dispatch, or unfinished fake work, without one fails below.
+            return check(
+                "monitor", WARN,
+                f"no monitor heartbeat; {snapshot.dispatch_count} dispatches, all to fake workers and finished", fix,
+            )
         return check("monitor", FAIL, f"no monitor heartbeat; {snapshot.dispatch_count} dispatches recorded", fix)
     if not heartbeat_is_fresh(heartbeat, now=now or datetime.now(timezone.utc)):
         return check("monitor", FAIL, f"monitor heartbeat is stale (last pass {heartbeat['last_pass_at']})", fix)

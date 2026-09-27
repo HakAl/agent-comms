@@ -88,6 +88,10 @@ uv sync
 
 # 3. Check the install. Every failing check carries the command that fixes it.
 .venv/bin/agent-comms doctor
+
+# 4. Watch one dispatch end to end, before any model login: the architect
+#    dispatches to the team's fake worker, which replies and closes it.
+.venv/bin/agent-comms demo
 ```
 
 The commands are console scripts of the environment that holds the package:
@@ -139,8 +143,10 @@ command or step that fixes it. The output is one JSON report:
 Paths in a real report are absolute. The exit code is 0 when no check
 failed and 3 otherwise, and `fixes` lists the fix of every failing check in
 order, so an agent can branch on the exit code and act on the fixes without
-reading the details. A `warn` (the monitor before the first dispatch, a
-missing admin token) does not fail the report; a `skip` names what was not
+reading the details. A `warn` (no monitor while nothing has been dispatched
+or only the demo's finished fake dispatches exist; a missing admin token)
+does not fail the report; with no monitor running, the first dispatch to a
+claude or codex worker, or fake work still queued or in flight, does; a `skip` names what was not
 applicable (no codex worker registered, say). An expired Codex login that
 refresh could not recover is its own check, `runtime:codex:login:<lineage>`,
 whose fix is the login command for that home. `doctor --clients claude,codex`
@@ -148,10 +154,44 @@ checks those seats whether or not setup recorded them.
 
 ## Try a dispatch without any login
 
-This exercises the whole dispatch path with the `fake` runtime. It uses the
-operator override command, which needs an admin token, because there is no
-architect session in the loop. In normal use the architect calls the
-`dispatch_agent` MCP tool instead and no token is involved.
+`agent-comms demo` dispatches one task from a team's architect to that
+team's fake worker, drives it until it is terminal, and shows each step:
+
+```sh
+.venv/bin/agent-comms demo
+# stderr, as it happens:
+#   dispatched dispatch_...: team-a-architect -> team-a-fake-worker, 'demo: ping'
+#   worker replied msg_...: 'fake-reply: PONG'
+#   dispatch closed: satisfied
+```
+
+Stdout is one JSON object: `dispatch` (ids, sender, recipient, subject,
+body), `reply` (the worker's message, parented to the dispatch), `final`
+(the row's `status` and `result`), `worker_log` (where worker logs land) and
+`worker_reaped`, true once the worker's wrapper exited and its exit was
+recorded (the demo waits up to 10 seconds for that; false does not fail the
+demo). It exits 0 when the dispatch closed `satisfied` with a reply, 3 with
+`fixes` otherwise, and 2 when it cannot start. With several
+fake workers registered, `--team` picks one; with none, the refusal prints
+the `setup` command that adds a fake-only team. `--timeout` (default 60
+seconds) bounds the wait. The dispatch starts the fake worker at once, and
+the worker replies and closes its own row, so no monitor is needed; the demo
+only watches that row. It writes no monitor heartbeat, so `doctor` stays
+clean. A row that is still queued or in flight at the timeout is the
+monitor's to start or settle, and the failure's first fix is the monitor
+command.
+
+The demo only ever dispatches to a worker whose registered runtime is
+`fake`, which runs no model and only replies; it cannot start a claude or
+codex worker. It never runs a ledger-wide reconcile pass, so other queued
+work on the ledger, native or not, is left to the monitor. It dispatches as
+the architect, exactly as the architect's `dispatch_agent` MCP tool does, so
+no admin token is involved.
+
+### The same dispatch by hand
+
+This is what the demo does, through the operator override command, which
+needs an admin token because there is no architect session in the loop.
 
 ```sh
 # One-time operator credential, mode 600
