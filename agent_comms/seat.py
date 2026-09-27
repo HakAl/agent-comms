@@ -10,10 +10,10 @@ same interpreter, and ``review status`` compares its own prefix against it.
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 import sys
+
+from .mcp_clients import actor_ids_in, claude_config_path, read_claude_seat
 
 INSTALL_ROOT = sys.prefix
 
@@ -24,21 +24,17 @@ def usage() -> int:
 
 
 def guard(actor_id: str) -> bool:
-    config_path = Path(os.environ.get("AGENT_COMMS_CLAUDE_CONFIG", "~/.claude.json")).expanduser()
-    try:
-        data = json.loads(config_path.read_text())
-    except FileNotFoundError:
+    config = read_claude_seat(claude_config_path(), os.getcwd())
+    config_path = config.path
+    if config.status == "missing":
         print(f"warning: expected actor id {actor_id!r}; no config at {config_path}", file=sys.stderr)
         return True
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"warning: expected actor id {actor_id!r}; could not parse {config_path}: {exc}", file=sys.stderr)
+    if config.status == "unparseable":
+        print(f"warning: expected actor id {actor_id!r}; could not parse {config_path}: {config.error}", file=sys.stderr)
         return True
-
-    cwd = os.getcwd()
-    keys = {cwd, os.path.realpath(cwd)}
-    projects = data.get("projects", {})
-    entries = [projects[key] for key in keys if isinstance(projects, dict) and key in projects]
-    if not entries:
+    if config.status == "no_project":
+        cwd = os.getcwd()
+        keys = {cwd, os.path.realpath(cwd)}
         print(
             f"warning: expected actor id {actor_id!r}; no project entry in {config_path} "
             f"for {sorted(keys)!r}",
@@ -48,20 +44,10 @@ def guard(actor_id: str) -> bool:
 
     found = []
     malformed = False
-    for entry in entries:
-        servers = entry.get("mcpServers", {}) if isinstance(entry, dict) else {}
-        for server in servers.values() if isinstance(servers, dict) else ():
-            args = server.get("args", []) if isinstance(server, dict) else []
-            if not isinstance(args, list):
-                continue
-            positions = [i for i, value in enumerate(args) if value == "--actor-id"]
-            if len(positions) > 1:
-                malformed = True
-            for position in positions:
-                if position + 1 >= len(args):
-                    malformed = True
-                else:
-                    found.append(str(args[position + 1]))
+    for _name, args in config.servers:
+        ids, bad = actor_ids_in(args)
+        found.extend(ids)
+        malformed = malformed or bad
 
     distinct = set(found)
     if malformed or distinct != {actor_id}:

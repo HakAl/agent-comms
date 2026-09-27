@@ -7,11 +7,16 @@
 # script never enters. The wheel is installed with `uv tool install` into a
 # tool directory, bin directory and HOME whose paths contain a space, and the
 # ledger path has one too. From a working directory outside the checkout the
-# installed commands then bootstrap the example registry, run a mailbox
-# exchange through agent-comms-mcp over stdio, dispatch to the fake worker,
-# spawn it with one monitor pass, wait for its reply, reconcile with a second
-# pass and check that dispatch-status shows the closed row. `agent-comms
-# version` must report git fields as unknown, since there is no checkout.
+# installed commands then set up a team with the fake runtime (`agent-comms
+# setup` writes the registry and registers it; no example file is copied),
+# get a clean `agent-comms doctor` report, run a mailbox exchange through
+# agent-comms-mcp over stdio, dispatch to the fake worker, spawn it with one
+# monitor pass, wait for its reply, reconcile with a second pass and check
+# that dispatch-status shows the closed row. The final `agent-comms doctor`
+# must then fail on exactly one check, `monitor`, whose recorded pid is the
+# exited `--once` monitor, with that one command as its only fix: the failure
+# surface on a real install. `agent-comms version` must report git fields as
+# unknown, since there is no checkout.
 #
 # UV_PYTHON selects the interpreter (CI runs 3.11 and 3.14). The scratch root
 # is removed at exit unless INSTALL_SMOKE_KEEP=1. Run through
@@ -92,7 +97,6 @@ fi
 mkdir -p "$root/src"
 git archive --format=tar "$snapshot" | tar -x -C "$root/src"
 (cd "$root/src" && uv build -q --wheel --out-dir "$root/wheels") || fail "uv build failed"
-cp "$root/src/config/actors.example.json" "$root/actors.json"
 set -- "$root"/wheels/agent_comms-*.whl
 wheel=$1
 [ "$#" -eq 1 ] && [ -f "$wheel" ] || fail "expected one wheel under $root/wheels, found: $*"
@@ -165,10 +169,21 @@ if problems:
 PY
 info "version: repo_root under the tool venv, git fields unknown, pins present for this platform"
 
-cp "$root/actors.json" "$HOME/.agent-comms/actors.json"
-"$bin/agent-comms" bootstrap >bootstrap.json || fail "bootstrap failed"
+"$bin/agent-comms" setup --project-root "$PROJECT_A_ROOT" --team team-a --runtimes fake --clients "" \
+  --human alice --human-id "$human" --yes >setup.json || fail "setup failed: $(cat setup.json)"
+[ -f "$HOME/.agent-comms/actors.json" ] || fail "setup did not write the registry under $HOME/.agent-comms"
 "$bin/agent-comms" actors >/dev/null || fail "actors failed"
-info "bootstrapped the example registry"
+info "setup registered team-a: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(", ".join(d["actors"]))' setup.json)"
+# The clean report after setup: nothing failed, so nothing to fix (the
+# monitor has not run yet, which is a warning, not a failure).
+"$bin/agent-comms" doctor >doctor-1.json || fail "doctor after setup failed: $(cat doctor-1.json)"
+python3 - <<'PY' || fail "doctor after setup is not clean"
+import json, sys
+report = json.load(open("doctor-1.json"))
+if not report["ok"] or report["fixes"]:
+    sys.exit("FAIL install-smoke: doctor after setup: " + json.dumps(report, sort_keys=True))
+PY
+info "doctor after setup: ok, no fixes"
 
 # 5. Mailbox exchange over stdio MCP: architect sends, worker reads and acks.
 python3 "$client" --mcp "$bin/agent-comms-mcp" --sender "$architect" --recipient "$worker" >exchange.json \
@@ -231,7 +246,29 @@ state=$(row_state)
 [ "$state" = closed/satisfied ] || fail "dispatch row changed after reconciliation: $state"
 info "dispatch $dispatch_id closed with result satisfied"
 
-# 7. The read side still answers, and the ledger stayed under the scratch root.
+# 7. Doctor on the used install: the heartbeat names the exited --once
+#    monitor, so exactly the monitor check fails, with its one command as the
+#    only fix; everything else is ok, a warning or a skip.
+set +e
+"$bin/agent-comms" doctor >doctor-2.json
+doctor_rc=$?
+set -e
+[ "$doctor_rc" -eq 3 ] || fail "final doctor exited $doctor_rc, expected 3: $(cat doctor-2.json)"
+python3 - <<'PY' || fail "final doctor did not report exactly the dead monitor"
+import json, sys
+report = json.load(open("doctor-2.json"))
+failing = [c["id"] for c in report["checks"] if c["status"] == "fail"]
+problems = []
+if failing != ["monitor"]:
+    problems.append(f"failing checks {failing}, expected ['monitor']")
+if len(report["fixes"]) != 1 or not report["fixes"][0].startswith("agent-comms-monitor "):
+    problems.append(f"fixes {report['fixes']}, expected the one monitor command")
+if problems:
+    sys.exit("FAIL install-smoke: " + "; ".join(problems) + ": " + json.dumps(report, sort_keys=True))
+PY
+info "final doctor: exit 3, monitor is the only failing check"
+
+# 8. The read side still answers, and the ledger stayed under the scratch root.
 "$bin/agent-comms" inbox "$architect" >inbox.txt || fail "inbox failed"
 "$bin/agent-comms" version >/dev/null || fail "version failed after the run"
 [ -f "$AGENT_COMMS_DB" ] || fail "ledger not found at $AGENT_COMMS_DB"

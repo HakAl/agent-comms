@@ -1,10 +1,13 @@
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
+import contextlib
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -104,6 +107,33 @@ class ActorConfigTest(unittest.TestCase):
             self.assertEqual(config["actors"]["alpha-architect"]["kind"], "agent")
             normalized = json.loads(canonical.read_text())
             self.assertIn("alpha-architect", normalized["actors"])
+
+    def test_bootstrap_registers_owners_before_workers_whatever_the_file_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "actors.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "actors": {
+                            "a-worker": {"kind": "agent", "display_name": "a-worker", "team": "t", "role": "worker", "runtime": "fake", "owner": "z-architect", "project_root": str(root), "capabilities": []},
+                            "z-architect": {"kind": "agent", "display_name": "z-architect", "team": "t", "role": "architect", "project_root": str(root), "capabilities": []},
+                        }
+                    }
+                )
+            )
+            store = Store(root / "agent-comms.sqlite")
+            registered = bootstrap_store(store, config)
+            self.assertEqual([row["agent_id"] for row in registered], ["z-architect", "a-worker"])
+            self.assertEqual({actor["id"] for actor in store.list_actors()}, {"a-worker", "z-architect"})
+
+    def test_non_agent_actor_without_display_name_is_refused_not_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "actors.json"
+            config.write_text(json.dumps({"actors": {"01M36YTJV9XBW95S6ZWV47C4RG": {"kind": "human"}}}))
+            with self.assertRaisesRegex(ValidationError, "human actor 01M36YTJV9XBW95S6ZWV47C4RG requires display_name"):
+                bootstrap_store(Store(root / "agent-comms.sqlite"), config)
 
     def test_non_agent_actor_with_spawn_metadata_rejects(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -218,6 +248,55 @@ class ActorConfigTest(unittest.TestCase):
             self.assertNotIn("mcp__agent-comms__dispatch_agent", allowed_tools)
             self.assertNotIn("mcp__agent-comms__register_actor", allowed_tools)
             self.assertNotIn("mcp__agent-comms__register_agent", allowed_tools)
+
+    def test_bootstrap_codex_custody_provisions_the_worker_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            custody = root / "custody"
+            source = root / "shared" / "auth.json"  # absent: the link dangles until codex login
+            config = root / "actors.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "actors": {
+                            "01M36YTJV9XBW95S6ZWV47C4RG": {"kind": "human", "display_name": "alice"},
+                            "alpha-architect": {"kind": "agent", "display_name": "alpha-architect", "team": "alpha", "role": "architect", "project_root": str(root), "capabilities": []},
+                            "alpha-codex-worker": {"kind": "agent", "display_name": "alpha-codex-worker", "team": "alpha", "role": "worker", "owner": "alpha-architect", "runtime": "codex", "project_root": str(root), "capabilities": []},
+                        }
+                    }
+                )
+            )
+            with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), \
+                    mock.patch.object(paths, "runtime_codex_auth_source", return_value=source):
+                explicit = Store(root / "explicit.sqlite")
+                bootstrap_store(explicit, config, codex_custody=True)
+                home = custody / "default" / "alpha-codex-worker"
+                actors = {actor["id"]: actor for actor in explicit.list_actors()}
+                self.assertEqual(actors["alpha-codex-worker"]["spawn"]["env"]["CODEX_HOME"], str(home))
+                self.assertTrue((home / "config.toml").is_file())
+                self.assertTrue((home / "alpha-codex-worker.config.toml").is_file())
+                self.assertTrue((home / "auth.json").is_symlink())
+                self.assertFalse((home / "auth.json").exists())
+                self.assertEqual(os.readlink(home / "auth.json"), str(source.resolve()))
+                # SETUP-002 F1: the worker's only ledger binding is its config.toml.
+                args = tomllib.loads((home / "config.toml").read_text())["mcp_servers"]["agent-comms"]["args"]
+                self.assertEqual(args, ["--actor-id", "alpha-codex-worker", "--db", os.path.abspath(str(root / "explicit.sqlite"))])
+                # An explicit ledger keeps the legacy placeholder unless told otherwise.
+                legacy = Store(root / "legacy.sqlite")
+                bootstrap_store(legacy, config)
+                actors = {actor["id"]: actor for actor in legacy.list_actors()}
+                self.assertEqual(actors["alpha-codex-worker"]["spawn"]["env"]["CODEX_HOME"], "{codex_home}")
+                # The default ledger derives custody, so bootstrap after setup does not downgrade the worker.
+                default = Store(root / "default.sqlite", is_default_db_open=True)
+                bootstrap_store(default, config)
+                actors = {actor["id"]: actor for actor in default.list_actors()}
+                self.assertEqual(actors["alpha-codex-worker"]["spawn"]["env"]["CODEX_HOME"], str(home))
+                args = tomllib.loads((home / "config.toml").read_text())["mcp_servers"]["agent-comms"]["args"]
+                self.assertEqual(args, ["--actor-id", "alpha-codex-worker"])
+                with contextlib.redirect_stderr(io.StringIO()):
+                    bootstrap_store(default, config, codex_custody=False, override_protected="test: legacy form")
+                actors = {actor["id"]: actor for actor in default.list_actors()}
+                self.assertEqual(actors["alpha-codex-worker"]["spawn"]["env"]["CODEX_HOME"], "{codex_home}")
 
     def test_register_actor_rejects_dispatch_cap_below_one(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

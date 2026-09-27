@@ -25,6 +25,8 @@ from . import (
     post_status,
     status,
     version,
+    doctor,
+    setup,
 )
 
 COMMAND_MODULES = [
@@ -52,6 +54,8 @@ COMMAND_MODULES = [
     post_status,
     status,
     version,
+    doctor,
+    setup,
 ]
 
 COMMANDS = {module.NAME: module for module in COMMAND_MODULES}

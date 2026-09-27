@@ -79,6 +79,7 @@ def onboard_worker(
                     project_root_value,
                     auth_source=paths.runtime_codex_auth_source(),
                     enforce_custody_root=True,
+                    link_absent_source=True,
                 )
             else:
                 # Explicit-DB / scratch Store: preserve the byte-frozen legacy
