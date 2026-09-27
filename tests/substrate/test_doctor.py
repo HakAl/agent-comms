@@ -331,6 +331,40 @@ class RegistryAndLedgerChecksTest(_Scratch):
         self.assertEqual(snapshot.dead_credentials, [])
         self.assertEqual(doctor.runtimes_in_use(snapshot, None), {"fake", "codex"})
 
+    def insert_dispatch(self, store: Store, dispatch_id: str, recipient: str, status: str = "closed") -> None:
+        with store.connection() as conn:
+            conn.execute(
+                "insert into dispatch_ledger(dispatch_id, idempotency_key, thread_ref, recipient_actor_id, "
+                "producer_actor_id, originating_actor_id, policy_name, policy_version, policy_issued_by, "
+                "status, created_at) values (?, ?, ?, ?, ?, ?, 'p', 'v', ?, ?, '2026-01-01T00:00:00+00:00')",
+                (dispatch_id, dispatch_id, dispatch_id, recipient, "t-architect", "t-architect", HUMAN, status),
+            )
+
+    def test_ledger_counts_every_dispatch_that_needs_a_monitor(self) -> None:
+        # Only a finished dispatch to a fake worker is exempt. A recipient that
+        # is not a registered fake worker counts, a runtime-less recipient must
+        # not relax the check, and unfinished fake work counts too.
+        store = self.bootstrap(workers=("fake", "codex"))
+        for status in ("closed", "dlq", "spawn_failed_message_landed", "cancelled"):
+            self.insert_dispatch(store, f"d-fake-{status}", "t-fake-worker", status)
+        _, snapshot = doctor.check_ledger(self.db)
+        self.assertEqual((snapshot.dispatch_count, snapshot.monitored_dispatch_count), (4, 0))
+        self.insert_dispatch(store, "d-codex", "t-codex-worker")
+        self.insert_dispatch(store, "d-no-runtime", "t-architect")
+        _, snapshot = doctor.check_ledger(self.db)
+        self.assertEqual((snapshot.dispatch_count, snapshot.monitored_dispatch_count), (6, 2))
+
+    def test_ledger_counts_unfinished_fake_dispatches(self) -> None:
+        # DEMO-001 F2: a queued fake row has no worker to finish it; only a
+        # reconcile pass starts it, so it needs the monitor.
+        store = self.bootstrap(workers=("fake",))
+        self.insert_dispatch(store, "d-done", "t-fake-worker")
+        self.insert_dispatch(store, "d-queued", "t-fake-worker", "queued")
+        self.insert_dispatch(store, "d-running", "t-fake-worker", "in_flight")
+        _, snapshot = doctor.check_ledger(self.db)
+        self.assertEqual((snapshot.dispatch_count, snapshot.monitored_dispatch_count), (3, 2))
+        self.assertEqual(doctor.check_monitor(snapshot)["status"], doctor.FAIL)
+
     def test_ledger_two_humans_need_the_operator_override(self) -> None:
         self.bootstrap(humans=(HUMAN, "01M36YTJV9XBW95S6ZWV47C4RH"))
         result, snapshot = doctor.check_ledger(self.db)
@@ -594,6 +628,30 @@ class MonitorCheckTest(unittest.TestCase):
         result = doctor.check_monitor(self._snapshot(dispatches=3))
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("3 dispatches", result["detail"])
+
+    def test_absent_heartbeat_only_warns_when_every_dispatch_was_a_finished_fake_one(self) -> None:
+        # The demo dispatches to a fake worker without a monitor; that must
+        # not turn a clean doctor into a failing one.
+        snapshot = self._snapshot(dispatches=2)
+        snapshot.monitored_dispatch_count = 0
+        result = doctor.check_monitor(snapshot)
+        self.assertEqual(result["status"], doctor.WARN)
+        self.assertIn("2 dispatches, all to fake workers and finished", result["detail"])
+        self.assertEqual(result["fix"], f"agent-comms-monitor --human-actor-id {HUMAN}")
+        snapshot.monitored_dispatch_count = 1
+        result = doctor.check_monitor(snapshot)
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn("2 dispatches", result["detail"])
+
+    def test_fake_only_dispatches_do_not_excuse_a_stale_or_dead_monitor(self) -> None:
+        for heartbeat, alive in (
+            ({"last_pass_at": (NOW - timedelta(hours=1)).isoformat(), "pid": 4242}, True),
+            ({"last_pass_at": (NOW - timedelta(seconds=10)).isoformat(), "pid": 4242}, False),
+        ):
+            snapshot = self._snapshot(heartbeat, dispatches=1)
+            snapshot.monitored_dispatch_count = 0
+            result = doctor.check_monitor(snapshot, pid_alive=lambda _pid, alive=alive: alive, now=NOW)
+            self.assertEqual(result["status"], doctor.FAIL, result)
 
     def test_stale_dead_pid_and_running(self) -> None:
         stale = {"last_pass_at": (NOW - timedelta(hours=1)).isoformat(), "pid": 4242}

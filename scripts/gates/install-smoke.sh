@@ -9,7 +9,8 @@
 # ledger path has one too. From a working directory outside the checkout the
 # installed commands then set up a team with the fake runtime (`agent-comms
 # setup` writes the registry and registers it; no example file is copied),
-# get a clean `agent-comms doctor` report, run a mailbox exchange through
+# get a clean `agent-comms doctor` report, run `agent-comms demo` and require
+# doctor to stay clean after it, run a mailbox exchange through
 # agent-comms-mcp over stdio, dispatch to the fake worker, spawn it with one
 # monitor pass, wait for its reply, reconcile with a second pass and check
 # that dispatch-status shows the closed row. The final `agent-comms doctor`
@@ -184,6 +185,27 @@ if not report["ok"] or report["fixes"]:
     sys.exit("FAIL install-smoke: doctor after setup: " + json.dumps(report, sort_keys=True))
 PY
 info "doctor after setup: ok, no fixes"
+
+# The demo a new user runs next: one dispatch to the fake worker, driven to
+# closed/satisfied in-process with no monitor and no admin token. It writes
+# no heartbeat, so doctor stays clean afterwards (the monitor check warns).
+"$bin/agent-comms" demo >demo.json 2>demo.err || fail "demo failed: $(cat demo.json) $(cat demo.err)"
+python3 - "$worker" <<'PY' || fail "demo did not show the dispatch, the reply and the final status"
+import json, sys
+result = json.load(open("demo.json"))
+problems = []
+if not result.get("ok") or not result.get("worker_reaped"):
+    problems.append("ok or worker_reaped is false")
+if (result.get("final") or {}).get("status") != "closed" or result["final"].get("result") != "satisfied":
+    problems.append(f"final is {result.get('final')}")
+reply = result.get("reply") or {}
+if reply.get("from") != sys.argv[1] or reply.get("parent_message_id") != result["dispatch"]["message_id"]:
+    problems.append(f"reply is {reply}")
+if problems:
+    sys.exit("FAIL install-smoke: demo: " + "; ".join(problems) + ": " + json.dumps(result, sort_keys=True))
+PY
+"$bin/agent-comms" doctor >doctor-demo.json || fail "doctor after the demo failed: $(cat doctor-demo.json)"
+info "demo: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["dispatch"]["dispatch_id"], d["final"]["status"] + "/" + d["final"]["result"], repr(d["reply"]["body"]))' demo.json); doctor still ok"
 
 # 5. Mailbox exchange over stdio MCP: architect sends, worker reads and acks.
 python3 "$client" --mcp "$bin/agent-comms-mcp" --sender "$architect" --recipient "$worker" >exchange.json \
