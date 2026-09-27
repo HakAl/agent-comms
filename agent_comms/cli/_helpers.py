@@ -284,17 +284,45 @@ def load_actor_config(config_path: Path) -> dict:
     return normalized
 
 
+def _is_worker(entry: object) -> bool:
+    return isinstance(entry, dict) and entry.get("kind", "agent") == "agent" and entry.get("role", "architect") == "worker"
+
+
 def bootstrap_store(
     store: Store,
     config_path: Path,
     *,
     override_protected: str | None = None,
     override_records: list[dict] | None = None,
+    codex_custody: bool | None = None,
 ) -> list[dict]:
+    """Register every actor in the registry; return the registered rows.
+
+    ``codex_custody`` decides where a codex worker's ``CODEX_HOME`` lives.
+    ``True`` provisions the checkout-independent home under the runtime
+    custody root (the same home ``onboard-worker`` and ``provision-codex-home``
+    use on the default ledger) and renders the spawn with it, linking the
+    shared runtime ``auth.json`` even before the first login. ``False`` keeps
+    the legacy ``{codex_home}`` placeholder. ``None`` derives it from the
+    store: the default ledger is custody, an explicit ``--db`` ledger is
+    legacy, so ``agent-comms bootstrap`` after ``agent-comms setup`` does not
+    downgrade the workers setup provisioned.
+    """
+    from .. import provisioning
+
+    if codex_custody is None:
+        codex_custody = bool(store._db.is_default_db_open)
+    # The worker's MCP server binds the ledger through its codex config, so a
+    # store other than the default ledger writes its absolute path there.
+    worker_db = None if store._db.is_default_db_open else os.path.abspath(os.path.expanduser(str(store._db.db_path)))
     config = load_actor_config(config_path)
     canonical = Path(config_path).expanduser().resolve() == DEFAULT_CONFIG.resolve()
     registered = []
-    for actor_id, entry in config.get("actors", {}).items():
+    # A worker's owner must already be registered, so workers go last: the
+    # file's order (a sorted one, say) does not decide whether it bootstraps.
+    entries = list(config.get("actors", {}).items())
+    ordered = [item for item in entries if not _is_worker(item[1])] + [item for item in entries if _is_worker(item[1])]
+    for actor_id, entry in ordered:
         kind = entry.get("kind", "agent")
         override_payload = None
         if not canonical:
@@ -315,7 +343,20 @@ def bootstrap_store(
                 raise ValidationError(f"worker actor {actor_id} requires owner")
             if role != "worker" and "owner" in entry:
                 raise ValidationError(f"owner is only valid for worker actor {actor_id}")
-            spawn = render_spawn(runtime, actor_id) if runtime else None
+            codex_home = None
+            if runtime == "codex" and codex_custody:
+                home = paths.provisioned_codex_home(actor_id)
+                provisioning.write_codex_home(
+                    home,
+                    actor_id,
+                    entry["project_root"],
+                    auth_source=paths.runtime_codex_auth_source(),
+                    enforce_custody_root=True,
+                    link_absent_source=True,
+                    db_path=worker_db,
+                )
+                codex_home = str(home)
+            spawn = render_spawn(runtime, actor_id, codex_home=codex_home) if runtime else None
             registered.append(
                 store.register_agent_actor(
                     actor_id,
@@ -337,6 +378,8 @@ def bootstrap_store(
             if forbidden:
                 fields = ", ".join(sorted(forbidden))
                 raise ValidationError(f"non-agent actor {actor_id} must not define: {fields}")
+            if not entry.get("display_name"):
+                raise ValidationError(f"{kind} actor {actor_id} requires display_name")
             registered.append(
                 store.register_actor(
                     actor_id,

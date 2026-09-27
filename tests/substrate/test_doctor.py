@@ -783,6 +783,25 @@ class McpClientHelpersTest(unittest.TestCase):
         self.assertEqual(mcp_clients.binding(["--actor-id", "a", "--db"])["malformed"], ["--db"])
         self.assertEqual(mcp_clients.flag_values(["--db", "/one", "--db=/two"], "--db"), (["/one", "/two"], True))
 
+    def test_same_ledger_compares_absolute_paths_by_file_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            real = Path(temp_dir) / "real"
+            real.mkdir()
+            (real / "ledger.sqlite").write_text("")
+            link = Path(temp_dir) / "link"
+            link.symlink_to(real)
+            self.assertTrue(mcp_clients.same_ledger(str(link / "ledger.sqlite"), str(real / "ledger.sqlite")))
+            self.assertTrue(mcp_clients.same_ledger(str(real / "ledger.sqlite"), str(real / "ledger.sqlite")))
+            self.assertFalse(mcp_clients.same_ledger(str(real / "other.sqlite"), str(real / "ledger.sqlite")))
+            self.assertFalse(mcp_clients.same_ledger("ledger.sqlite", str(real / "ledger.sqlite")))
+            # The client does not expand ~ when it execs the server, so a stored ~ path is not the file.
+            with mock.patch.dict(os.environ, {"HOME": temp_dir}):
+                self.assertFalse(mcp_clients.same_ledger("~/real/ledger.sqlite", str(real / "ledger.sqlite")))
+                self.assertTrue(mcp_clients.same_ledger(str(real / "ledger.sqlite"), "~/real/ledger.sqlite"))
+            self.assertTrue(mcp_clients.same_ledger(None, None))
+            self.assertFalse(mcp_clients.same_ledger(None, str(real / "ledger.sqlite")))
+            self.assertFalse(mcp_clients.same_ledger(str(real / "ledger.sqlite"), None))
+
     def test_binding_honours_the_entry_environment(self) -> None:
         # The server resolves AGENT_COMMS_DB itself, so an entry that sets it is bound to that ledger.
         self.assertEqual(mcp_clients.binding(["--actor-id", "a"], {"AGENT_COMMS_DB": "/env.sqlite"})["db"], "/env.sqlite")
@@ -950,6 +969,18 @@ class DoctorCommandTest(_Scratch):
                 cli.run(["doctor"])
         by_id = {item["id"]: item for item in json.loads(buffer.getvalue())["checks"]}
         self.assertEqual(by_id["monitor"]["fix"], f"agent-comms-monitor --db {self.db} --human-actor-id {HUMAN}")
+
+    def test_run_doctor_normalizes_a_relative_ledger_path(self) -> None:
+        # A library caller passing a relative path gets the same absolute binding the CLI would.
+        self.bootstrap(seats={"t-architect": ["codex"]})
+        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        previous = os.getcwd()
+        os.chdir(self.db.parent)
+        self.addCleanup(os.chdir, previous)
+        result = doctor.run_doctor(db_path=Path(self.db.name), db_explicit=True)
+        by_id = {item["id"]: item for item in result["checks"]}
+        self.assertEqual(by_id["mcp:t-architect:codex"]["status"], doctor.OK, by_id["mcp:t-architect:codex"])
+        self.assertTrue(by_id["monitor"]["fix"].startswith(f"agent-comms-monitor --db {shlex.quote(os.path.abspath(self.db.name))} "), by_id["monitor"])
 
     def test_native_runtimes_are_checked_through_the_injected_runners(self) -> None:
         self.bootstrap(workers=("claude", "codex"), seats={"t-architect": []})

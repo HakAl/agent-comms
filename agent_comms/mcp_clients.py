@@ -181,6 +181,23 @@ def binding(args: list, env: dict | None = None) -> dict[str, object]:
     }
 
 
+def same_ledger(stored: str | None, expected: str | None) -> bool:
+    """Whether a persisted ``--db`` binding names the expected ledger.
+
+    ``None`` is the default ledger and only matches ``None``. A stored path
+    is taken as written, since the client execs the server without a shell:
+    a relative path resolves from the client's own working directory and a
+    ``~`` is never expanded, so neither matches. Two absolute spellings of
+    one file (through a symlinked directory, say) match.
+    """
+    if stored is None or expected is None:
+        return stored == expected
+    stored = str(stored)
+    if not os.path.isabs(stored):
+        return False
+    return os.path.realpath(stored) == os.path.realpath(os.path.expanduser(str(expected)))
+
+
 def server_argv(mcp_command: str | os.PathLike[str], actor_id: str, db_path: str | os.PathLike[str] | None = None) -> list[str]:
     """The argv a client runs for the seat: the server, its actor and, for an
     explicit ledger, the ledger path (the server opens the default one

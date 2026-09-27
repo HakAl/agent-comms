@@ -10,6 +10,7 @@ import signal
 import subprocess
 import shutil
 import tempfile
+import tomllib
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -655,6 +656,31 @@ class ProductionScratchBoundaryTest(_Base):
         self.assertTrue(auth.is_symlink())
         self.assertEqual(auth.resolve(), runtime_auth.resolve())
 
+    def test_canonical_onboarding_links_the_shared_auth_before_the_first_login(self) -> None:
+        repo = self._make_repo(self.root)
+        worktree_root = self.root / "wt2"
+        worktree_root.mkdir()
+        custody = self.root / "prod-custody-b"
+        runtime_auth = self.root / "runtime-auth-b" / "auth.json"  # absent: no login yet
+        store = Store(self.root / "prod-b.sqlite")
+        store._db.is_default_db_open = True
+        store.init()
+        store.register_agent_actor("team-y-architect", "team-y", "architect", "/srv/team-y", [])
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), \
+                mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
+                contextlib.redirect_stderr(stderr):
+            result = onboard_worker(
+                store, team="team-y", runtime="codex", actor_id="team-y-codex-worker",
+                owner="team-y-architect",
+                project_root="/srv/team-y", worktree_root=str(worktree_root), repo_root=repo,
+            )
+        auth = Path(result["codex_home"]) / "auth.json"
+        self.assertTrue(auth.is_symlink())
+        self.assertFalse(auth.exists())
+        self.assertEqual(os.readlink(auth), str(runtime_auth.resolve()))
+        self.assertIn("codex login", stderr.getvalue())
+
     def test_canonical_explicit_out_of_root_provision_refuses_before_mutation(self) -> None:
         custody = self.root / "prod-custody2"
         store = Store(self.root / "prod2.sqlite")
@@ -686,6 +712,46 @@ class ProductionScratchBoundaryTest(_Base):
         self.assertIn(str(outside / "config.toml"), result["written"])
         self.assertTrue((outside / "config.toml").is_file())
 
+    def test_provision_repair_carries_the_ledger_and_keeps_custody_homes_custody(self) -> None:
+        # SETUP-003: on a ledger other than the default one the rewritten config
+        # binds that ledger; a home under the custody root keeps the shared
+        # runtime auth (linked before login) whichever ledger it serves.
+        custody = self.root / "prod-custody-c"
+        runtime_auth = self.root / "runtime-auth-c" / "auth.json"  # absent
+        store = Store(self.root / "explicit-c.sqlite")  # is_default_db_open False
+        store.init()
+        inside = custody / "default" / "alpha-codex-worker"
+        args = types.SimpleNamespace(actor_id="alpha-codex-worker", project_root=str(self.root), codex_home=str(inside), override_protected=None)
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), \
+                mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
+                contextlib.redirect_stderr(stderr):
+            provision_codex_home.handle(store, args)
+        server = tomllib.loads((inside / "config.toml").read_text())["mcp_servers"]["agent-comms"]
+        self.assertEqual(server["args"], ["--actor-id", "alpha-codex-worker", "--db", os.path.abspath(str(self.root / "explicit-c.sqlite"))])
+        self.assertTrue((inside / "auth.json").is_symlink())
+        self.assertEqual(os.readlink(inside / "auth.json"), str(runtime_auth.resolve()))
+        self.assertIn("codex login", stderr.getvalue())
+        # A legacy home outside the custody root on the same ledger: legacy auth, but the ledger still bound.
+        outside = self.root / "legacy-home-c"
+        args.codex_home = str(outside)
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), contextlib.redirect_stderr(io.StringIO()):
+            provision_codex_home.handle(store, args)
+        server = tomllib.loads((outside / "config.toml").read_text())["mcp_servers"]["agent-comms"]
+        self.assertEqual(server["args"][-2:], ["--db", os.path.abspath(str(self.root / "explicit-c.sqlite"))])
+        self.assertFalse((outside / "auth.json").exists())
+        # The default ledger binds nothing: the server opens it on its own.
+        production = Store(self.root / "prod-c.sqlite")
+        production._db.is_default_db_open = True
+        production.init()
+        args.codex_home = None
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), \
+                mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
+                contextlib.redirect_stderr(io.StringIO()):
+            provision_codex_home.handle(production, args)
+        server = tomllib.loads((inside / "config.toml").read_text())["mcp_servers"]["agent-comms"]
+        self.assertEqual(server["args"], ["--actor-id", "alpha-codex-worker"])
+
     def test_scratch_default_provision_uses_legacy_home_and_auth_without_enforcement(self) -> None:
         # F1: on the scratch surface (is_default_db_open False) the DEFAULT form
         # (--codex-home omitted) must preserve the frozen legacy behavior exactly
@@ -703,7 +769,7 @@ class ProductionScratchBoundaryTest(_Base):
         )
         captured: dict = {}
 
-        def fake_write(codex_home_path, actor_id, project_root, *, auth_source, enforce_custody_root):
+        def fake_write(codex_home_path, actor_id, project_root, *, auth_source, enforce_custody_root, **_kwargs):
             # Capture the resolved branch without materializing the legacy repo-local
             # home (which resolves under the real REPO_ROOT/config tree).
             captured.update(

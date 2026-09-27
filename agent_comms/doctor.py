@@ -551,7 +551,7 @@ def check_mcp(
                 problems.append(f"malformed arguments (repeated or valueless {', '.join(bound['malformed'])})")
             if bound["actor_id"] != actor_id:
                 problems.append(f"bound to actor {bound['actor_id']!r}")
-            if bound["db"] != wanted_binding["db"]:
+            if not mcp_clients.same_ledger(bound["db"], wanted_binding["db"]):
                 problems.append(f"bound to ledger {bound['db']!r}, expected {wanted_binding['db']!r}")
             command = found.command
             if command is None or Path(command).expanduser() != mcp_command:
@@ -587,6 +587,9 @@ def run_doctor(
     now: datetime | None = None,
 ) -> dict:
     executable = executable or sys.executable
+    # Seats persist the ledger path and run from other directories, so the
+    # expected binding and every repair name it absolute, whoever calls.
+    db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
     platform = current_platform()
     ledger = LedgerRef(db_path, db_explicit)
     checks: list[dict] = [check_install(executable), check_runtime_root(paths.runtime_root())]

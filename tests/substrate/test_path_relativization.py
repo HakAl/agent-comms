@@ -268,6 +268,50 @@ class CodexProvisioningTest(unittest.TestCase):
             self.assertIn('args = ["--actor-id", "alpha-codex-worker"]', base)
             self.assertIn('AGENT_COMMS_ACTOR_ID = "alpha-codex-worker"', base)
 
+    def test_codex_base_config_carries_the_ledger_only_when_given(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = tomllib.loads(provisioning.render_codex_base_config("actor-a", "/srv/a"))["mcp_servers"]["agent-comms"]
+            self.assertEqual(server["args"], ["--actor-id", "actor-a"])
+            server = tomllib.loads(provisioning.render_codex_base_config("actor-a", "/srv/a", "/ledgers/team a.sqlite"))["mcp_servers"]["agent-comms"]
+            self.assertEqual(server["args"], ["--actor-id", "actor-a", "--db", "/ledgers/team a.sqlite"])
+            home = Path(temp_dir) / "home"
+            provisioning.write_codex_home(home, "actor-a", "/srv/a", db_path="/ledgers/x.sqlite")
+            server = tomllib.loads((home / "config.toml").read_text())["mcp_servers"]["agent-comms"]
+            self.assertEqual(server["args"][-2:], ["--db", "/ledgers/x.sqlite"])
+
+    def test_write_codex_home_links_an_absent_source_only_on_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            source = root / "shared dir" / "auth.json"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                provisioning.write_codex_home(home, "actor-a", "/srv/a", auth_source=source)
+            self.assertFalse((home / "auth.json").is_symlink())
+            self.assertIn("not a regular file", stderr.getvalue())
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                written = provisioning.write_codex_home(home, "actor-a", "/srv/a", auth_source=source, link_absent_source=True)
+            auth = home / "auth.json"
+            self.assertIn(auth, written)
+            self.assertTrue(auth.is_symlink())
+            self.assertFalse(auth.exists())
+            self.assertEqual(os.readlink(auth), str(source.resolve()))
+            self.assertIn(f"CODEX_HOME={shlex.quote(str(source.parent.resolve()))} codex login", stderr.getvalue())
+            # Once the login writes the target, the same link resolves.
+            source.parent.mkdir()
+            source.write_text("{}")
+            self.assertTrue(auth.exists())
+            # A source that exists but is not a file is still skipped, even on request.
+            directory = root / "dir-source"
+            directory.mkdir()
+            other = root / "other-home"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                provisioning.write_codex_home(other, "actor-a", "/srv/a", auth_source=directory, link_absent_source=True)
+            self.assertFalse((other / "auth.json").is_symlink())
+            self.assertIn("not a regular file", stderr.getvalue())
+
     def test_write_codex_home_isolates_sibling_actor_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             tmp = Path(temp_dir)

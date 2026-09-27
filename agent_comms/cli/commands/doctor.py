@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .._helpers import DegradedState
@@ -30,7 +31,7 @@ def handle(_store, args):
     from ...doctor import run_doctor
 
     result = run_doctor(
-        db_path=Path(args.db),
+        db_path=Path(os.path.abspath(os.path.expanduser(args.db))),
         db_explicit=bool(args.db_explicit),
         clients=parse_clients(args.clients),
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ... import paths
@@ -38,6 +39,11 @@ def handle(store, args):
     # the scratch surface -- default OR explicit -- never inherits production
     # custody containment or the runtime shared auth source.
     production = bool(store._db.is_default_db_open)
+    # The worker's MCP server binds its ledger through this config (the
+    # dispatch adapter passes no AGENT_COMMS_DB), so a store other than the
+    # default ledger writes its absolute path; the default ledger writes none.
+    db_path = None if production else os.path.abspath(os.path.expanduser(str(store._db.db_path)))
+    link_absent_source = False
     if production:
         # Canonical production surface: both the default and an explicit --codex-home
         # are contained in the runtime custody root and use the runtime shared auth
@@ -51,6 +57,16 @@ def handle(store, args):
             codex_home_path = Path(expand_path_value(args.codex_home))
         auth_source = paths.runtime_codex_auth_source()
         enforce_custody_root = True
+        link_absent_source = True
+    elif args.codex_home is not None and provisioning.within_custody_root(Path(expand_path_value(args.codex_home))):
+        # A home under the runtime custody root is custody-managed whichever
+        # ledger it serves (the adapter's own rule), so the repair doctor
+        # prescribes for a setup-provisioned worker on an explicit ledger
+        # rebuilds what setup built: shared runtime auth, linked before login.
+        codex_home_path = Path(expand_path_value(args.codex_home))
+        auth_source = paths.runtime_codex_auth_source()
+        enforce_custody_root = True
+        link_absent_source = True
     else:
         # Explicit-DB / scratch surface (is_default_db_open False): preserve the
         # frozen legacy behavior for BOTH forms -- honored as written, legacy repo-
@@ -69,6 +85,8 @@ def handle(store, args):
         expand_path_value(args.project_root),
         auth_source=auth_source,
         enforce_custody_root=enforce_custody_root,
+        link_absent_source=link_absent_source,
+        db_path=db_path,
     )
     from ... import db, release
 
