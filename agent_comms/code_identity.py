@@ -114,6 +114,8 @@ EXCLUDED_WITH_REASON = {
     "agent_comms/review.py": "separate review CLI workflow, off the dispatch spawn path",
     "agent_comms/reviewing/**": "review CLI implementation, off the dispatch spawn path",
     "agent_comms/seat.py": "interactive architect seat launcher, off the dispatch spawn path",
+    "agent_comms/mcp_clients.py": "architect seat readers and client commands for setup, doctor and the seat launcher, off the dispatch spawn path",
+    "agent_comms/doctor.py": "read-only install diagnosis for the operator CLI, off the dispatch spawn path",
     "agent_comms/push_approval.py": "separate guarded-push approval workflow, off the dispatch spawn path",
     "agent_comms/release.py": "release metadata self-reporting for operator CLI, off the dispatch spawn path",
     "agent_comms/status.py": "Store imports it, but it has no dispatch allow-decision or worker-execution dependency",
