@@ -82,6 +82,7 @@ from agent_comms.hooks import pre_tool_use
 from agent_comms.policies import OPERATOR_MAILBOX_POLICY, compile_policy
 from agent_comms.store import WORKER_DISPATCH_POLICY, Store
 from agent_comms.supervisor import complete_reaper_proof, confirmed_termination_evidence
+from tests.substrate.mcp_stdio_support import call_mcp as call_mcp_over_stdio
 
 ROOT = Path(__file__).resolve().parents[2]
 HUMAN_ID = "01M36YTJV9XBW95S6ZWV47C4RG"
@@ -265,40 +266,22 @@ class ProducerMcpStdioProjectionJoinTest(_StoreBase):
         return env
 
     def _mcp_cancel(self, dispatch_id: str, reason: str, call_id: int = 3) -> dict:
-        messages = [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "acceptance", "version": "0.1"},
+        responses = call_mcp_over_stdio(
+            ["--db", str(self.db_path), "--actor-id", "arch"],
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": call_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "cancel_dispatch",
+                        "arguments": {"dispatch_id": dispatch_id, "reason": reason},
+                    },
                 },
-            },
-            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            {
-                "jsonrpc": "2.0",
-                "id": call_id,
-                "method": "tools/call",
-                "params": {
-                    "name": "cancel_dispatch",
-                    "arguments": {"dispatch_id": dispatch_id, "reason": reason},
-                },
-            },
-        ]
-        payload = "\n".join(json.dumps(message) for message in messages) + "\n"
-        result = subprocess.run(
-            [sys.executable, "-m", "agent_comms.mcp_server", "--db", str(self.db_path), "--actor-id", "arch"],
-            cwd=ROOT,
-            env=self._base_env(),
-            input=payload,
-            text=True,
-            capture_output=True,
+            ],
+            self._base_env(),
             timeout=30,
-            check=True,
         )
-        responses = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         response = next(r for r in responses if r.get("id") == call_id)
         self.assertFalse(response["result"].get("isError", False), response)
         text = "\n".join(item.get("text", "") for item in response["result"]["content"])

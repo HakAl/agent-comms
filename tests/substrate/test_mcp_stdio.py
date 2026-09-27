@@ -14,8 +14,45 @@ from agent_comms.mcp_server import MISSING_ACTOR_ID_MESSAGE, create_server
 from agent_comms.schema import ValidationError
 from agent_comms.policies import OPERATOR_MAILBOX_POLICY
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.substrate.mcp_stdio_support import call_mcp as call_mcp_over_stdio
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Loaded as ``sitecustomize`` by the server subprocess only: every request
+# handler starts half a second late, so stdin EOF reaches the SDK first unless
+# the client keeps stdin open until it has its answers.
+LATE_HANDLER_SITECUSTOMIZE = """
+import importlib.abc
+import importlib.util
+import sys
+
+
+class LateHandler(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path, target=None):
+        if name != "mcp.server.lowlevel.server":
+            return None
+        sys.meta_path.remove(self)
+        spec = importlib.util.find_spec(name)
+        exec_module = spec.loader.exec_module
+
+        def patched_exec_module(module):
+            exec_module(module)
+            import anyio
+
+            handle_message = module.Server._handle_message
+
+            async def late(self, *args, **kwargs):
+                await anyio.sleep(0.5)
+                return await handle_message(self, *args, **kwargs)
+
+            module.Server._handle_message = late
+
+        spec.loader.exec_module = patched_exec_module
+        return spec
+
+
+sys.meta_path.insert(0, LateHandler())
+"""
 
 
 class McpStdioTest(unittest.TestCase):
@@ -171,36 +208,7 @@ class McpStdioTest(unittest.TestCase):
         )
 
     def call_mcp(self, args: list[str], calls: list[dict], env: dict[str, str]) -> list[dict]:
-        messages = [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "smoke", "version": "0.1"},
-                },
-            },
-            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            *calls,
-        ]
-        payload = "\n".join(json.dumps(message) for message in messages) + "\n"
-        result = subprocess.run(
-            [sys.executable, "-m", "agent_comms.mcp_server", *args],
-            cwd=ROOT,
-            env=env,
-            input=payload,
-            text=True,
-            capture_output=True,
-            timeout=15,
-            check=True,
-        )
-        return [
-            json.loads(line)
-            for line in result.stdout.splitlines()
-            if line.startswith("{")
-        ]
+        return call_mcp_over_stdio(args, calls, env)
 
     def test_create_server_none_raises(self) -> None:
         with self.assertRaises(ValidationError) as raised:
@@ -268,6 +276,36 @@ class McpStdioTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(MISSING_ACTOR_ID_MESSAGE, result.stderr)
         self.assertNotIn('"jsonrpc"', result.stdout)
+
+    def test_response_survives_handler_starting_after_stdin_eof(self) -> None:
+        env = self.base_env()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = str(root / "agent-comms.sqlite")
+            config = self.write_actor_config(root)
+            self.run_agent_comms(["--db", db_path, "bootstrap", "--config", str(config)], env)
+            shim = root / "shim"
+            shim.mkdir()
+            (shim / "sitecustomize.py").write_text(LATE_HANDLER_SITECUSTOMIZE)
+            env["PYTHONPATH"] = os.pathsep.join(
+                [str(shim), *filter(None, [env.get("PYTHONPATH")])]
+            )
+
+            responses = self.call_mcp(
+                ["--db", db_path, "--actor-id", "team-b-architect"],
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "list_agents", "arguments": {}},
+                    }
+                ],
+                env,
+            )
+
+        self.assertIn(2, [response.get("id") for response in responses])
 
     def test_launch_with_actor_id_serves_initialize(self) -> None:
         env = self.base_env()
