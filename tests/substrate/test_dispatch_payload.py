@@ -43,6 +43,7 @@ from agent_comms.adapters import DispatchContext, DispatchStart
 from agent_comms.mailbox import Mailbox
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.substrate.mcp_stdio_support import call_mcp as call_mcp_over_stdio
 
 ROOT = Path(__file__).resolve().parents[2]
 HUMAN_ID = "01M36YTJV9XBW95S6ZWV47C4RG"
@@ -2170,32 +2171,7 @@ class McpAndAdminCliSurfaceTest(PayloadHarness):
         return env
 
     def call_mcp(self, args: list[str], calls: list[dict], env: dict[str, str]) -> list[dict]:
-        messages = [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "payload-test", "version": "0.1"},
-                },
-            },
-            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            *calls,
-        ]
-        stdin_payload = "\n".join(json.dumps(message) for message in messages) + "\n"
-        result = subprocess.run(
-            [sys.executable, "-m", "agent_comms.mcp_server", *args],
-            cwd=ROOT,
-            env=env,
-            input=stdin_payload,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=True,
-        )
-        return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        return call_mcp_over_stdio(args, calls, env, timeout=30)
 
     def test_mcp_dispatch_agent_schema_and_file_mode(self) -> None:
         self.write_source("brief.md")

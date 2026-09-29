@@ -24,8 +24,6 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 
 import json
 import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,8 +31,8 @@ from pathlib import Path
 from agent_comms.dispatch_ledger import CANCELLATION_REASON_MAX
 from agent_comms.policies import OPERATOR_MAILBOX_POLICY
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.substrate.mcp_stdio_support import call_mcp as call_mcp_over_stdio
 
-ROOT = Path(__file__).resolve().parents[2]
 HUMAN_ID = "01M36YTJV9XBW95S6ZWV47C4RG"
 
 
@@ -65,32 +63,7 @@ class CancelDispatchMcpSurfaceTest(unittest.TestCase):
         return self.store.dispatch_agent(producer, "wrk", key, f"S {key}", f"B {key}", [])
 
     def call_mcp(self, args: list[str], calls: list[dict], env: dict[str, str]) -> list[dict]:
-        messages = [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "smoke", "version": "0.1"},
-                },
-            },
-            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            *calls,
-        ]
-        payload = "\n".join(json.dumps(message) for message in messages) + "\n"
-        result = subprocess.run(
-            [sys.executable, "-m", "agent_comms.mcp_server", *args],
-            cwd=ROOT,
-            env=env,
-            input=payload,
-            text=True,
-            capture_output=True,
-            timeout=15,
-            check=True,
-        )
-        return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        return call_mcp_over_stdio(args, calls, env)
 
     def _tools(self, args: list[str], env: dict[str, str]) -> dict[str, dict]:
         responses = self.call_mcp(
