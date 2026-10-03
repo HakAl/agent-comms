@@ -10,7 +10,6 @@ worker's home.
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import sys
@@ -18,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from . import paths
+from .codex_binding import toml_array as _toml_array, toml_str as _toml_str
 from .policies import WORKER_DISPATCH_POLICY_VERSION
 from .schema import ValidationError, identity_to_path_segment
 
@@ -55,21 +55,6 @@ def refuse_home_outside_custody_root(codex_home: Path) -> None:
             "provision it under the custody root (the default home), or "
             "pass enforce_custody_root=False for scratch/test materialization"
         )
-
-
-def _toml_str(value: object) -> str:
-    """``value`` as a TOML basic string.
-
-    JSON's escapes for quote, backslash and control characters are valid in
-    TOML, but its ``\\uXXXX`` surrogate pairs for characters beyond the BMP
-    are not, so non-ASCII stays literal (the file is UTF-8). DEL, which JSON
-    leaves raw and TOML forbids, is escaped.
-    """
-    return json.dumps(str(value), ensure_ascii=False).replace("\x7f", "\\u007f")
-
-
-def _toml_array(values: list) -> str:
-    return "[" + ", ".join(_toml_str(value) for value in values) + "]"
 
 
 def render_codex_base_config(actor_id: str, project_root: str, db_path: str | None = None) -> str:

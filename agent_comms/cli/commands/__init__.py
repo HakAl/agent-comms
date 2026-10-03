@@ -27,6 +27,7 @@ from . import (
     version,
     doctor,
     setup,
+    bind_seat,
     demo,
 )
 
@@ -57,6 +58,7 @@ COMMAND_MODULES = [
     version,
     doctor,
     setup,
+    bind_seat,
     demo,
 ]
 

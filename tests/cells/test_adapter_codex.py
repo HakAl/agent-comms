@@ -25,6 +25,15 @@ CONTROL_SOCKET = "/protected/run/s/" + RUN_TOKEN + "/s"
 RUN_DIR = "/protected/run/s/" + RUN_TOKEN
 
 
+class StubCodexAdapter(CodexAdapter):
+    """The adapter with a Python stand-in for ``codex``: the stand-in is not
+    Codex, so the per-run ``-c`` binding (and its ``codex mcp get`` check),
+    covered in tests/substrate/test_codex_project_seat.py, is left out."""
+
+    def _runtime_prefix_args(self, context):  # type: ignore[no-untyped-def]
+        return []
+
+
 def _ready_spawn(wrapper_pid: int) -> supervisor.SupervisedSpawn:
     return supervisor.SupervisedSpawn(
         popen=types.SimpleNamespace(pid=wrapper_pid),
@@ -60,7 +69,7 @@ class CodexAdapterTest(unittest.TestCase):
     def test_spawn_env_codex_home_is_data_driven_per_recipient(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             registry = mock.MagicMock()
 
             spawn_envs = []
@@ -112,7 +121,7 @@ class CodexAdapterTest(unittest.TestCase):
             root = Path(temp_dir)
             out_file = root / "child.env"
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000010_00000010",
@@ -152,7 +161,7 @@ class CodexAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000020_00000020",
@@ -200,7 +209,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "env": {"AGENT_COMMS_ADMIN_TOKEN": "secret", "CODEX_HOME": str(codex_home)},
                 },
             )
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
 
             dispatch = store.dispatch_agent(
                 "alpha-architect",
@@ -220,7 +229,7 @@ class CodexAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000030_00000030",
@@ -306,7 +315,7 @@ class CodexAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000040_00000040",

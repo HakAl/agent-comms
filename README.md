@@ -79,8 +79,9 @@ uv sync
 #    (~/.agent-comms/actors.json: you, one architect, one worker per
 #    runtime), registers them in the mailbox at
 #    ~/.agent-comms/agent-comms.sqlite, provisions the codex worker's home,
-#    and binds the architect seat in your own Claude Code and Codex CLIs
-#    through their `mcp add` commands. No file is edited by hand. On a
+#    and binds the architect seat in your own Claude Code (`claude mcp
+#    add`) and Codex CLI (<project>/.codex/config.toml, kept out of git).
+#    No file is edited by hand. On a
 #    terminal it asks for anything left out; --yes takes the defaults.
 #    The human id below is the one the walkthrough further down uses.
 .venv/bin/agent-comms setup --project-root /absolute/path/to/your/project \

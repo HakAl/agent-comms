@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from agent_comms import cli, doctor, mcp_clients, paths, runtime_pins
+from agent_comms import cli, codex_binding, doctor, mcp_clients, paths, runtime_pins
 from agent_comms.cli._helpers import bootstrap_store
 from agent_comms.db import LEDGER_SCHEMA_VERSION
 from agent_comms.runtime_pins import RuntimePin
@@ -92,6 +92,10 @@ class _Scratch(unittest.TestCase):
                 "CODEX_HOME": str(self.codex_home),
                 runtime_pins.CLAUDE_VERSIONS_DIR_ENV: str(self.root / "custody"),
                 "AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.root / "codex-homes"),
+                # No codex or git on PATH: the CLI runs doctor with the real
+                # which, and the binding Codex resolves is checked in
+                # tests/substrate/test_codex_project_seat.py with stubs.
+                "PATH": str(self.root / "no-bin"),
             },
         )
         env.start()
@@ -117,12 +121,26 @@ class _Scratch(unittest.TestCase):
             server["env"] = env
         self.claude_config.write_text(json.dumps({"projects": {key: {"mcpServers": {"agent-comms": server}}}}))
 
-    def write_codex_seat(self, args, command=MCP_COMMAND) -> None:
+    def codex_target(self, actor_id="t-architect", db_explicit=True) -> mcp_clients.SeatTarget:
+        return mcp_clients.SeatTarget(actor_id, self.root / "project", MCP_COMMAND, self.db, db_explicit, None)
+
+    def write_codex_seat(self, args=None, command=MCP_COMMAND) -> None:
+        """The project entry setup writes, or one with other ``args`` or ``command``."""
+        binding = mcp_clients.SEATS["codex"].binding(self.codex_target())
+        binding = codex_binding.Binding(command, binding.args if args is None else list(args), binding.cwd, binding.env)
+        path = self.root / "project" / ".codex" / "config.toml"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(codex_binding.entry_toml(binding), encoding="utf-8")
+
+    def write_user_codex_seat(self, args) -> None:
         self.codex_home.mkdir(exist_ok=True)
         rendered = ", ".join(json.dumps(item) for item in args)
         (self.codex_home / "config.toml").write_text(
-            f'[mcp_servers.agent-comms]\ncommand = {json.dumps(command)}\nargs = [{rendered}]\n'
+            f'[mcp_servers.agent-comms]\ncommand = {json.dumps(MCP_COMMAND)}\nargs = [{rendered}]\n'
         )
+
+    def bind_seat_fix(self, client, *, replace=False, db=True) -> str:
+        return " ".join(["agent-comms", *(["--db", str(self.db)] if db else []), "bind-seat", "t-architect", "--client", client, *(["--replace-seat"] if replace else [])])
 
     def run_cli(self, *argv) -> tuple[int, dict]:
         buffer = io.StringIO()
@@ -702,28 +720,21 @@ class McpCheckTest(_Scratch):
     def test_absent_claude_seat_fix_adds_from_the_project_directory(self) -> None:
         result = self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertEqual(
-            result["fix"],
-            f"cd {self.project} && claude mcp add agent-comms --scope local -- {MCP_COMMAND} --actor-id t-architect --db {self.db}",
-        )
+        self.assertEqual(result["fix"], self.bind_seat_fix("claude"))
 
     def test_wrong_actor_fix_removes_then_adds(self) -> None:
         self.write_claude_seat(["--actor-id", "other-architect", "--db", str(self.db)])
         result = self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("bound to actor 'other-architect'", result["detail"])
-        self.assertEqual(
-            result["fix"],
-            f"cd {self.project} && claude mcp remove agent-comms --scope local && "
-            f"claude mcp add agent-comms --scope local -- {MCP_COMMAND} --actor-id t-architect --db {self.db}",
-        )
+        self.assertEqual(result["fix"], self.bind_seat_fix("claude", replace=True))
 
     def test_ledger_binding_is_part_of_the_seat(self) -> None:
         self.write_claude_seat(["--actor-id", "t-architect"])
         result = self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("bound to ledger None", result["detail"])
-        self.assertIn("claude mcp remove", result["fix"])
+        self.assertIn("--replace-seat", result["fix"])
         self.assertEqual(self._check({"t-architect": ["claude"]}, db_explicit=False)["mcp:t-architect:claude"]["status"], doctor.OK)
         self.write_claude_seat(["--actor-id", "t-architect", "--db", str(self.db)])
         self.assertEqual(self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]["status"], doctor.OK)
@@ -738,8 +749,11 @@ class McpCheckTest(_Scratch):
         self.write_claude_seat(["--actor-id", "t-architect"], env={"AGENT_COMMS_DB": str(self.db)})
         self.assertEqual(self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]["status"], doctor.OK)
         self.assertEqual(self._check({"t-architect": ["claude"]}, db_explicit=False)["mcp:t-architect:claude"]["status"], doctor.FAIL)
+        # The Codex project entry is the one setup writes, so a spelling of it that differs is not ours.
         self.write_codex_seat(["--actor-id", "t-architect", f"--db={self.db}"])
-        self.assertEqual(self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]["status"], doctor.OK)
+        result = self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn("differs from the entry agent-comms writes in args", result["detail"])
 
     def test_duplicate_flags_are_malformed_not_healthy(self) -> None:
         # DOCTOR-001 F2: a repeated ``--db`` never passes as the default-ledger binding.
@@ -748,7 +762,7 @@ class McpCheckTest(_Scratch):
             result = self._check({"t-architect": ["claude"]}, db_explicit=explicit)["mcp:t-architect:claude"]
             self.assertEqual(result["status"], doctor.FAIL, result)
             self.assertIn("malformed arguments (repeated or valueless --db)", result["detail"])
-            self.assertIn("claude mcp remove", result["fix"])
+            self.assertIn("--replace-seat", result["fix"])
         self.write_claude_seat(["--actor-id", "t-architect", "--actor-id", "t-architect", "--db"])
         result = self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]
         self.assertEqual(result["status"], doctor.FAIL)
@@ -766,7 +780,7 @@ class McpCheckTest(_Scratch):
                 self.assertIn("seats.t-architect", result["fix"])
                 self.assertTrue(result["fix"].endswith(f"agent-comms --db {self.db} setup"), result["fix"])
         # ``--clients`` sidesteps the recorded entry entirely.
-        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        self.write_codex_seat()
         self.assertEqual(self._check({"t-architect": 1}, clients=["codex"])["mcp:t-architect:codex"]["status"], doctor.OK)
 
     def test_wrong_command_is_reported(self) -> None:
@@ -794,18 +808,30 @@ class McpCheckTest(_Scratch):
     def test_codex_seat_absent_wrong_and_present(self) -> None:
         result = self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertEqual(result["fix"], f"codex mcp add agent-comms -- {MCP_COMMAND} --actor-id t-architect --db {self.db}")
+        self.assertIn(".codex/config.toml", result["detail"])
+        self.assertEqual(result["fix"], self.bind_seat_fix("codex"))
         self.write_codex_seat(["--actor-id", "someone-else", "--db", str(self.db)])
         result = self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertEqual(result["fix"], f"codex mcp add agent-comms -- {MCP_COMMAND} --actor-id t-architect --db {self.db}")
-        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
-        self.assertEqual(self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]["status"], doctor.OK)
+        self.assertIn("bound to actor 'someone-else'", result["detail"])
+        self.assertEqual(result["fix"], self.bind_seat_fix("codex", replace=True))
+        self.write_codex_seat()
+        results = self._check({"t-architect": ["codex"]})
+        self.assertEqual(results["mcp:t-architect:codex"]["status"], doctor.OK)
+        # No codex on PATH: the binding Codex resolves is skipped, not passed.
+        self.assertEqual(results["mcp:t-architect:codex:effective"]["status"], doctor.SKIP)
+
+    def test_user_level_codex_entry_without_a_project_entry_warns(self) -> None:
+        self.write_user_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        result = self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]
+        self.assertEqual(result["status"], doctor.WARN)
+        self.assertIn("applies in every directory", result["detail"])
+        self.assertEqual(result["fix"], self.bind_seat_fix("codex"))
 
     def test_clients_override_replaces_the_recorded_seats(self) -> None:
-        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        self.write_codex_seat()
         results = self._check({"t-architect": ["claude"]}, clients=["codex"])
-        self.assertEqual(list(results), ["mcp:t-architect:codex"])
+        self.assertEqual(list(results), ["mcp:t-architect:codex", "mcp:t-architect:codex:effective"])
         self.assertEqual(results["mcp:t-architect:codex"]["status"], doctor.OK)
         results = self._check({"t-architect": ["claude"]}, clients=[])
         self.assertEqual(results["mcp:t-architect"]["status"], doctor.SKIP)
@@ -822,20 +848,21 @@ class McpCheckTest(_Scratch):
         self.assertNotIn("cd ''", result["fix"])
         self.assertIn("project_root", result["detail"])
 
-    def test_unparseable_codex_config_counts_as_absent(self) -> None:
-        self.codex_home.mkdir()
-        (self.codex_home / "config.toml").write_text("[broken")
+    def test_unparseable_codex_project_file_is_left_to_the_user(self) -> None:
+        path = self.root / "project" / ".codex" / "config.toml"
+        path.parent.mkdir()
+        path.write_text("[broken")
         result = self._check({"t-architect": ["codex"]})["mcp:t-architect:codex"]
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertIn("config.toml", result["detail"])
-        self.assertEqual(result["fix"], f"codex mcp add agent-comms -- {MCP_COMMAND} --actor-id t-architect --db {self.db}")
+        self.assertIn("does not parse as TOML", result["detail"])
+        self.assertNotIn("bind-seat", result["fix"])
 
     def test_unparseable_claude_config_counts_as_absent(self) -> None:
         self.claude_config.write_text("{")
         result = self._check({"t-architect": ["claude"]})["mcp:t-architect:claude"]
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn(str(self.claude_config), result["detail"])
-        self.assertNotIn("remove", result["fix"])
+        self.assertEqual(result["fix"], self.bind_seat_fix("claude"))
 
 
 class McpClientHelpersTest(unittest.TestCase):
@@ -887,11 +914,7 @@ class McpClientHelpersTest(unittest.TestCase):
         argv = mcp_clients.server_argv("/bin/agent-comms-mcp", "arch")
         self.assertEqual(argv, ["/bin/agent-comms-mcp", "--actor-id", "arch"])
         self.assertEqual(mcp_clients.claude_add_command(argv), ["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", *argv])
-        self.assertEqual(mcp_clients.codex_add_command(argv), ["codex", "mcp", "add", "agent-comms", "--", *argv])
-        self.assertEqual(mcp_clients.render_fix("claude", "/p q", argv, replace=False), "cd '/p q' && claude mcp add agent-comms --scope local -- /bin/agent-comms-mcp --actor-id arch")
-        self.assertEqual(mcp_clients.render_fix("codex", "/p", argv, replace=True), "codex mcp add agent-comms -- /bin/agent-comms-mcp --actor-id arch")
-        with self.assertRaises(ValueError):
-            mcp_clients.render_fix("cursor", "/p", argv, replace=False)
+        self.assertEqual(mcp_clients.claude_remove_command(), ["claude", "mcp", "remove", "agent-comms", "--scope", "local"])
 
     def test_claude_reader_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -960,7 +983,7 @@ class DoctorCommandTest(_Scratch):
     def test_clean_install_exits_zero_with_no_fixes(self) -> None:
         self.bootstrap(seats={"t-architect": ["claude", "codex"]})
         self.write_claude_seat(["--actor-id", "t-architect", "--db", str(self.db)])
-        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        self.write_codex_seat()
         rc, result = self.run_cli()
         self.assertEqual(rc, 0, result)
         self.assertTrue(result["ok"])
@@ -980,10 +1003,10 @@ class DoctorCommandTest(_Scratch):
         rc, result = self.run_cli()
         self.assertEqual(rc, 3)
         self.assertEqual([item["id"] for item in result["checks"] if item["status"] == doctor.FAIL], ["mcp:t-architect:claude"])
-        self.assertTrue(result["fixes"][0].startswith(f"cd {os.path.realpath(self.root / 'project')} && claude mcp add"), result["fixes"])
+        self.assertEqual(result["fixes"][0], self.bind_seat_fix("claude"))
         rc, result = self.run_cli("--clients", "")
         self.assertEqual(rc, 0, result)
-        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        self.write_codex_seat()
         rc, result = self.run_cli("--clients", "codex")
         self.assertEqual(rc, 0, result)
         self.assertNotIn("mcp:t-architect:claude", {item["id"] for item in result["checks"]})
@@ -1012,7 +1035,7 @@ class DoctorCommandTest(_Scratch):
         self.write_claude_seat(["--actor-id", "t-architect", "--db", str(self.db), "--db", str(self.db)])
         rc, result = self.run_cli()
         self.assertEqual(rc, 3)
-        self.assertEqual(result["fixes"], [f"cd {os.path.realpath(self.root / 'project')} && claude mcp remove agent-comms --scope local && claude mcp add agent-comms --scope local -- {MCP_COMMAND} --actor-id t-architect --db {self.db}"])
+        self.assertEqual(result["fixes"], [self.bind_seat_fix("claude", replace=True)])
 
     def test_malformed_seats_entry_still_yields_the_report(self) -> None:
         # DOCTOR-001 F4 through the CLI: exit 3 with the report, not a traceback.
@@ -1036,7 +1059,7 @@ class DoctorCommandTest(_Scratch):
         self.assertEqual(rc, 3)
         by_id = {item["id"]: item for item in result["checks"]}
         self.assertEqual(by_id["monitor"]["fix"], f"agent-comms-monitor --human-actor-id {HUMAN}")
-        self.assertEqual(by_id["mcp:t-architect:codex"]["fix"], f"codex mcp add agent-comms -- {MCP_COMMAND} --actor-id t-architect")
+        self.assertEqual(by_id["mcp:t-architect:codex"]["fix"], self.bind_seat_fix("codex", db=False))
         with mock.patch.dict(os.environ, {"AGENT_COMMS_DB": str(self.db)}):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
@@ -1047,7 +1070,7 @@ class DoctorCommandTest(_Scratch):
     def test_run_doctor_normalizes_a_relative_ledger_path(self) -> None:
         # A library caller passing a relative path gets the same absolute binding the CLI would.
         self.bootstrap(seats={"t-architect": ["codex"]})
-        self.write_codex_seat(["--actor-id", "t-architect", "--db", str(self.db)])
+        self.write_codex_seat()
         previous = os.getcwd()
         os.chdir(self.db.parent)
         self.addCleanup(os.chdir, previous)

@@ -8,8 +8,9 @@ check in order, so an agent can branch on the exit code and act on the
 fixes without reading the details. ``warn`` does not fail the report.
 
 Doctor never creates anything. It opens the ledger read-only and only when
-the file exists, never runs the schema, and shells out only to the runtime
-binaries it is checking (``--version``, ``auth status``). Each check takes
+the file exists, never runs the schema, and shells out only to read: the
+runtime binaries it is checking (``--version``, ``auth status``, ``codex mcp
+get``) and ``git rev-parse``/``ls-files`` for a Codex seat. Each check takes
 what it needs as arguments so tests inject paths, a ``which`` and a
 subprocess runner instead of patching the world.
 """
@@ -532,16 +533,17 @@ def check_mcp(
     db_explicit: bool,
     clients: list[str] | None = None,
     executable: str = sys.executable,
-    claude_config: Path | None = None,
-    codex_config: Path | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Runner = subprocess.run,
 ) -> list[dict]:
-    """One ``mcp:<architect>:<client>`` entry per recorded (or requested) seat."""
+    """One ``mcp:<architect>:<client>`` entry per recorded (or requested)
+    seat, plus whatever the client's own check adds (Codex: the binding
+    Codex resolves, as ``mcp:<architect>:codex:effective``). Every seat fix
+    is the ``bind-seat`` line."""
     checks: list[dict] = []
     if not architects:
         return [check("mcp", SKIP, "no architect registered (see ledger)")]
-    mcp_command = Path(executable).parent / "agent-comms-mcp"
-    claude_config = claude_config or mcp_clients.claude_config_path()
-    codex_config = codex_config or mcp_clients.codex_config_path()
+    mcp_command = str(Path(executable).parent / "agent-comms-mcp")
     ledger = LedgerRef(db_path, db_explicit)
     for architect in architects:
         actor_id = architect["id"]
@@ -567,42 +569,18 @@ def check_mcp(
         if not project_root:
             checks.append(check(f"mcp:{actor_id}", FAIL, f"{actor_id} has no project_root, so its seat cannot be located", f"re-register {actor_id} with a project_root: {ledger.cli('bootstrap')}"))
             continue
-        expected = mcp_clients.server_argv(mcp_command, actor_id, db_path if db_explicit else None, paths.home_override())
-        wanted_binding = mcp_clients.binding(expected)
+        target = mcp_clients.SeatTarget(actor_id, Path(project_root), mcp_command, db_path, db_explicit, paths.home_override())
         for client in wanted:
             check_id = f"mcp:{actor_id}:{client}"
-            if client not in mcp_clients.CLIENTS:
+            seat = mcp_clients.SEATS.get(client)
+            if seat is None:
                 checks.append(check(check_id, FAIL, f"unknown MCP client {client!r}", f"use one of: {', '.join(mcp_clients.CLIENTS)}"))
                 continue
-            if client == "claude":
-                config = mcp_clients.read_claude_seat(claude_config, project_root)
-            else:
-                config = mcp_clients.read_codex_seat(codex_config)
-            found = config.server() if config.status == "ok" else None
-            if found is None:
-                why = {
-                    "missing": f"no {client} config at {config.path}",
-                    "unparseable": f"{config.path}: {config.error}",
-                    "no_project": f"{config.path} has no entry for {project_root}",
-                }.get(config.status, f"{config.path} has no {mcp_clients.SERVER_NAME} server")
-                checks.append(check(check_id, FAIL, f"{actor_id} has no {client} seat: {why}", mcp_clients.render_fix(client, project_root, expected, replace=False)))
-                continue
-            bound = mcp_clients.binding(found.args, found.env)
-            problems = []
-            if bound["malformed"]:
-                problems.append(f"malformed arguments (repeated or valueless {', '.join(bound['malformed'])})")
-            if bound["actor_id"] != actor_id:
-                problems.append(f"bound to actor {bound['actor_id']!r}")
-            if not mcp_clients.same_ledger(bound["db"], wanted_binding["db"]):
-                problems.append(f"bound to ledger {bound['db']!r}, expected {wanted_binding['db']!r}")
-            if not mcp_clients.same_home(bound["home"], wanted_binding["home"]):
-                problems.append(f"bound to home {bound['home']!r}, expected {wanted_binding['home']!r}")
-            if not mcp_clients.same_command(found.command, mcp_command):
-                problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
-            if problems:
-                checks.append(check(check_id, FAIL, f"{actor_id} {client} seat in {config.path}: {'; '.join(problems)}", mcp_clients.render_fix(client, project_root, expected, replace=True)))
-                continue
-            checks.append(check(check_id, OK, f"{actor_id} {client} seat in {config.path} binds {actor_id}"))
+            for finding in seat.diagnose(target, which=which, run=run):
+                fix = finding.fix
+                if fix in ("rebind", "replace"):
+                    fix = ledger.cli("bind-seat", actor_id, "--client", client, *(["--replace-seat"] if fix == "replace" else []))
+                checks.append(check(check_id + finding.suffix, finding.status, finding.detail, fix))
     return checks
 
 
@@ -676,6 +654,8 @@ def run_doctor(
                 db_explicit=db_explicit,
                 clients=clients,
                 executable=executable,
+                which=which,
+                run=run,
             )
         )
     else:

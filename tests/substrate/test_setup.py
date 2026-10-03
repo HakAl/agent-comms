@@ -32,7 +32,10 @@ def _completed(argv, returncode=0, stdout="", stderr=""):
 
 class FakeClients:
     """``claude`` and ``codex`` as setup sees them: a ``which`` and a runner
-    that records every argv and writes what the real ``mcp add`` writes."""
+    that records every argv, writes what the real ``claude mcp add`` writes,
+    and answers ``codex mcp get --json`` from the project's
+    ``.codex/config.toml`` as Codex does in a trusted project. No git on
+    PATH, so the project is not in a work tree."""
 
     def __init__(self, claude_config: Path, codex_config: Path) -> None:
         self.claude_config = claude_config
@@ -73,14 +76,36 @@ class FakeClients:
             data = self._claude()
             data.get("projects", {}).get(key, {}).get("mcpServers", {}).pop(argv[3], None)
             self.claude_config.write_text(json.dumps(data))
-        elif tool == "codex" and argv[1:3] == ["mcp", "add"]:
-            separator = argv.index("--")
-            rendered = ", ".join(json.dumps(item) for item in argv[separator + 2:])
-            self.codex_config.parent.mkdir(parents=True, exist_ok=True)
-            self.codex_config.write_text(f"[mcp_servers.{argv[3]}]\ncommand = {json.dumps(argv[separator + 1])}\nargs = [{rendered}]\n")
+        elif tool == "codex" and argv[1:3] == ["mcp", "get"]:
+            return self._codex_get(argv, Path(kwargs["cwd"]))
         else:
             raise AssertionError(f"unexpected command {argv!r}")
         return _completed(argv)
+
+    @staticmethod
+    def _codex_get(argv, cwd: Path):
+        for directory in (cwd, *cwd.parents):
+            path = directory / ".codex" / "config.toml"
+            if path.is_file():
+                entry = tomllib.loads(path.read_text(encoding="utf-8")).get("mcp_servers", {}).get(argv[3])
+                if entry is None:
+                    break
+                resolved = {
+                    "name": argv[3],
+                    "enabled": entry.get("enabled", True),
+                    "transport": {
+                        "type": "stdio",
+                        "command": entry.get("command"),
+                        "args": entry.get("args", []),
+                        "env": entry.get("env", {}),
+                        "env_vars": entry.get("env_vars", []),
+                        "cwd": entry.get("cwd"),
+                    },
+                    "enabled_tools": entry.get("enabled_tools"),
+                    "disabled_tools": entry.get("disabled_tools"),
+                }
+                return _completed(argv, stdout=json.dumps(resolved))
+        return _completed(argv, 1, stderr=f"Error: No MCP server named '{argv[3]}' found.")
 
     def commands(self, tool: str) -> list[list[str]]:
         return [argv for argv, _cwd in self.calls if Path(argv[0]).name == tool and argv[1:2] == ["mcp"]]
@@ -110,6 +135,8 @@ class _Scratch(unittest.TestCase):
                 "CODEX_HOME": str(self.codex_home),
                 runtime_pins.CLAUDE_VERSIONS_DIR_ENV: str(self.root / "custody"),
                 "AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.root / "codex-homes"),
+                # Doctor run with the real which finds no codex or git.
+                "PATH": str(self.root / "no-bin"),
             },
         )
         env.start()
@@ -146,6 +173,22 @@ class _Scratch(unittest.TestCase):
 
     def expected_argv(self) -> list[str]:
         return [MCP_COMMAND, "--actor-id", "my-project-architect", "--db", str(self.db)]
+
+    @property
+    def codex_seat(self) -> Path:
+        return self.project / ".codex" / "config.toml"
+
+    def codex_entry(self, project: Path | None = None) -> dict:
+        return tomllib.loads((project or self.project).joinpath(".codex", "config.toml").read_text(encoding="utf-8"))["mcp_servers"]["agent-comms"]
+
+    def write_codex_seat(self, argv: list[str]) -> None:
+        """A project entry with only ``command`` and ``args``, as by hand."""
+        self.codex_seat.parent.mkdir(exist_ok=True)
+        rendered = ", ".join(json.dumps(item) for item in argv[1:])
+        self.codex_seat.write_text(f"[mcp_servers.agent-comms]\ncommand = {json.dumps(argv[0])}\nargs = [{rendered}]\n")
+
+    def bind_seat_fix(self, client: str, *, replace: bool = False) -> str:
+        return f"agent-comms --db {shlex_quote(self.db)} bind-seat my-project-architect --client {client}" + (" --replace-seat" if replace else "")
 
 
 class HelpersTest(unittest.TestCase):
@@ -205,8 +248,22 @@ class SetupCommandTest(_Scratch):
         # The seats: the exact client commands, carrying --db because the ledger is explicit.
         self.assertEqual(self.clients.commands("claude"), [["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", *self.expected_argv()]])
         self.assertEqual([cwd for argv, cwd in self.clients.calls if argv[0] == "claude"], [str(self.project.resolve())])
-        self.assertEqual(self.clients.commands("codex"), [["codex", "mcp", "add", "agent-comms", "--", *self.expected_argv()]])
+        # Codex: our entry in the project's .codex/config.toml, pinning every field.
+        self.assertEqual([argv[1:3] for argv in self.clients.commands("codex")], [["mcp", "get"]])
+        entry = self.codex_entry()
+        root = str(self.project.resolve())
+        self.assertEqual(entry["command"], MCP_COMMAND)
+        self.assertEqual(entry["args"], self.expected_argv()[1:])
+        self.assertEqual((entry["cwd"], entry["enabled"], entry["disabled_tools"], entry["env_vars"]), (root, True, [], []))
+        self.assertEqual(entry["env"], {
+            "AGENT_COMMS_ACTOR_ID": "my-project-architect", "AGENT_COMMS_DB": str(self.db), "AGENT_COMMS_HOME": "",
+            "AGENT_COMMS_PROJECT_ROOT": root, "WAKE_POLICY": "", "WAKE_POLICY_VERSION": "",
+        })
+        self.assertFalse(self.codex_config.exists())
         self.assertEqual([item["client"] for item in result["mcp"]["applied"]], ["claude", "codex"])
+        notes = result["mcp"]["applied"][1]["notes"]
+        self.assertIn(f"git is not on PATH; nothing excludes {self.codex_seat.resolve()} from version control", notes)
+        self.assertTrue(any("accept the trust prompt" in note for note in notes), notes)
         self.assertEqual(result["mcp"]["pending"], [])
         # Doctor ran in-process and is clean; the next step is doctor itself.
         self.assertEqual(result["doctor"], {"ok": True, "fixes": []})
@@ -228,7 +285,8 @@ class SetupCommandTest(_Scratch):
         self.assertTrue(result["ok"], result)
         argv = [MCP_COMMAND, "--actor-id", "t-architect"]
         self.assertEqual(self.clients.commands("claude")[0][-3:], argv)
-        self.assertEqual(self.clients.commands("codex")[0][-3:], argv)
+        # A Codex entry always names the ledger: a lower config layer may set AGENT_COMMS_DB.
+        self.assertEqual(self.codex_entry()["args"], ["--actor-id", "t-architect", "--db", str(self.db)])
         self.assertEqual(result["next"][0], "agent-comms doctor")
 
     def test_codex_worker_gets_a_custody_home_with_a_dangling_auth_link(self) -> None:
@@ -271,7 +329,7 @@ class SetupCommandTest(_Scratch):
         self.assertIn(login, result["doctor"]["fixes"])
         self.assertIn(login, result["next"])
         self.assertFalse(result["doctor"]["ok"])
-        self.assertEqual(self.clients.commands("codex"), [["codex", "mcp", "add", "agent-comms", "--", MCP_COMMAND, "--actor-id", "my-project-architect", "--db", str(self.db)]])
+        self.assertEqual(self.codex_entry()["args"], ["--actor-id", "my-project-architect", "--db", str(self.db)])
 
     def test_doctor_repair_of_a_codex_home_keeps_the_ledger_binding(self) -> None:
         # SETUP-003: the repair doctor prescribes for a broken custody home must
@@ -387,7 +445,7 @@ class SetupCommandTest(_Scratch):
         [pending] = result["mcp"]["pending"]
         self.assertEqual(pending["client"], "claude")
         self.assertIn("exited 1: claude: boom", pending["reason"])
-        self.assertEqual(pending["fix"], f"cd {shlex_quote(self.project.resolve())} && claude mcp add agent-comms --scope local -- {MCP_COMMAND} --actor-id my-project-architect --db {shlex_quote(self.db)}")
+        self.assertEqual(pending["fix"], self.bind_seat_fix("claude"))
         self.assertEqual([item["client"] for item in result["mcp"]["applied"]], ["codex"])
         # The registry and ledger were still written; doctor names the same fix.
         self.assertTrue(self.registry.exists())
@@ -395,13 +453,21 @@ class SetupCommandTest(_Scratch):
         self.assertEqual(result["next"][1], pending["fix"])
 
     def test_missing_client_on_path_is_pending_with_the_command_to_run(self) -> None:
-        self.clients.on_path.discard("codex")
+        self.clients.on_path -= {"claude", "codex"}
         rc, result = self.setup("--runtimes", "fake", "--clients", "claude,codex", "--human-id", HUMAN)
         self.assertEqual(rc, 3)
         [pending] = result["mcp"]["pending"]
-        self.assertEqual((pending["client"], pending["reason"]), ("codex", "codex is not on PATH"))
-        self.assertEqual(pending["fix"], f"codex mcp add agent-comms -- {MCP_COMMAND} --actor-id my-project-architect --db {shlex_quote(self.db)}")
-        self.assertEqual(self.clients.commands("codex"), [])
+        self.assertEqual((pending["client"], pending["reason"]), ("claude", "claude is not on PATH"))
+        self.assertEqual(pending["fix"], self.bind_seat_fix("claude"))
+        self.assertEqual(self.clients.calls, [])
+        # The Codex seat is a file, so it is written without codex; only the
+        # binding Codex resolves waits for it, and doctor says so.
+        self.assertEqual([item["client"] for item in result["mcp"]["applied"]], ["codex"])
+        self.assertEqual(self.codex_entry()["args"], self.expected_argv()[1:])
+        report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
+        by_id = {item["id"]: item for item in report["checks"]}
+        self.assertEqual(by_id["mcp:my-project-architect:codex"]["status"], doctor.OK)
+        self.assertEqual(by_id["mcp:my-project-architect:codex:effective"]["status"], doctor.SKIP)
 
     def test_relative_ledger_path_is_persisted_and_compared_absolute(self) -> None:
         # SETUP-002 F2: the seat runs from the project directory, so a ledger
@@ -414,10 +480,9 @@ class SetupCommandTest(_Scratch):
             rc = cli.run(["--db", "ledger dir/ledger.sqlite", "setup", "--project-root", str(self.project), "--runtimes", "fake", "--clients", "claude,codex", "--human-id", HUMAN, "--yes"])
         result = json.loads(buffer.getvalue())
         self.assertEqual(rc, 0, result)
-        for tool in ("claude", "codex"):
-            [command] = self.clients.commands(tool)
-            stored = command[-1]
-            self.assertTrue(os.path.isabs(stored), command)
+        [command] = self.clients.commands("claude")
+        for stored in (command[-1], self.codex_entry()["args"][-1]):
+            self.assertTrue(os.path.isabs(stored), stored)
             self.assertEqual(Path(stored).resolve(), self.db.resolve())
         self.assertEqual(result["doctor"], {"ok": True, "fixes": []})
         self.assertTrue(os.path.isabs(shlex_split(result["next"][0])[2]), result["next"])
@@ -503,8 +568,7 @@ class SetupCommandTest(_Scratch):
         self.assertEqual(rc, 3, result)
         self.assertEqual([argv[2] for argv in self.clients.commands("claude")], ["remove", "add"])
         [pending] = result["mcp"]["pending"]
-        self.assertNotIn("remove", pending["fix"])
-        self.assertEqual(pending["fix"], f"cd {shlex_quote(self.project.resolve())} && claude mcp add agent-comms --scope local -- {MCP_COMMAND} --actor-id my-project-architect --db {shlex_quote(self.db)}")
+        self.assertEqual(pending["fix"], self.bind_seat_fix("claude"))
 
     def test_taken_seat_refuses_before_anything_is_written(self) -> None:
         self.clients.run(["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", MCP_COMMAND, "--actor-id", "old-architect", "--db", str(self.db)], cwd=str(self.project))
@@ -519,25 +583,26 @@ class SetupCommandTest(_Scratch):
         self.assertFalse(self.db.exists())
         self.assertEqual(self.claude_config.read_text(), before_claude)
         self.assertFalse(self.codex_config.exists())
+        self.assertFalse(self.codex_seat.exists())
         self.assertEqual(self.clients.calls, [])
 
     def test_wrong_command_and_malformed_entries_are_named_in_the_refusal(self) -> None:
-        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", "/elsewhere/agent-comms-mcp", *self.expected_argv()[1:]], cwd=None)
+        self.write_codex_seat(["/elsewhere/agent-comms-mcp", *self.expected_argv()[1:]])
         rc, result = self.setup("--runtimes", "fake", "--clients", "codex", "--human-id", HUMAN)
         self.assertEqual(rc, 2, result)
         self.assertIn(f"runs '/elsewhere/agent-comms-mcp', expected '{MCP_COMMAND}'", result["error"])
         self.assertNotIn("to ledger", result["error"])
-        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", MCP_COMMAND, "--actor-id", "my-project-architect", "--db", str(self.db), "--db", str(self.db)], cwd=None)
+        self.write_codex_seat([MCP_COMMAND, "--actor-id", "my-project-architect", "--db", str(self.db), "--db", str(self.db)])
         rc, result = self.setup("--runtimes", "fake", "--clients", "codex", "--human-id", HUMAN)
         self.assertEqual(rc, 2, result)
         self.assertIn("malformed arguments (repeated or valueless --db)", result["error"])
         self.assertFalse(self.registry.exists())
 
     def test_same_architect_on_another_ledger_is_a_taken_seat(self) -> None:
-        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", MCP_COMMAND, "--actor-id", "my-project-architect"], cwd=None)
+        self.write_codex_seat([MCP_COMMAND, "--actor-id", "my-project-architect"])
         rc, result = self.setup("--runtimes", "fake", "--clients", "codex", "--human-id", HUMAN)
         self.assertEqual(rc, 2, result)
-        self.assertIn("binds my-project-architect to ledger None", result["error"])
+        self.assertIn(f"bound to ledger None, expected '{self.db}'", result["error"])
         self.assertFalse(self.registry.exists())
 
     def test_replace_seat_hands_the_seat_over(self) -> None:
@@ -552,7 +617,7 @@ class SetupCommandTest(_Scratch):
         }))
         old_argv = [MCP_COMMAND, "--actor-id", "old-architect", "--db", str(self.db)]
         self.clients.run(["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", *old_argv], cwd=str(self.project))
-        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", *old_argv], cwd=None)
+        self.write_codex_seat(old_argv)
         self.clients.calls.clear()
         rc, result = self.setup("--runtimes", "fake", "--clients", "claude,codex", "--replace-seat")
         self.assertEqual(rc, 0, result)
@@ -563,12 +628,11 @@ class SetupCommandTest(_Scratch):
                 ["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", *self.expected_argv()],
             ],
         )
-        self.assertEqual(self.clients.commands("codex"), [["codex", "mcp", "add", "agent-comms", "--", *self.expected_argv()]])
         document = self.read_registry()
         self.assertEqual(document["seats"], {"old-architect": [], "my-project-architect": ["claude", "codex"]})
         self.assertEqual(result["human"], {"id": HUMAN, "display_name": "alice", "reused": True})
         self.assertEqual(mcp_clients.read_claude_seat(self.claude_config, self.project).server().args, self.expected_argv()[1:])
-        self.assertEqual(tomllib.loads(self.codex_config.read_text())["mcp_servers"]["agent-comms"]["args"], self.expected_argv()[1:])
+        self.assertEqual(self.codex_entry()["args"], self.expected_argv()[1:])
         # The old architect is still registered; doctor no longer expects its seats.
         ids = {actor["id"] for actor in Store(self.db).list_actors()}
         self.assertIn("old-architect", ids)
@@ -579,12 +643,17 @@ class SetupCommandTest(_Scratch):
         link_dir = self.root / "bin on path"
         link_dir.mkdir()
         (link_dir / "agent-comms-mcp").symlink_to(MCP_COMMAND)
-        self.clients.run(["codex", "mcp", "add", "agent-comms", "--", str(link_dir / "agent-comms-mcp"), *self.expected_argv()[1:]], cwd=None)
-        self.clients.calls.clear()
+        rc, _ = self.setup("--runtimes", "fake", "--clients", "codex", "--human-id", HUMAN, "--team", "first")
+        self.assertEqual(rc, 0)
+        self.registry.unlink()
+        self.db.unlink()
+        text = self.codex_seat.read_text(encoding="utf-8").replace("first-architect", "my-project-architect")
+        self.codex_seat.write_text(text.replace(json.dumps(MCP_COMMAND), json.dumps(str(link_dir / "agent-comms-mcp"))), encoding="utf-8")
+        before = self.codex_seat.read_text(encoding="utf-8")
         rc, result = self.setup("--runtimes", "fake", "--clients", "codex", "--human-id", HUMAN)
         self.assertEqual(rc, 0, result)
-        self.assertEqual(result["mcp"]["applied"], [{"client": "codex", "commands": [], "detail": "already bound to my-project-architect"}])
-        self.assertEqual(self.clients.commands("codex"), [])
+        self.assertEqual(result["mcp"]["applied"], [{"client": "codex", "commands": [], "notes": [], "detail": "already bound to my-project-architect"}])
+        self.assertEqual(self.codex_seat.read_text(encoding="utf-8"), before)
 
     def test_second_run_for_the_same_team_refuses_without_touching_files(self) -> None:
         rc, _ = self.setup("--runtimes", "fake", "--clients", "claude", "--human-id", HUMAN)

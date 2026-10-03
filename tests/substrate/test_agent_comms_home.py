@@ -219,20 +219,21 @@ class SeatBindingTest(_Home):
         config = Path(self.tmp.name) / "claude.json"
         command = str(Path(sys.executable).parent / "agent-comms-mcp")
         config.write_text(json.dumps({"projects": {str(project): {"mcpServers": {"agent-comms": {"command": command, "args": args}}}}}))
-        (result,) = doctor.check_mcp(
-            [{"id": "t-architect", "project_root": str(project)}],
-            {"t-architect": ["claude"]},
-            db_path=paths.db_path(),
-            db_explicit=False,
-            claude_config=config,
-        )
+        with mock.patch.dict(os.environ, {mcp_clients.CLAUDE_CONFIG_ENV: str(config)}):
+            (result,) = doctor.check_mcp(
+                [{"id": "t-architect", "project_root": str(project)}],
+                {"t-architect": ["claude"]},
+                db_path=paths.db_path(),
+                db_explicit=False,
+            )
         return result
 
     def test_doctor_fails_a_seat_without_or_with_another_home(self) -> None:
         missing = self.check_seat(["--actor-id", "t-architect"])
         self.assertEqual(missing["status"], doctor.FAIL)
         self.assertIn(f"bound to home None, expected '{self.home}'", missing["detail"])
-        self.assertIn(f"--home {self.home}", missing["fix"])
+        # The fix is the bind-seat line, run under this install's home.
+        self.assertEqual(missing["fix"], f"AGENT_COMMS_HOME={self.home} agent-comms bind-seat t-architect --client claude --replace-seat")
         other = self.check_seat(["--actor-id", "t-architect", "--home", "/other"])
         self.assertEqual(other["status"], doctor.FAIL)
         ok = self.check_seat(["--actor-id", "t-architect", "--home", str(self.home)])
@@ -425,6 +426,11 @@ class UpgradeCompatibilityTest(unittest.TestCase):
     # code_identity.CONTRACT_VERSION and record the new set here.
     PLACEHOLDERS_BY_CONTRACT = {
         24: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
+        # 25 adds no placeholder: the adapter renders the Codex -c binding.
+        25: {
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },

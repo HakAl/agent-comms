@@ -174,6 +174,17 @@ class ProcessSpawnAdapter:
             if self._uses_live_worker_prompt(context)
             else None
         )
+        # Per-run arguments the runtime adds ahead of the stored template
+        # (Codex: the worker's MCP binding); the template stays as stored.
+        prefix = self._runtime_prefix_args(context)
+        if prefix:
+            args = [*prefix, *args]
+            if prompt_index is not None:
+                prompt_index += len(prefix)
+        preflight_observed = {
+            **preflight_observed,
+            **(self._binding_preflight(context, command, prefix, args[len(prefix):], self._preflight_env(context, spawn, policy)) or {}),
+        }
         separate_stdout = self._separate_stdout(context, args, prompt_index)
         if policy.bootstrap_marker not in " ".join(args):
             raise RuntimeError(f"spawn args must include bootstrap marker {policy.bootstrap_marker}")
@@ -298,6 +309,26 @@ class ProcessSpawnAdapter:
 
     def _preflight(self, context: DispatchContext) -> dict | None:
         return None
+
+    def _runtime_prefix_args(self, context: DispatchContext) -> list[str]:
+        """Arguments placed before the template's for this run. Default: none."""
+        return []
+
+    def _binding_preflight(
+        self, context: DispatchContext, command: str, prefix: list[str], stored: list[str], env: dict[str, str]
+    ) -> dict | None:
+        """Refuse the dispatch, before any process starts, when the runtime
+        launched with ``prefix`` then the ``stored`` template arguments would
+        not bind the worker as intended. Default: nothing to check."""
+        return None
+
+    def _preflight_env(self, context: DispatchContext, spawn: dict, policy) -> dict[str, str]:  # type: ignore[no-untyped-def]
+        """The base allowlist plus the spawn env: enough to run the runtime
+        binary as the worker will, without the per-run worker variables."""
+        base = {key: os.environ[key] for key in ALLOWED_BASE_ENV_NAMES if key in os.environ}
+        env = scoped_env(base, policy)
+        env.update(self._spawn_env(spawn, context, policy))
+        return env
 
     def _validate_rendered_command(self, command: str, context: DispatchContext) -> None:
         return None

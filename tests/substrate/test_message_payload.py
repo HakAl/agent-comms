@@ -556,7 +556,7 @@ class MessagePayloadTest(unittest.TestCase):
 
     def test_contract_version_digest_and_spec_a(self) -> None:
         """contract identity"""
-        self.assertEqual(code_identity.CONTRACT_VERSION, 24)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 25)
         self.assertEqual(
             code_identity.contract_surface_digest(),
             code_identity.CONTRACT_SURFACE_DIGEST,

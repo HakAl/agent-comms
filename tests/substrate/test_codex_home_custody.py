@@ -820,10 +820,11 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # dispatch-time review intent; 18 bound file-backed message payloads;
         # 19 binds the cycle approval destination; 20 binds reply snapshots;
         # 21 refuses stale single-log adapters before structured codex output;
-        # 24 adds the {agent_comms_home} spawn placeholder (AGENT_COMMS_HOME).
+        # 24 adds the {agent_comms_home} spawn placeholder (AGENT_COMMS_HOME);
+        # 25 binds the Codex worker's MCP server per run with -c and checks it.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 24)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 25)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity
