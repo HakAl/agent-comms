@@ -122,6 +122,20 @@ EVIDENCE_REPLY_ID_CAP = 10
 EVIDENCE_SUMMARY_DISPLAY_CAP = 200
 
 
+def _admin_token_prefix() -> str:
+    """The copy/paste credential prefix for an operator command.
+
+    Names the admin token of this install: the literal ``~`` form for the
+    default root; under ``AGENT_COMMS_HOME`` the quoted path, with the home
+    set too so the command pasted into another shell opens this install.
+    """
+    home = paths.home_override()
+    if home is None:
+        return 'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
+    quoted = shlex.quote(str(home))
+    return f'AGENT_COMMS_HOME={quoted} AGENT_COMMS_ADMIN_TOKEN="$(cat {shlex.quote(str(home / "admin-token"))})" '
+
+
 def _past_kill_grace_boundary(expected_close_by: str | None, now: str) -> bool:
     """True once ``now`` is at/after ``expected_close_by + kill_grace``.
 
@@ -2578,7 +2592,7 @@ class DispatchLedger:
         never inlined.
         """
         return (
-            'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
+            f"{_admin_token_prefix()}"
             '"$AGENT_COMMS_INSTALL_ROOT/bin/agent-comms" admin '
             "settle-dispatch "
             f"--from-actor-id {shlex.quote(actor_id)} "
@@ -3098,7 +3112,7 @@ class DispatchLedger:
         documented command text is rendered here.
         """
         return (
-            'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
+            f"{_admin_token_prefix()}"
             '"$AGENT_COMMS_INSTALL_ROOT/bin/agent-comms" admin '
             "settle-dispatch --from-actor-id <ADMIN_ACTOR_ID> "
             f"--dispatch-id {dispatch_id} --reason \"<reason>\" --dry-run"

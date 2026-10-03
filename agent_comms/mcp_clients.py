@@ -158,25 +158,37 @@ def actor_ids_in(args: list) -> tuple[list[str], bool]:
 
 
 DB_ENV = "AGENT_COMMS_DB"
+HOME_ENV = "AGENT_COMMS_HOME"
 
 
 def binding(args: list, env: dict | None = None) -> dict[str, object]:
-    """The identity a server argv binds: its ``--actor-id`` and the ledger.
+    """The identity a server argv binds: its ``--actor-id``, ledger and home.
 
     The ledger is ``--db`` when given, else the entry's ``AGENT_COMMS_DB``
     environment, else None (the default ledger), which is what the server
-    itself resolves. ``malformed`` lists the flags that are repeated or
-    have no value; a malformed argv binds nothing reliably.
+    itself resolves. The home (the install's runtime root) is ``--home``,
+    else the entry's ``AGENT_COMMS_HOME``, else None (``~/.agent-comms``).
+    ``malformed`` lists the flags that are repeated or have no value; a
+    malformed argv binds nothing reliably.
     """
     actor_ids, actor_malformed = flag_values(args, "--actor-id")
     dbs, db_malformed = flag_values(args, "--db")
-    malformed = [flag for flag, bad in (("--actor-id", actor_malformed), ("--db", db_malformed)) if bad]
+    homes, home_malformed = flag_values(args, "--home")
+    malformed = [
+        flag
+        for flag, bad in (("--actor-id", actor_malformed), ("--db", db_malformed), ("--home", home_malformed))
+        if bad
+    ]
     db: str | None = dbs[0] if dbs and not db_malformed else None
     if db is None and not db_malformed and env and env.get(DB_ENV):
         db = str(env[DB_ENV])
+    home: str | None = homes[0] if homes and not home_malformed else None
+    if home is None and not home_malformed and env and env.get(HOME_ENV):
+        home = str(env[HOME_ENV])
     return {
         "actor_id": actor_ids[0] if actor_ids and not actor_malformed else None,
         "db": db,
+        "home": home,
         "malformed": malformed,
     }
 
@@ -198,6 +210,15 @@ def same_ledger(stored: str | None, expected: str | None) -> bool:
     return os.path.realpath(stored) == os.path.realpath(os.path.expanduser(str(expected)))
 
 
+def same_home(stored: str | None, expected: str | os.PathLike[str] | None) -> bool:
+    """Whether a persisted ``--home`` binding names the expected install.
+
+    ``None`` is the default root and only matches ``None``; otherwise as
+    ``same_ledger``: absolute spellings of one directory match.
+    """
+    return same_ledger(stored, None if expected is None else str(expected))
+
+
 def same_command(stored: str | None, expected: str | os.PathLike[str]) -> bool:
     """Whether a persisted server command is the expected console script.
 
@@ -215,13 +236,22 @@ def same_command(stored: str | None, expected: str | os.PathLike[str]) -> bool:
     return os.path.realpath(stored) == os.path.realpath(os.path.expanduser(str(expected)))
 
 
-def server_argv(mcp_command: str | os.PathLike[str], actor_id: str, db_path: str | os.PathLike[str] | None = None) -> list[str]:
-    """The argv a client runs for the seat: the server, its actor and, for an
-    explicit ledger, the ledger path (the server opens the default one
-    otherwise, where the actor may not exist)."""
+def server_argv(
+    mcp_command: str | os.PathLike[str],
+    actor_id: str,
+    db_path: str | os.PathLike[str] | None = None,
+    home: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """The argv a client runs for the seat: the server, its actor, for an
+    explicit ledger the ledger path (the server opens the default one
+    otherwise, where the actor may not exist) and, for an install with its
+    own ``AGENT_COMMS_HOME``, that home. Both travel in argv, never only in
+    env: Codex merges env tables across config layers but replaces argv."""
     argv = [str(mcp_command), "--actor-id", actor_id]
     if db_path is not None:
         argv += ["--db", str(db_path)]
+    if home is not None:
+        argv += ["--home", str(home)]
     return argv
 
 

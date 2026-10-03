@@ -19,8 +19,6 @@ from .. import paths
 from ..schema import ValidationError
 from ..store import Store
 
-DEFAULT_DB = paths.DEFAULT_DB
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-comms")

@@ -83,6 +83,18 @@ ledger. `setup` writes the absolute path; `doctor` treats a relative or
 `~` path as a wrong binding, because the client starts the server without
 a shell and from its own directory.
 
+### A second install (`AGENT_COMMS_HOME`)
+
+With `AGENT_COMMS_HOME` set, the registry, ledger, logs, keys, custody
+directories and supervisor sockets all live under it instead of
+`~/.agent-comms`, and nothing under `~/.agent-comms` is read or written.
+The seat's argv carries `--home /absolute/path` so the client starts the
+server in the same install; `doctor` treats a missing or different
+`--home` as a wrong binding, and every fix it prints sets the variable.
+The path must be absolute and at most 62 bytes, since the supervisor's
+control sockets live under it; `setup` and `doctor` refuse a longer one
+with the byte count. Claude and Codex logins stay where they are.
+
 ### Any other MCP client
 
 Point it at the same command with the same `--actor-id` argument. The server

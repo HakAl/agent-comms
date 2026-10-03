@@ -106,8 +106,8 @@ class FakeAdapterTest(unittest.TestCase):
         observed = started["observed_values"]
         control_socket = Path(observed["control_socket"])
         self.assertEqual(control_socket.parent.parent, control_root)
-        self.assertNotEqual(control_root, supervisor._DEFAULT_CONTROL_ROOT)
-        self.assertNotIn(supervisor._DEFAULT_CONTROL_ROOT, control_socket.parents)
+        self.assertNotEqual(control_root, supervisor.default_control_root())
+        self.assertNotIn(supervisor.default_control_root(), control_socket.parents)
 
     def test_fake_adapter_worker_replies_closes_trigger_and_halt_is_noop(self) -> None:
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:

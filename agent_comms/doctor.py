@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import mcp_clients, paths
+from . import mcp_clients, paths, supervisor
 from .actors import OPERATOR_ACTOR_ENV
 from .cli._helpers import load_actor_config
 from .codex_home import preflight_home_snapshot
@@ -83,7 +83,8 @@ class LedgerRef:
     ``explicit`` mirrors the CLI: ``--db`` or ``AGENT_COMMS_DB`` was given.
     A repair rendered for an explicit ledger carries ``--db``; one for the
     default ledger carries nothing, which is what the consumer commands
-    resolve to.
+    resolve to. Under ``AGENT_COMMS_HOME`` every repair sets it, so a line
+    pasted into another shell still targets this install.
     """
 
     path: Path
@@ -93,10 +94,16 @@ class LedgerRef:
         return ["--db", str(self.path)] if self.explicit else []
 
     def cli(self, *args: object) -> str:
-        return sh("agent-comms", *self.db_args(), *args)
+        return home_prefix() + sh("agent-comms", *self.db_args(), *args)
 
     def monitor(self, human: str) -> str:
-        return sh("agent-comms-monitor", *self.db_args(), "--human-actor-id", human)
+        return home_prefix() + sh("agent-comms-monitor", *self.db_args(), "--human-actor-id", human)
+
+
+def home_prefix() -> str:
+    """``AGENT_COMMS_HOME=<root> `` for an install with its own home, else empty."""
+    home = paths.home_override()
+    return f"{paths.HOME_ENV}={shlex.quote(str(home))} " if home is not None else ""
 
 
 def _ledger(db_path: Path, ledger: LedgerRef | None) -> LedgerRef:
@@ -196,7 +203,15 @@ def check_install(executable: str = sys.executable) -> dict:
     return check("install", OK, f"{', '.join(CONSOLE_SCRIPTS)} under {bin_dir}")
 
 
-def check_runtime_root(root: Path) -> dict:
+def check_runtime_root(root: Path, control_root: Path | None = None) -> dict:
+    """``root`` exists and is writable, and control sockets fit under
+    ``control_root`` (default: ``root/run/s``, or wherever
+    ``AGENT_COMMS_SUPERVISOR_ROOT`` moves it)."""
+    if control_root is None:
+        control_root = supervisor.control_root() if os.environ.get(supervisor.CONTROL_ROOT_ENV) else root / "run" / "s"
+    too_long = supervisor.control_root_problem(control_root)
+    if too_long:
+        return check("runtime_root", FAIL, too_long, f"set {paths.HOME_ENV} to a shorter absolute path and rerun setup there")
     if not root.exists() and not root.is_symlink():
         return check("runtime_root", FAIL, f"{root} does not exist", sh("mkdir", "-p", root))
     if not root.is_dir():
@@ -552,7 +567,7 @@ def check_mcp(
         if not project_root:
             checks.append(check(f"mcp:{actor_id}", FAIL, f"{actor_id} has no project_root, so its seat cannot be located", f"re-register {actor_id} with a project_root: {ledger.cli('bootstrap')}"))
             continue
-        expected = mcp_clients.server_argv(mcp_command, actor_id, db_path if db_explicit else None)
+        expected = mcp_clients.server_argv(mcp_command, actor_id, db_path if db_explicit else None, paths.home_override())
         wanted_binding = mcp_clients.binding(expected)
         for client in wanted:
             check_id = f"mcp:{actor_id}:{client}"
@@ -580,6 +595,8 @@ def check_mcp(
                 problems.append(f"bound to actor {bound['actor_id']!r}")
             if not mcp_clients.same_ledger(bound["db"], wanted_binding["db"]):
                 problems.append(f"bound to ledger {bound['db']!r}, expected {wanted_binding['db']!r}")
+            if not mcp_clients.same_home(bound["home"], wanted_binding["home"]):
+                problems.append(f"bound to home {bound['home']!r}, expected {wanted_binding['home']!r}")
             if not mcp_clients.same_command(found.command, mcp_command):
                 problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
             if problems:
@@ -618,7 +635,8 @@ def run_doctor(
     db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
     platform = current_platform()
     ledger = LedgerRef(db_path, db_explicit)
-    checks: list[dict] = [check_install(executable), check_runtime_root(paths.runtime_root())]
+    runtime_root = paths.runtime_root()
+    checks: list[dict] = [check_install(executable), check_runtime_root(runtime_root)]
     registry_check, config = check_registry(paths.actors_config_path(), ledger)
     checks.append(registry_check)
     ledger_check, snapshot = check_ledger(db_path, ledger)
@@ -663,5 +681,5 @@ def run_doctor(
     else:
         checks.append(check("monitor", SKIP, "ledger unavailable (see ledger)"))
         checks.append(check("mcp", SKIP, "ledger unavailable (see ledger)"))
-    checks.append(check_admin_token(paths.runtime_root() / "admin-token"))
-    return report(platform, checks)
+    checks.append(check_admin_token(runtime_root / "admin-token"))
+    return {**report(platform, checks), "runtime_root": str(runtime_root)}

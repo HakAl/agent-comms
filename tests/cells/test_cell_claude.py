@@ -298,7 +298,7 @@ class ClaudeCellTest(unittest.TestCase):
             # explicitly: only a real bounded Claude worker denied under the live
             # default control root proves the OS capability boundary.
             with supervisor_root_negative_fixture(
-                root / CLAUDE_WORKER_ID, protected_root=supervisor._DEFAULT_CONTROL_ROOT
+                root / CLAUDE_WORKER_ID, protected_root=supervisor.default_control_root()
             ) as probe:
                 trigger_body = (
                     "This is an expected-to-be-denied sandbox boundary self-test using only "

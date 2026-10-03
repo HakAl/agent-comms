@@ -211,7 +211,7 @@ class CodexCellTest(unittest.TestCase):
             # default control root proves the OS capability boundary.
             probe = stack.enter_context(
                 supervisor_root_negative_fixture(
-                    root / CODEX_WORKER_ID, protected_root=supervisor._DEFAULT_CONTROL_ROOT
+                    root / CODEX_WORKER_ID, protected_root=supervisor.default_control_root()
                 )
             )
 

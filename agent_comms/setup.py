@@ -39,7 +39,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import doctor, mcp_clients, paths
+from . import doctor, mcp_clients, paths, supervisor
 from .cli._helpers import bootstrap_store, load_actor_config
 from .runtime_pins import PlatformNotCertified, claude_versions_dir, current_platform, pin_for
 from .schema import ValidationError, validate_actor_id_for_kind
@@ -193,6 +193,9 @@ def run_setup(
     # The ledger path is persisted in client configs that run from other
     # directories, so it is absolute from here on.
     db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
+    too_long = supervisor.control_root_problem()
+    if too_long:
+        raise ValidationError(too_long)
 
     # --- arguments (asked for when omitted and an ``ask`` is available) ---
     if project_root is None:
@@ -303,7 +306,7 @@ def run_setup(
         mcp_command = paths.mcp_command()
     except FileNotFoundError as exc:
         raise ValidationError(str(exc)) from exc
-    argv = mcp_clients.server_argv(mcp_command, architect, db_path if db_explicit else None)
+    argv = mcp_clients.server_argv(mcp_command, architect, db_path if db_explicit else None, paths.home_override())
     wanted = mcp_clients.binding(argv)
     existing: dict[str, bool | None] = {}  # client -> True (other binding), False (absent), None (already ours)
     holders: dict[str, str | None] = {}
@@ -322,6 +325,8 @@ def run_setup(
             problems.append(f"bound to actor {bound['actor_id']!r}")
         elif not mcp_clients.same_ledger(bound["db"], wanted["db"]):
             problems.append(f"binds {architect} to ledger {bound['db']!r}, expected {wanted['db']!r}")
+        if bound["actor_id"] == architect and not mcp_clients.same_home(bound["home"], wanted["home"]):
+            problems.append(f"binds {architect} to home {bound['home']!r}, expected {wanted['home']!r}")
         if not mcp_clients.same_command(found.command, mcp_command):
             problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
         if not problems:
@@ -431,6 +436,7 @@ def run_setup(
         "registry": str(config_path),
         "team": team,
         "project_root": str(root),
+        "runtime_root": str(paths.runtime_root()),
         "runtimes": runtimes,
         "clients": clients,
         "actors": [architect, *workers.values()],

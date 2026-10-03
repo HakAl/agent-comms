@@ -156,7 +156,7 @@ class NegativeSweepTest(unittest.TestCase):
         # arm that runs a real bounded Codex/Claude worker lives in
         # tests/cells/test_cell_codex.py and tests/cells/test_cell_claude.py.
         self.assertEqual(
-            supervisor._DEFAULT_CONTROL_ROOT,
+            supervisor.default_control_root(),
             Path.home() / ".agent-comms" / "run" / "s",
         )
         # A strict run-dir name the janitor never has to reason about; a real
@@ -168,10 +168,10 @@ class NegativeSweepTest(unittest.TestCase):
             probe = supervisor_root_negative_probe(worker_cwd)
 
         # The probe targets the FIXED protected root, never a test override.
-        self.assertEqual(probe["protected_root"], supervisor._DEFAULT_CONTROL_ROOT)
+        self.assertEqual(probe["protected_root"], supervisor.default_control_root())
         self.assertEqual(
             probe["probe_dir"],
-            supervisor._DEFAULT_CONTROL_ROOT / SUPERVISOR_PROBE_RUN_DIR_NAME,
+            supervisor.default_control_root() / SUPERVISOR_PROBE_RUN_DIR_NAME,
         )
         self.assertEqual(probe["probe_socket"], probe["probe_dir"] / supervisor._SOCKET_NAME)
         self.assertEqual(probe["sentinel"], worker_cwd / "supervisor-root-probe.txt")
@@ -181,7 +181,7 @@ class NegativeSweepTest(unittest.TestCase):
         # dir; both are strict names under the fixed protected root.
         self.assertEqual(
             probe["listener_dir"],
-            supervisor._DEFAULT_CONTROL_ROOT / SUPERVISOR_PROBE_LISTENER_DIR_NAME,
+            supervisor.default_control_root() / SUPERVISOR_PROBE_LISTENER_DIR_NAME,
         )
         self.assertEqual(probe["listener_socket"], probe["listener_dir"] / supervisor._SOCKET_NAME)
         self.assertNotEqual(probe["listener_dir"], probe["probe_dir"])
@@ -228,10 +228,10 @@ class NegativeSweepTest(unittest.TestCase):
         # Nothing the probe would create or reference is under the live default
         # control root: the runtime-free arm cannot touch production state.
         self.assertNotIn(
-            str(supervisor._DEFAULT_CONTROL_ROOT), probe["script_bytes"].decode("utf-8")
+            str(supervisor.default_control_root()), probe["script_bytes"].decode("utf-8")
         )
         for key in ("probe_dir", "probe_socket", "listener_dir", "listener_socket"):
-            self.assertNotIn(supervisor._DEFAULT_CONTROL_ROOT, Path(probe[key]).parents)
+            self.assertNotIn(supervisor.default_control_root(), Path(probe[key]).parents)
 
     @unittest.skipUnless(_BIND_OK, _BIND_SKIP)
     def test_supervisor_root_negative_listener_fixture_is_live_and_targeted(self) -> None:
@@ -245,7 +245,7 @@ class NegativeSweepTest(unittest.TestCase):
         # root is left byte/entry unchanged -- the real denial boundary is proven
         # only by the separately authorized Codex/Claude certification callers,
         # which pass the fixed root explicitly.
-        default_root = supervisor._DEFAULT_CONTROL_ROOT
+        default_root = supervisor.default_control_root()
         default_listener_dir = default_root / SUPERVISOR_PROBE_LISTENER_DIR_NAME
         default_probe_dir = default_root / SUPERVISOR_PROBE_RUN_DIR_NAME
         default_existed = default_root.exists()

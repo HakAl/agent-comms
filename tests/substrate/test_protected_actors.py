@@ -337,8 +337,8 @@ class ProtectedActorsTest(unittest.TestCase):
             "PROJECT_C_ROOT": "/srv/team-c",
         },
     )
-    @mock.patch("agent_comms.cli._helpers.DEFAULT_CONFIG", DEFAULT_CONFIG)
-    def test_t7_canonical_bootstrap_exempt_noncanonical_requires_override(self) -> None:
+    @mock.patch("agent_comms.paths.actors_config_path", return_value=DEFAULT_CONFIG)
+    def test_t7_canonical_bootstrap_exempt_noncanonical_requires_override(self, _config_path) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store = Store(root / "agent-comms.sqlite")

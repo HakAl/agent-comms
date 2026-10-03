@@ -274,7 +274,7 @@ def _verify_artifact_bindings(
 
 def _atomic_claim_write(path: Path, payload: dict[str, Any]) -> None:
     """Publish a complete claim from outside bindings/, then fsync its directory."""
-    staging = store.REVIEW_ROOT / ".binding-staging"
+    staging = store.current_review_root() / ".binding-staging"
     staging.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix="claim-", dir=str(staging))
     try:
@@ -299,7 +299,7 @@ def _binding_claim(record: dict[str, Any], evidence: dict[str, Any]):
     worker_id = evidence["row"]["dispatch_id"]
     if not WORKER_DISPATCH_ID_RE.fullmatch(worker_id):
         raise ReviewError(f"invalid_worker_dispatch_id: {worker_id!r}")
-    root = store.REVIEW_ROOT / "bindings"
+    root = store.current_review_root() / "bindings"
     root.mkdir(parents=True, exist_ok=True)
     lock_path, claim_path = root / ".lock", root / worker_id
     with lock_path.open("a+") as lock:
@@ -338,12 +338,12 @@ def command_recover_binding(args) -> None:
     worker_id = args.worker_dispatch_id
     if not WORKER_DISPATCH_ID_RE.fullmatch(worker_id):
         raise ReviewError(f"invalid_worker_dispatch_id: {worker_id!r}")
-    root = store.REVIEW_ROOT / "bindings"
+    root = store.current_review_root() / "bindings"
     root.mkdir(parents=True, exist_ok=True)
     claim_path = root / worker_id
 
     def sweep_staging() -> None:
-        staging = store.REVIEW_ROOT / ".binding-staging"
+        staging = store.current_review_root() / ".binding-staging"
         if not staging.is_dir():
             return
         for candidate in staging.iterdir():
@@ -380,11 +380,11 @@ def command_recover_binding(args) -> None:
                 raise ReviewError("binding_metadata_malformed") from exc
             quarantine = root / "quarantine"
             quarantine.mkdir(exist_ok=True)
-            (store.REVIEW_ROOT / ".binding-staging").mkdir(parents=True, exist_ok=True)
+            (store.current_review_root() / ".binding-staging").mkdir(parents=True, exist_ok=True)
             forensic = quarantine / f"{worker_id}.{int(time.time_ns())}"
             raw = claim_path.read_bytes()
             fd, tmp = tempfile.mkstemp(
-                prefix="forensic-", dir=str(store.REVIEW_ROOT / ".binding-staging")
+                prefix="forensic-", dir=str(store.current_review_root() / ".binding-staging")
             )
             with os.fdopen(fd, "wb") as fh:
                 fh.write(raw)

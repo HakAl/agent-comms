@@ -192,11 +192,11 @@ def _verify(home: Path, supervisor_root: Path) -> None:
 
     candidates = {
         "Path.home()": Path.home(),
-        "agent_comms.paths.DEFAULT_DB": paths.DEFAULT_DB,
+        "agent_comms.paths.canonical_db_path()": paths.canonical_db_path(),
         "agent_comms.paths.runtime_root()": paths.runtime_root(),
         "agent_comms.paths.db_path()": paths.db_path(),
         "agent_comms.paths.codex_custody_root()": paths.codex_custody_root(),
-        "agent_comms.supervisor._DEFAULT_CONTROL_ROOT": supervisor._DEFAULT_CONTROL_ROOT,
+        "agent_comms.supervisor.default_control_root()": supervisor.default_control_root(),
         "agent_comms.supervisor.control_root()": supervisor.control_root(),
     }
     leaks = [

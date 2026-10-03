@@ -840,8 +840,8 @@ class McpCheckTest(_Scratch):
 
 class McpClientHelpersTest(unittest.TestCase):
     def test_binding_and_actor_ids(self) -> None:
-        self.assertEqual(mcp_clients.binding(["x", "--actor-id", "a", "--db", "/d"]), {"actor_id": "a", "db": "/d", "malformed": []})
-        self.assertEqual(mcp_clients.binding(["--actor-id"]), {"actor_id": None, "db": None, "malformed": ["--actor-id"]})
+        self.assertEqual(mcp_clients.binding(["x", "--actor-id", "a", "--db", "/d"]), {"actor_id": "a", "db": "/d", "home": None, "malformed": []})
+        self.assertEqual(mcp_clients.binding(["--actor-id"]), {"actor_id": None, "db": None, "home": None, "malformed": ["--actor-id"]})
         self.assertEqual(mcp_clients.actor_ids_in(["--actor-id", "a", "--actor-id", "b"]), (["a", "b"], True))
         self.assertEqual(mcp_clients.actor_ids_in(["--actor-id"]), ([], True))
         self.assertEqual(mcp_clients.actor_ids_in(["--actor-id", "a"]), (["a"], False))
@@ -849,9 +849,9 @@ class McpClientHelpersTest(unittest.TestCase):
 
     def test_binding_reads_both_flag_forms_and_rejects_duplicates(self) -> None:
         # ``--db=PATH`` is a ledger binding, not the absence of one (DOCTOR-001 F2).
-        self.assertEqual(mcp_clients.binding(["--actor-id=a", "--db=/scratch/other.sqlite"]), {"actor_id": "a", "db": "/scratch/other.sqlite", "malformed": []})
+        self.assertEqual(mcp_clients.binding(["--actor-id=a", "--db=/scratch/other.sqlite"]), {"actor_id": "a", "db": "/scratch/other.sqlite", "home": None, "malformed": []})
         duplicate = mcp_clients.binding(["--actor-id", "a", "--db", "/one", "--db", "/two"])
-        self.assertEqual(duplicate, {"actor_id": "a", "db": None, "malformed": ["--db"]})
+        self.assertEqual(duplicate, {"actor_id": "a", "db": None, "home": None, "malformed": ["--db"]})
         mixed = mcp_clients.binding(["--actor-id", "a", "--db=/one", "--db", "/two"])
         self.assertEqual(mixed["malformed"], ["--db"])
         self.assertEqual(mcp_clients.binding(["--actor-id", "a", "--db"])["malformed"], ["--db"])

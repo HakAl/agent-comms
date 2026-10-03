@@ -242,7 +242,7 @@ class SpawnHardeningTest(unittest.TestCase):
         # if os.scandir is ever invoked on the default control root during the
         # raise path. Isolating the janitor (as the F1 helpers do) is what keeps
         # this green; the assertion is what proves the isolation is real.
-        default_root = supervisor._DEFAULT_CONTROL_ROOT
+        default_root = supervisor.default_control_root()
         scanned: list[str] = []
         real_scandir = os.scandir
 

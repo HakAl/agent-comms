@@ -57,8 +57,9 @@ agent-comms version
 
 `uv tool install` puts `agent-comms`, `agent-comms-mcp`, `agent-comms-monitor`
 and `agent-comms-seat` on `PATH`. Everything the installed commands read or
-write lives under `~/.agent-comms` (`AGENT_COMMS_DB` moves the ledger); the
-runtime pins ship inside the package, so `agent-comms version` works without
+write lives under `~/.agent-comms` (`AGENT_COMMS_DB` moves the ledger;
+`AGENT_COMMS_HOME`, an absolute path of at most 62 bytes, moves everything,
+so a second install can run beside the first); the runtime pins ship inside the package, so `agent-comms version` works without
 a checkout and reports its git fields as `unknown`. From here the quickstart
 below applies from its step 2 with `agent-comms` in place of
 `.venv/bin/agent-comms`. `make install-smoke` is the check that this path

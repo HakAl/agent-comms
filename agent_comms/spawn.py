@@ -257,6 +257,7 @@ def _claude_mcp_config() -> str:
                     "command": "{mcp_command}",
                     "env": {
                         "AGENT_COMMS_ACTOR_ID": "{actor_id}",
+                        "AGENT_COMMS_HOME": "{agent_comms_home}",
                         "AGENT_COMMS_PROJECT_ROOT": "{project_root}",
                         "WAKE_POLICY": WORKER_DISPATCH_POLICY,
                         "WAKE_POLICY_VERSION": WORKER_DISPATCH_POLICY_VERSION,
@@ -368,6 +369,7 @@ def _escaped_json(value: dict) -> str:
         "db_path",
         "project_root",
         "codex_home",
+        "agent_comms_home",
         "mcp_command",
         "hooks_path",
         "claude_binary",

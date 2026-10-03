@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -103,6 +104,11 @@ def _configured_spawn_grace_seconds() -> float:
         return SPAWN_GRACE_SECONDS
 
 
+def _json_string_body(value: str) -> str:
+    """``value`` escaped for the inside of a JSON string literal."""
+    return json.dumps(value)[1:-1]
+
+
 class _PlaceholderValues(dict):
     """Spawn placeholder values; ``lazy`` entries are computed on first access."""
 
@@ -135,6 +141,7 @@ class ProcessSpawnAdapter:
         "mcp_command",
         "hooks_path",
         "codex_home",
+        "agent_comms_home",
         "claude_binary",
         "python",
         "worker_prompt",
@@ -310,6 +317,12 @@ class ProcessSpawnAdapter:
                 "AGENT_COMMS_PROJECT_ROOT": str(context.recipient["project_root"]),
             }
         )
+        # The worker belongs to the dispatching install. Added from the
+        # resolved home, not copied from the ambient env: the allowlist
+        # above stays closed.
+        home = paths.home_override()
+        if home is not None:
+            env[paths.HOME_ENV] = str(home)
         # Test-only extra child environment (e.g. a child-pid capture file). The
         # supervisor's ``launch_child`` inherits this env, so the native child
         # sees it. Production returns {}.
@@ -377,7 +390,8 @@ class ProcessSpawnAdapter:
                 resolved.append(arg)
                 skip_next_settings_value = is_claude and arg == "--settings"
                 continue
-            resolved.append(self._format_arg(arg, context))
+            after_mcp_config = index > 0 and str(raw_args[index - 1]) == "--mcp-config"
+            resolved.append(self._format_arg(arg, context, json_string=after_mcp_config))
             skip_next_settings_value = is_claude and arg == "--settings"
 
         if uses_live_worker_prompt and worker_prompt_index is None:
@@ -543,7 +557,10 @@ class ProcessSpawnAdapter:
         if zdotdir is not None:
             self._cleanup_zdotdir(zdotdir)
 
-    def _format_arg(self, arg: str, context: DispatchContext) -> str:
+    def _format_arg(self, arg: str, context: DispatchContext, *, json_string: bool = False) -> str:
+        """Fill ``arg``'s placeholders. ``json_string`` escapes each value for
+        a JSON string, for a template that is already serialized JSON (the
+        Claude ``--mcp-config``), so a quote or backslash in a path stays data."""
         values = _PlaceholderValues(
             {
                 "actor_id": str(context.recipient["id"]),
@@ -554,6 +571,7 @@ class ProcessSpawnAdapter:
                 "mcp_command": str(paths.mcp_command()),
                 "hooks_path": str(paths.hooks_path()),
                 "codex_home": str(paths.codex_home(str(context.recipient["id"]))),
+                "agent_comms_home": str(paths.runtime_root()),
                 # The dispatching process's own interpreter: whatever can run this
                 # adapter can import the package, on PATH or not.
                 "python": sys.executable,
@@ -563,6 +581,11 @@ class ProcessSpawnAdapter:
             # must not touch a fake or codex dispatch.
             lazy={"claude_binary": lambda: str(claude_binary_path())},
         )
+        if json_string:
+            values = _PlaceholderValues(
+                {key: _json_string_body(value) for key, value in values.items()},
+                {key: (lambda make=make: _json_string_body(make())) for key, make in values._lazy.items()},
+            )
         try:
             return arg.format_map(values)
         except KeyError as exc:

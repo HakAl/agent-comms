@@ -109,7 +109,9 @@ def claude_versions_dir() -> Path:
     override = os.environ.get(CLAUDE_VERSIONS_DIR_ENV)
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".agent-comms" / "runtime-custody"
+    from .paths import runtime_root
+
+    return runtime_root() / "runtime-custody"
 
 
 def claude_binary_path() -> Path:

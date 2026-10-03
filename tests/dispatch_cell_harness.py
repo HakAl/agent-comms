@@ -873,7 +873,7 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
 
     A bounded runtime worker (Codex or Claude) must be OS-sandbox-denied from
     creating, connecting to, or writing anything under the FIXED protected
-    control root (``supervisor._DEFAULT_CONTROL_ROOT`` ==
+    control root (``supervisor.default_control_root()`` ==
     ``~/.agent-comms/run/s``). That is the real capability boundary.
 
     ``protected_root`` defaults to that fixed control root, which the pure-shape
@@ -881,7 +881,7 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
     (only the fixed root proves the real OS denial). A runtime-free caller that
     must not touch live production state passes an explicit TEST-OWNED root
     instead; an ambient ``AGENT_COMMS_SUPERVISOR_ROOT`` would not suffice because
-    this helper consumes ``_DEFAULT_CONTROL_ROOT`` directly.
+    this helper consumes ``default_control_root()`` directly.
 
     The ``run_token`` the supervisor persists into observed values is a same-run
     correlation / authentication nonce, NOT a same-uid secret and NOT cross-user
@@ -901,7 +901,7 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
     the in-cwd sentinel the script writes (asserted deterministically, not from
     the prompt echo), and the protected paths checked for disk mutations.
     """
-    protected_root = protected_root if protected_root is not None else supervisor._DEFAULT_CONTROL_ROOT
+    protected_root = protected_root if protected_root is not None else supervisor.default_control_root()
     probe_dir = protected_root / SUPERVISOR_PROBE_RUN_DIR_NAME
     probe_socket = probe_dir / supervisor._SOCKET_NAME
     listener_dir = protected_root / SUPERVISOR_PROBE_LISTENER_DIR_NAME
@@ -943,7 +943,7 @@ def supervisor_root_negative_fixture(worker_cwd: Path, protected_root: Path | No
     """Architect-owned LIVE AF_UNIX listener under the protected root.
 
     Builds a real, connectable listener socket under ``protected_root`` (default
-    ``supervisor._DEFAULT_CONTROL_ROOT``) BEFORE the bounded worker probes it, so
+    ``supervisor.default_control_root()``) BEFORE the bounded worker probes it, so
     the worker's CONNECT probe targets an EXISTING live socket. From the
     architect (unsandboxed) context the connect succeeds; the OS sandbox denies
     it for a bounded runtime worker -- that denial is the capability boundary.
