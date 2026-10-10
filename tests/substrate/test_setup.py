@@ -11,6 +11,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -346,7 +347,7 @@ class SetupCommandTest(_Scratch):
         (home / "auth.json").unlink()
         # Shared auth is fresh, so the only problem is the broken home.
         self.auth_dir.mkdir(parents=True, exist_ok=True)
-        (self.auth_dir / "auth.json").write_text(json.dumps({"last_refresh": "2026-09-27T00:00:00+00:00"}))
+        (self.auth_dir / "auth.json").write_text(json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat()}))
         with platform, pin_for:
             report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
         by_id = {item["id"]: item for item in report["checks"]}

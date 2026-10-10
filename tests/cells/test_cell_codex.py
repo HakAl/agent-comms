@@ -204,10 +204,17 @@ class CodexCellTest(unittest.TestCase):
         # privilege separation; this OS denial is the capability boundary.
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
             root = Path(temp_dir)
-            harness = make_codex_harness(root)
+            # Cert mode (tests/isolation.py) keeps isolation on, so the default
+            # control root is the scratch home's, in the system temp tree that
+            # Codex workspace-write makes writable. The worker drops the temp
+            # roots there; if Codex ignored that, the probe would succeed and
+            # this cell would fail. A live-home run probes the real root.
+            harness = make_codex_harness(
+                root, exclude_temp_writable_roots=os.environ.get(tests.isolation.CERT_ENV) == "1"
+            )
             stack.callback(harness.close)
             # Authenticated certification retains the FIXED protected root
-            # explicitly: only a real bounded Codex worker denied under the live
+            # explicitly: only a real bounded Codex worker denied under the
             # default control root proves the OS capability boundary.
             probe = stack.enter_context(
                 supervisor_root_negative_fixture(
@@ -326,7 +333,7 @@ class CodexCellTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
             root = Path(temp_dir)
             pid_file = root / "codex-child.pid"
-            spawn = long_running_worker_spawn(pid_file)
+            spawn = long_running_worker_spawn(pid_file, codex_stub_dir=root / "bin")
             spawn["env"] = {"CODEX_HOME": str(root / "codex-home")}
             harness = make_codex_harness(root, child_pid_file=pid_file, spawn=spawn)
             stack.callback(harness.close)
@@ -342,7 +349,7 @@ class CodexCellTest(unittest.TestCase):
                     adapter_for_runtime=lambda _runtime: harness.adapter,
                     ttl_seconds=3,
                 )
-                self.assertEqual(dispatch["status"], "in_flight")
+                self.assertEqual(dispatch["status"], "in_flight", dispatch)
 
                 from tests.dispatch_cell_harness import wait_until
 

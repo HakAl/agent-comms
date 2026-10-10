@@ -38,15 +38,19 @@ not load that package itself; a test that enforces this line is in
 `tests/substrate/test_isolation.py`, next to the guard's other tests. Running a test file directly as a script fails loudly instead
 of running unisolated. The guard is `tests/isolation.py`.
 
-Two switches exist. `AGENT_COMMS_TEST_KEEP_SCRATCH=1` keeps the scratch
+Three switches exist. `AGENT_COMMS_TEST_KEEP_SCRATCH=1` keeps the scratch
 directories and prints their paths, which shows what a run would have written
-under a real home. `AGENT_COMMS_TEST_LIVE_HOME=1` disables isolation. It is
-for operator certification runs of `tests/cells`, which need real runtime
-logins and probe the real protected supervisor root; set it from your own
-shell, never from an agent. The guard refuses it unless every target on the
-command line is under `tests/cells`, so the substrate suite never runs
-against a real home. Without it those tests skip, and a skip is reported as
-a skip, never as a pass.
+under a real home. `AGENT_COMMS_TEST_CERT=1` is certification mode, set by
+`make certify` (see "Runtime pins"): isolation stays on, the scratch home
+sits under a directory short enough for a control socket, and the cert login
+reaches the cells as `AGENT_COMMS_TEST_CODEX_CERT_HOME`.
+`AGENT_COMMS_TEST_LIVE_HOME=1` disables isolation. It is for cell runs that
+must use the real home: Claude certification and the probe of the real
+protected supervisor root. Set it from your own shell, never from an agent.
+The guard refuses either of the last two unless every target on the command
+line is under `tests/cells`, so the substrate suite never runs against a
+real home. Without a login the cell tests skip, and a skip is reported as a
+skip, never as a pass.
 
 The full suite exercises an MCP client subprocess; it does not require a
 Claude/Codex account. Do not delete or reset live data to make tests pass.
@@ -129,8 +133,30 @@ touches the disk, `tests/cells/test_cell_version_drift.py` and the Claude
 cells skip with that message, and the skip is reported as a skip. Fake and
 Codex dispatches do not read the Claude pin and keep working.
 
-To certify a platform that is not listed yet, or to re-certify one after a
-runtime upgrade, work in a checkout on that machine:
+To certify Codex on a platform that is not listed yet, or to re-certify it
+after an upgrade, run in a checkout on that machine:
+
+```sh
+make certify RUNTIME=codex
+```
+
+An agent or a dispatch may run it; it needs no live-home switch. It needs a
+dedicated Codex login at `~/.agent-comms/codex-cert-home` (create it with
+`CODEX_HOME=~/.agent-comms/codex-cert-home codex login`;
+`CERTIFY_ARGS="--cert-home DIR"` names another, never `~/.codex` or the rest
+of `~/.agent-comms`). It runs `tests/cells/test_cell_codex.py` and
+`tests/cells/test_adapter_codex.py` in certification mode with the files
+untouched. Only when every one of those tests ran and passed does it write
+the platform entry and refresh `CONTRACT_SURFACE_DIGEST`; it then runs the
+Codex drift cell and restores both files if that or the digest check fails.
+It writes a record under `local/certifications/` and prints the diff to
+commit. When the installed version already is the pin it does nothing
+(`CERTIFY_ARGS=--force` re-runs it). In certification mode the protected
+supervisor root probe targets the scratch home's control root, with the
+system temp directories removed from the worker's writable roots; a
+live-home run of `tests/cells/test_cell_codex.py` probes the real root.
+
+Claude is not automated yet. To certify or re-certify it:
 
 1. Add or update the entry for your platform key under
    `runtimes.<runtime>.platforms`: the runtime's `--version` as `version`,

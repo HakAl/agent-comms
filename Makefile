@@ -1,4 +1,4 @@
-.PHONY: help gate hygiene lint lint-baseline test preverify install-smoke hooks
+.PHONY: help gate hygiene lint lint-baseline test preverify install-smoke hooks certify
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
 
@@ -6,6 +6,9 @@
 PYTHON ?=
 # Extra arguments for preverify.sh, for example `make preverify PREVERIFY_ARGS=--allow-dirty`.
 PREVERIFY_ARGS ?=
+# Runtime for `make certify`, and extra arguments such as --force or --cert-home DIR.
+RUNTIME ?=
+CERTIFY_ARGS ?=
 
 help:
 	@printf '%s\n' \
@@ -18,7 +21,8 @@ help:
 		'  make preverify      Fresh clone of HEAD: suite on Python 3.11 and 3.14, then lint and hygiene' \
 		'  make install-smoke  Build a wheel from HEAD, uv tool install it, run a mailbox exchange and a fake dispatch outside the checkout' \
 		'  make hooks          Install the pre-push hook (hygiene and lint before any push) into .git/hooks' \
-		'Variables: PYTHON=3.11 (make test), PREVERIFY_ARGS=--allow-dirty, GATES_BASE=<ref>, GATES_PRIVATE_DIR=<dir>, INSTALL_SMOKE_SOURCE=worktree, INSTALL_SMOKE_KEEP=1'
+		'  make certify        Certify the installed runtime and update its pin (RUNTIME=codex); runs its login-backed cells isolated' \
+		'Variables: PYTHON=3.11 (make test), RUNTIME=codex CERTIFY_ARGS=--force (make certify), PREVERIFY_ARGS=--allow-dirty, GATES_BASE=<ref>, GATES_PRIVATE_DIR=<dir>, INSTALL_SMOKE_SOURCE=worktree, INSTALL_SMOKE_KEEP=1'
 
 gate: hygiene lint test preverify install-smoke
 
@@ -44,3 +48,7 @@ hooks:
 	hooks_dir="$$(git rev-parse --git-common-dir)/hooks"; mkdir -p "$$hooks_dir" \
 	  && ln -sfn "$$(pwd)/scripts/hooks/pre-push" "$$hooks_dir/pre-push" \
 	  && echo "installed $$hooks_dir/pre-push -> scripts/hooks/pre-push"
+
+certify:
+	@test -n "$(RUNTIME)" || { echo "usage: make certify RUNTIME=codex [CERTIFY_ARGS=--force]"; exit 2; }
+	uv run $(if $(PYTHON),--python $(PYTHON),) --frozen --extra test python scripts/certify.py --runtime $(RUNTIME) $(CERTIFY_ARGS)

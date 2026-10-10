@@ -98,8 +98,18 @@ def provision_worker_git_root(project_root: Path) -> None:
     )
 
 
+CODEX_CERT_HOME_TEST_ENV = "AGENT_COMMS_TEST_CODEX_CERT_HOME"
+
+
 def codex_cert_home() -> Path:
-    return Path(os.environ.get("AGENT_COMMS_CODEX_CERT_HOME") or "~/.agent-comms/codex-cert-home").expanduser()
+    """The dedicated Codex login the cells copy auth.json from and back to.
+
+    ``AGENT_COMMS_TEST_CODEX_CERT_HOME`` comes first because it survives the
+    isolation strip (cert mode); the older ``AGENT_COMMS_CODEX_CERT_HOME``
+    only reaches a live-home run.
+    """
+    configured = os.environ.get(CODEX_CERT_HOME_TEST_ENV) or os.environ.get("AGENT_COMMS_CODEX_CERT_HOME")
+    return Path(configured or "~/.agent-comms/codex-cert-home").expanduser()
 
 
 def codex_cert_auth_copy_in(cert_home: Path, temp_home: Path) -> str:
@@ -213,7 +223,16 @@ def fake_worker_args(
     return args
 
 
-def long_running_worker_spawn(pid_file: Path, *, claude_versions_dir: Path | None = None) -> dict:
+def long_running_worker_spawn(
+    pid_file: Path, *, claude_versions_dir: Path | None = None, codex_stub_dir: Path | None = None
+) -> dict:
+    """A spawn block whose worker records its pid and sleeps, for TTL cells.
+
+    ``codex_stub_dir`` gets a ``codex`` stub: every Codex run carries the
+    per-run ``-c`` binding and is preflighted with ``codex ... mcp get``, so
+    the stub hands any ``mcp`` invocation to the real Codex (the preflight
+    stays real) and otherwise sleeps, ignoring the options.
+    """
     if claude_versions_dir is not None:
         binary = claude_versions_dir / claude_pin().version
         binary.parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +247,23 @@ def long_running_worker_spawn(pid_file: Path, *, claude_versions_dir: Path | Non
         )
         binary.chmod(0o755)
         return {"command": "{claude_binary}", "args": ["{worker_prompt}"]}
+
+    if codex_stub_dir is not None:
+        real_codex = shutil.which("codex")
+        if real_codex is None:
+            raise RuntimeError("codex CLI unavailable for the long-running Codex stub")
+        stub = codex_stub_dir / "codex"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            f'  if [ "$arg" = mcp ]; then exec {shlex.quote(real_codex)} "$@"; fi\n'
+            "done\n"
+            "printf '%s' \"$$\" > \"$AGENT_COMMS_TIMEOUT_CHILD_PID_FILE\"\n"
+            "exec sleep 60\n"
+        )
+        stub.chmod(0o755)
+        return {"command": str(stub), "args": ["exec", "{worker_prompt}"]}
 
     script = (
         "import os, pathlib, time; "
@@ -790,7 +826,15 @@ def make_codex_harness(
     root: Path,
     child_pid_file: Path | None = None,
     spawn: dict | None = None,
+    exclude_temp_writable_roots: bool = False,
 ) -> DispatchCellHarness:
+    """A Codex cell harness on the cert login.
+
+    ``exclude_temp_writable_roots`` drops the system temp directories from
+    the worker's workspace-write roots (Codex makes them writable by
+    default), for a probe whose target lives in the temp tree: cert mode's
+    scratch home.
+    """
     codex_home = root / "codex-home"
     codex_home.mkdir(parents=True)
     cert_home = codex_cert_home()
@@ -820,6 +864,16 @@ def make_codex_harness(
                 f'[projects."{root / CODEX_WORKER_ID}"]',
                 'trust_level = "trusted"',
                 "",
+                *(
+                    [
+                        "[sandbox_workspace_write]",
+                        "exclude_slash_tmp = true",
+                        "exclude_tmpdir_env_var = true",
+                        "",
+                    ]
+                    if exclude_temp_writable_roots
+                    else []
+                ),
             ]
         )
     )

@@ -5,8 +5,8 @@
       "boundary": "exact",
       "platforms": {
         "darwin-arm64": {
-          "version": "0.157.0",
-          "certified_on": "2026-09-26"
+          "version": "0.160.0",
+          "certified_on": "2026-10-10"
         }
       }
     },

@@ -420,7 +420,7 @@ def check_codex(
     codex = which("codex")
     if codex is None:
         return [check(check_id, FAIL, "codex is not on PATH", "install the Codex CLI so that `codex` is on PATH, then rerun doctor")]
-    install = f"install codex {pin.version} (certified for {pin.platform}), or re-certify and bump the pin"
+    install = f"install codex {pin.version} (certified for {pin.platform}), or re-certify it with `make certify RUNTIME=codex` in a checkout"
     result = _run_quietly(run, [codex, "--version"])
     if isinstance(result, Exception):
         return [check(check_id, FAIL, f"could not execute {codex} --version: {result}", install)]
