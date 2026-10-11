@@ -16,6 +16,7 @@ from tests.dispatch_cell_harness import (
     POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
     POSITIVE_CELL_TTL_SECONDS,
     codex_cell_preflight,
+    codex_pin_env_for_versions_dir,
     long_running_worker_spawn,
     make_codex_harness,
     supervisor_root_negative_fixture,
@@ -333,8 +334,9 @@ class CodexCellTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
             root = Path(temp_dir)
             pid_file = root / "codex-child.pid"
-            spawn = long_running_worker_spawn(pid_file, codex_stub_dir=root / "bin")
+            spawn = long_running_worker_spawn(pid_file, codex_stub_dir=root / "custody")
             spawn["env"] = {"CODEX_HOME": str(root / "codex-home")}
+            stack.enter_context(patched_env(codex_pin_env_for_versions_dir(root / "custody")))
             harness = make_codex_harness(root, child_pid_file=pid_file, spawn=spawn)
             stack.callback(harness.close)
             dispatch = {}

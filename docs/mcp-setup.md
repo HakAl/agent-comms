@@ -166,4 +166,6 @@ directory and every `-c`, in order); a dispatch whose binding differs fails
 before the worker starts, naming the conflicting field. A worker's stored
 spawn args may not set `mcp_servers.agent-comms` (or the whole
 `mcp_servers` table) with `-c`, since a later `-c` would win; such a
-dispatch is refused.
+dispatch is refused. The worker runs the custody copy of the pinned Codex
+(`agent-comms custody codex` fills it), never the `codex` on `PATH`; the
+architect's seat above keeps using the `codex` you run yourself.

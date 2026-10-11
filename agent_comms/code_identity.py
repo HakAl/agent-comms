@@ -12,14 +12,14 @@ from . import paths
 logger = logging.getLogger(__name__)
 
 SURFACE_ROOT = paths.REPO_ROOT.resolve()
-CONTRACT_VERSION: int = 25
+CONTRACT_VERSION: int = 26
 # Version of the consumer-visible dispatch contract. A loaded MCP process
 # refuses dispatch when its version differs from this checkout's, so advance it
 # for any change a stale process could misapply. A contract-compatible change to
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "79be7df1164b4efab2141f04dfc1d29280da6194c05455c08caffe9a02c783f8"
+    "3d5d1b61912c7e6cc2041a605a359acabcebd04892c1c3419915a9711e87fcd2"
 )
 
 
@@ -109,6 +109,7 @@ CONTRACT_NEUTRAL_REASONS = {
 }
 EXCLUDED_WITH_REASON = {
     "agent_comms/cli/**": "admin and operator CLI surface; after DEFAULT_DB decoupling it is not server-imported",
+    "agent_comms/custody.py": "operator CLI helper that fills runtime custody; dispatch verifies through governed runtime_pins, off the dispatch spawn path",
     "agent_comms/codex_refresh_driver.py": "post-expiry auth refresh pass started by the monitor, off the dispatch spawn path",
     "agent_comms/monitor.py": "separate cron/operator reconciliation process, off the dispatch spawn path",
     "agent_comms/onboarding.py": "separate onboarding CLI helper, off the dispatch spawn path",

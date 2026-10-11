@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
 from agent_comms import cli, codex_binding, doctor, mcp_clients, paths, provisioning, setup, supervisor
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import CodexAdapter, McpBindingMismatch
@@ -432,6 +433,7 @@ class WorkerBindingTest(_Project):
 
     def setUp(self) -> None:
         super().setUp()
+        self.codex_binary = install_fake_codex_custody(self)
         self.worker_home = _fresh_codex_home(self.root / "worker-home")
         self.context = DispatchContext(
             dispatch={"dispatch_id": "dispatch_20261003_120000_abcdef12", "policy_name": WORKER_DISPATCH_POLICY},
@@ -470,7 +472,7 @@ class WorkerBindingTest(_Project):
         _adapter, spawn, result = self.dispatch(runner)
         child = spawn.call_args.args[0]
         overrides = codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"})
-        self.assertEqual(child[0], "codex")
+        self.assertEqual(child[0], str(self.codex_binary))
         self.assertEqual(child[1:1 + len(overrides)], overrides)
         self.assertEqual(child[1 + len(overrides):][:2], ["--ask-for-approval", "never"])
         # Each -c value is TOML Codex parses back to the binding.
@@ -484,7 +486,7 @@ class WorkerBindingTest(_Project):
         self.assertEqual((values["enabled"], values["cwd"], values["disabled_tools"], values["env_vars"]), (True, str(self.project), [], []))
         # The check ran codex itself, as the worker will: its home, cwd and overrides.
         [call] = runner.calls
-        self.assertEqual(call["argv"], ["codex", "-p", "t-codex-worker", *overrides, "mcp", "get", "agent-comms", "--json"])
+        self.assertEqual(call["argv"], [str(self.codex_binary), "-p", "t-codex-worker", *overrides, "mcp", "get", "agent-comms", "--json"])
         self.assertEqual(call["cwd"], str(self.project))
         self.assertEqual(call["env"]["CODEX_HOME"], str(self.worker_home))
         self.assertEqual(result.observed_values["codex_mcp_binding"], "verified")
@@ -539,7 +541,7 @@ class WorkerBindingTest(_Project):
         # The template's own --profile comes later, so it wins; stored -c
         # follow ours, in launch order.
         self.assertEqual(call["argv"], [
-            "codex", "-p", "t-codex-worker", *overrides, "-c", 'model="o3"', "-c", 'mcp_servers.other.command="/y"',
+            str(self.codex_binary), "-p", "t-codex-worker", *overrides, "-c", 'model="o3"', "-c", 'mcp_servers.other.command="/y"',
             "mcp", "get", "agent-comms", "--json",
         ])
         self.assertEqual(call["cwd"], str(self.project / "sub"))
@@ -559,6 +561,7 @@ class RealCodexResolutionTest(_Project):
 
     def setUp(self) -> None:
         super().setUp()
+        install_fake_codex_custody(self, forwarding_codex_script())
         self.user_config = self.codex_home / "config.toml"
         self.codex_home.mkdir()
         self.seat.apply(self.target(), mcp_clients.SeatState("absent", self.project), which=lambda name: None, run=subprocess.run)

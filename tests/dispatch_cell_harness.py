@@ -26,9 +26,14 @@ from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
 from agent_comms.runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
     CLAUDE_VERSIONS_DIR_ENV,
+    CODEX_PINNED_SHA256_ENV,
+    CODEX_VERSIONS_DIR_ENV,
     PlatformNotCertified,
+    bundle_sha256,
     claude_binary_path,
     claude_pin,
+    codex_binary_path,
+    codex_pin,
     custody_binary_digest_matches,
 )
 from agent_comms.spawn import render_spawn
@@ -228,10 +233,12 @@ def long_running_worker_spawn(
 ) -> dict:
     """A spawn block whose worker records its pid and sleeps, for TTL cells.
 
-    ``codex_stub_dir`` gets a ``codex`` stub: every Codex run carries the
-    per-run ``-c`` binding and is preflighted with ``codex ... mcp get``, so
-    the stub hands any ``mcp`` invocation to the real Codex (the preflight
-    stays real) and otherwise sleeps, ignoring the options.
+    ``codex_stub_dir`` becomes a custody directory whose bundle's
+    ``bin/codex`` is a stub (pin it with :func:`codex_pin_env_for_versions_dir`):
+    every Codex run carries the per-run ``-c`` binding and is preflighted
+    with ``codex ... mcp get``, so the stub hands any ``mcp`` invocation to
+    the real custody Codex (the preflight stays real) and otherwise sleeps,
+    ignoring the options.
     """
     if claude_versions_dir is not None:
         binary = claude_versions_dir / claude_pin().version
@@ -249,10 +256,10 @@ def long_running_worker_spawn(
         return {"command": "{claude_binary}", "args": ["{worker_prompt}"]}
 
     if codex_stub_dir is not None:
-        real_codex = shutil.which("codex")
-        if real_codex is None:
-            raise RuntimeError("codex CLI unavailable for the long-running Codex stub")
-        stub = codex_stub_dir / "codex"
+        real_codex = str(codex_binary_path())
+        if not Path(real_codex).is_file():
+            raise RuntimeError(f"no codex custody copy at {real_codex} for the long-running Codex stub")
+        stub = codex_stub_dir / codex_pin().version / "bin" / "codex"
         stub.parent.mkdir(parents=True, exist_ok=True)
         stub.write_text(
             "#!/bin/sh\n"
@@ -263,7 +270,7 @@ def long_running_worker_spawn(
             "exec sleep 60\n"
         )
         stub.chmod(0o755)
-        return {"command": str(stub), "args": ["exec", "{worker_prompt}"]}
+        return {"command": "{codex_binary}", "args": ["exec", "{worker_prompt}"]}
 
     script = (
         "import os, pathlib, time; "
@@ -278,6 +285,13 @@ def claude_pin_env_for_versions_dir(versions_dir: Path) -> dict[str, str]:
     return {
         CLAUDE_VERSIONS_DIR_ENV: str(versions_dir),
         CLAUDE_PINNED_SHA256_ENV: hashlib.sha256(binary.read_bytes()).hexdigest(),
+    }
+
+
+def codex_pin_env_for_versions_dir(versions_dir: Path) -> dict[str, str]:
+    return {
+        CODEX_VERSIONS_DIR_ENV: str(versions_dir),
+        CODEX_PINNED_SHA256_ENV: bundle_sha256(versions_dir / codex_pin().version),
     }
 
 
@@ -795,15 +809,21 @@ def make_claude_harness(
 
 
 def codex_cell_preflight() -> tuple[bool, str]:
-    if shutil.which("codex") is None:
-        return False, "codex CLI unavailable"
+    # Workers run the custody copy of the pinned Codex, so the cells do too:
+    # certify.py fills a cert custody copy, a live run uses the real one.
+    try:
+        codex = codex_binary_path()
+    except PlatformNotCertified as exc:
+        return False, str(exc)
+    if not codex.is_file():
+        return False, f"no codex custody copy at {codex}; run agent-comms custody codex"
     codex_home = codex_cert_home()
     recovery = f"; run CODEX_HOME={codex_home} codex login"
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     try:
         result = subprocess.run(
-            ["codex", "login", "status"],
+            [str(codex), "login", "status"],
             env=env,
             text=True,
             capture_output=True,

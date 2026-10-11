@@ -3,7 +3,6 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import base64
 import json
 import os
-import sys
 import tempfile
 import types
 import unittest
@@ -15,6 +14,7 @@ from agent_comms import paths, supervisor
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import CodexAdapter
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.codex_custody_support import install_fake_codex_custody, python_shim_script
 
 # Hermetic supervised-seam identity. The real AF_UNIX bind lives in the
 # certification environment (EndToEndSupervisorTest); these runtime-free cells
@@ -66,6 +66,9 @@ def provision_fresh_codex_home(codex_home: Path) -> Path:
 
 
 class CodexAdapterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        install_fake_codex_custody(self, python_shim_script())
+
     def test_spawn_env_codex_home_is_data_driven_per_recipient(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -85,7 +88,7 @@ class CodexAdapterTest(unittest.TestCase):
                         "runtime": "codex",
                         "project_root": str(root),
                         "spawn": {
-                            "command": sys.executable,
+                            "command": "{codex_binary}",
                             "args": [
                                 "-c",
                                 "import time; time.sleep(30)",
@@ -132,7 +135,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": [
                             "-c",
                             "import os, pathlib; pathlib.Path(os.environ['OUT_FILE']).write_text(os.environ.get('ANTHROPIC_API_KEY', 'absent'))",
@@ -172,7 +175,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": ["-c", "import time; time.sleep(30)", f"WakePolicy={WORKER_DISPATCH_POLICY}"],
                         "env": {"AGENT_COMMS_ACTOR_ID": "attacker", "CODEX_HOME": str(codex_home)},
                     },
@@ -204,7 +207,7 @@ class CodexAdapterTest(unittest.TestCase):
                 owner="alpha-architect",
                 runtime="codex",
                 spawn={
-                    "command": sys.executable,
+                    "command": "{codex_binary}",
                     "args": ["-c", "import time; time.sleep(30)", f"WakePolicy={WORKER_DISPATCH_POLICY}"],
                     "env": {"AGENT_COMMS_ADMIN_TOKEN": "secret", "CODEX_HOME": str(codex_home)},
                 },
@@ -240,7 +243,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": [
                             "-c",
                             "import time; time.sleep(30)",
@@ -326,7 +329,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": ["-c", "import time; time.sleep(30)"],
                         "env": {"CODEX_HOME": str(codex_home)},
                     },

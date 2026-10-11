@@ -57,11 +57,8 @@ class ManifestDataTest(unittest.TestCase):
                         self.assertRegex(key, PLATFORM_KEY_RE)
                         self.assertRegex(data["version"], SEMVER_RE)
                         date.fromisoformat(data["certified_on"])
-                        expected_keys = {"version", "certified_on"}
-                        if runtime == "claude":
-                            expected_keys.add("sha256")
-                            self.assertRegex(data["sha256"], SHA256_RE)
-                        self.assertEqual(set(data), expected_keys)
+                        self.assertRegex(data["sha256"], SHA256_RE)
+                        self.assertEqual(set(data), {"version", "certified_on", "sha256"})
 
     def test_release_platform_is_certified_for_both_runtimes(self) -> None:
         for runtime in ("codex", "claude"):

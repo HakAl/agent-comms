@@ -11,6 +11,9 @@ from .store import WORKER_DISPATCH_POLICY
 
 ALLOWED_RUNTIMES = ("claude", "codex", "fake")
 CODEX_ARGS_INTRODUCED = ("--json",)
+# Commands an older template stored, which rerender replaces with the
+# custody binary (ac-4ao.10 slice 3a).
+CODEX_COMMANDS_INTRODUCED = {"codex": "{codex_binary}"}
 
 
 def worker_prompt_slot(args: list, marker: str) -> int | None:
@@ -49,13 +52,14 @@ def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
         raise ValidationError("no worker prompt slot")
     if slot != len(args) - 1:
         raise ValidationError("worker prompt slot is not the last element")
-    if stored.get("command") != rendered["command"]:
+    command_migrates = CODEX_COMMANDS_INTRODUCED.get(stored.get("command")) == rendered["command"]
+    if stored.get("command") != rendered["command"] and not command_migrates:
         raise ValidationError("stored command differs from template command")
     rendered_slot = worker_prompt_slot(rendered["args"], marker)
     prefix = rendered["args"][:rendered_slot]
-    if args[:slot] == prefix:
+    if args[:slot] == prefix and not command_migrates:
         return "no-op", stored
-    if args[:slot] != [arg for arg in prefix if arg not in CODEX_ARGS_INTRODUCED]:
+    if args[:slot] not in (prefix, [arg for arg in prefix if arg not in CODEX_ARGS_INTRODUCED]):
         raise ValidationError(
             f"stored prefix differs beyond introduced elements: stored={args[:slot]!r}; rendered={prefix!r}"
         )
@@ -209,7 +213,7 @@ def render_spawn(runtime: str, actor_id: str, *, codex_home: str | None = None) 
 def _codex_spawn(codex_home: str | None) -> dict:
     env_home = codex_home if codex_home is not None else "{codex_home}"
     return {
-        "command": "codex",
+        "command": "{codex_binary}",
         "args": [
             "--ask-for-approval",
             "never",
@@ -373,6 +377,7 @@ def _escaped_json(value: dict) -> str:
         "mcp_command",
         "hooks_path",
         "claude_binary",
+        "codex_binary",
         "python",
     )
     sentinels = {name: f"@@AGENT_COMMS_PLACEHOLDER_{index}@@" for index, name in enumerate(placeholders)}

@@ -2,7 +2,8 @@
 
 Setup takes a project root, the runtimes the user has and a team name. It
 writes the actor registry (``~/.agent-comms/actors.json``), registers the
-team in the ledger, provisions what the codex workers need, and binds the
+team in the ledger, provisions what the codex workers need (their homes and,
+best effort, the custody copy of the pinned Codex they run), and binds the
 architect seat in the user's own MCP clients through ``mcp_clients``: Claude
 through ``claude mcp add``, Codex in the project's ``.codex/config.toml``.
 ``agent-comms bind-seat`` binds one seat of an existing team the same way,
@@ -41,6 +42,7 @@ from pathlib import Path
 
 from . import doctor, mcp_clients, paths, supervisor
 from .cli._helpers import bootstrap_store, load_actor_config
+from .custody import fill_codex_custody
 from .runtime_pins import PlatformNotCertified, claude_versions_dir, current_platform, pin_for
 from .schema import ValidationError, validate_actor_id_for_kind
 from .spawn import ALLOWED_RUNTIMES
@@ -473,6 +475,16 @@ def run_setup(
         except PlatformNotCertified as exc:
             claude_custody = {"version": None, "path": None, "present": False, "detail": str(exc)}
 
+    # Best effort: a missing custody copy fails dispatch and doctor names
+    # the fill command, so setup records why and carries on.
+    codex_custody = None
+    if "codex" in workers:
+        try:
+            filled = fill_codex_custody(which=which, run=run)
+            codex_custody = {"present": True, "path": filled["path"], "status": filled["status"]}
+        except (ValidationError, PlatformNotCertified, OSError, ValueError) as exc:
+            codex_custody = {"present": False, "reason": str(exc)}
+
     # --- the seats ---------------------------------------------------------
     ledger = doctor.LedgerRef(db_path, db_explicit)
     applied, pending = apply_seats(target, states, ledger, which=which, run=run)
@@ -492,6 +504,7 @@ def run_setup(
         "human": {"id": human, "display_name": actors[human].get("display_name", human), "reused": reused},
         "codex_homes": codex_homes,
         "claude_custody": claude_custody,
+        "codex_custody": codex_custody,
         "mcp": {"applied": applied, "pending": pending},
         "doctor": {"ok": report["ok"], "fixes": report["fixes"]},
         "next": list(dict.fromkeys(steps)),

@@ -433,7 +433,7 @@ class NegativeSweepTest(unittest.TestCase):
             self.assertEqual(actors["alpha-claude-worker"]["runtime"], "claude")
             self.assertEqual(actors["alpha-claude-worker"]["spawn"]["command"], "{claude_binary}")
             self.assertEqual(actors["alpha-codex-worker"]["runtime"], "codex")
-            self.assertEqual(actors["alpha-codex-worker"]["spawn"]["command"], "codex")
+            self.assertEqual(actors["alpha-codex-worker"]["spawn"]["command"], "{codex_binary}")
 
     def test_bootstrap_prompt_injection_does_not_enter_spawn_args_or_env(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -19,6 +19,10 @@ import unittest
 from pathlib import Path
 
 RESULT_ENV = "AGENT_COMMS_TEST_CERT_RESULT"
+# The cert custody copy certify.py made. The isolation strip keeps only
+# AGENT_COMMS_TEST_* names, so it arrives under this one and becomes the
+# production override the adapter reads.
+CODEX_VERSIONS_TEST_ENV = "AGENT_COMMS_TEST_CODEX_VERSIONS_DIR"
 PASSED = "passed"
 DETAIL_LIMIT = 4000
 
@@ -79,6 +83,11 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    custody = os.environ.get(CODEX_VERSIONS_TEST_ENV)
+    if custody:
+        from agent_comms.runtime_pins import CODEX_VERSIONS_DIR_ENV
+
+        os.environ[CODEX_VERSIONS_DIR_ENV] = custody
     suite = unittest.defaultTestLoader.loadTestsFromNames(argv)
     runner = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=RecordingResult)
     result = runner.run(suite)

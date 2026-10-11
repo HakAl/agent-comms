@@ -290,6 +290,34 @@ class SetupCommandTest(_Scratch):
         self.assertEqual(self.codex_entry()["args"], ["--actor-id", "t-architect", "--db", str(self.db)])
         self.assertEqual(result["next"][0], "agent-comms doctor")
 
+    def test_codex_custody_is_filled_from_the_path_install_when_it_matches_the_pin(self) -> None:
+        from agent_comms import custody
+        from tests.codex_custody_support import codex_custody_env, fake_codex_bundle
+
+        installed = self.root / "installed"
+        fake_codex_bundle(installed)
+        versions = self.root / "codex-custody"
+        source = installed / runtime_pins.codex_pin().version
+        env = {**codex_custody_env(installed), runtime_pins.CODEX_VERSIONS_DIR_ENV: str(versions)}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(custody, "locate_native_bundle", return_value=source), \
+                mock.patch.object(custody, "bundle_version", return_value=runtime_pins.codex_pin().version), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc, result = self.setup("--runtimes", "codex,fake", "--clients", "", "--human-id", HUMAN)
+        self.assertEqual(rc, 0, result)
+        dest = versions / runtime_pins.codex_pin().version
+        self.assertEqual(result["codex_custody"], {"present": True, "path": str(dest), "status": "filled"})
+        self.assertEqual(runtime_pins.bundle_sha256(dest), runtime_pins.bundle_sha256(source))
+
+    def test_codex_custody_failure_is_recorded_and_setup_carries_on(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc, result = self.setup("--runtimes", "codex,fake", "--clients", "", "--human-id", HUMAN)
+        self.assertEqual(rc, 0, result)
+        self.assertFalse(result["codex_custody"]["present"])
+        self.assertTrue(result["codex_custody"]["reason"])
+        rc, result = self.setup("--runtimes", "fake", "--clients", "", "--human-id", HUMAN, "--team", "other")
+        self.assertIsNone(result["codex_custody"])
+
     def test_codex_worker_gets_a_custody_home_with_a_dangling_auth_link(self) -> None:
         pins = {"codex": RuntimePin("codex", "test-platform", "0.157.0", "exact", "2026-09-26")}
         stderr = io.StringIO()

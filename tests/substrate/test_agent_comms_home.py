@@ -434,6 +434,11 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },
+        # 26 adds {codex_binary}: Codex workers run the custody copy.
+        26: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
     }
 
     def test_spawn_placeholders_are_recorded_for_this_contract(self) -> None:
@@ -449,6 +454,19 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             for text in texts:
                 found |= {name for _, name, _, _ in string.Formatter().parse(str(text)) if name}
         self.assertEqual(found, self.PLACEHOLDERS_BY_CONTRACT[code_identity.CONTRACT_VERSION])
+
+    def test_a_server_loaded_at_contract_25_must_reconnect(self) -> None:
+        # A v25 server cannot format {codex_binary}; it must refuse, not
+        # dispatch the PATH codex.
+        from agent_comms import code_identity
+
+        loaded_surface = {"agent_comms/spawn.py": "before-codex-custody"}
+        with mock.patch.object(code_identity, "LOADED_CODE_IDENTITY", code_identity._identity_from_surface(loaded_surface)), \
+                mock.patch.object(code_identity, "LOADED_SURFACE", loaded_surface), \
+                mock.patch.object(code_identity, "LOADED_CONTRACT_VERSION", 25):
+            with self.assertRaises(code_identity.StaleModuleError) as raised:
+                code_identity.require_fresh_module()
+        self.assertIn(f"v25 -> v{code_identity.CONTRACT_VERSION}", str(raised.exception))
 
     def test_a_server_loaded_at_contract_23_must_reconnect(self) -> None:
         from agent_comms import code_identity
@@ -513,10 +531,14 @@ class InstallBesideAnotherTest(_Home):
         return rc, json.loads(text) if text else {}
 
     def test_second_install_leaves_the_first_untouched(self) -> None:
-        rc, result = self.cli(
-            "setup", "--project-root", str(self.project), "--team", "dog", "--runtimes", "fake,codex",
-            "--clients", "none", "--human-id", HUMAN, "--yes",
-        )
+        from agent_comms import custody
+
+        # Setup would copy the real Codex bundle into custody; not here.
+        with mock.patch.object(custody, "locate_native_bundle", side_effect=custody.CustodyError("no codex in this test")):
+            rc, result = self.cli(
+                "setup", "--project-root", str(self.project), "--team", "dog", "--runtimes", "fake,codex",
+                "--clients", "none", "--human-id", HUMAN, "--yes",
+            )
         self.assertIn(rc, (0, 3), result)
         self.assertEqual(result["runtime_root"], str(self.home))
         self.assertEqual(result["registry"], str(self.home / "actors.json"))

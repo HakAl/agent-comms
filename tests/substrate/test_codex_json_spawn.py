@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
 from agent_comms import codex_home, paths, supervisor
 from agent_comms.adapters.codex import AuthStale, CodexAdapter
 from agent_comms.adapters.claude import ClaudeAdapter
@@ -70,6 +71,10 @@ class ScratchTest(unittest.TestCase):
 
 
 class SnapshotTest(ScratchTest):
+    def setUp(self):
+        super().setUp()
+        install_fake_codex_custody(self, forwarding_codex_script())
+
     def test_criterion_13_frozen_baseline_byte_format_admission_both_branches(self):
         # baseline codex.py and codex_home.py preflight_home_snapshot
         # both read_text then json.loads and classify every exception alike.
@@ -436,6 +441,25 @@ class RerenderTest(ScratchTest):
                 again = self.run_rerender(actor_id=name, apply=True)["actors"][0]
             self.assertEqual((again["status"], again["diff"]), ("no-op", ""))
             write.assert_not_called()
+
+    def test_legacy_codex_command_always_migrates_to_the_custody_binary(self):
+        # Before custody (ac-4ao.10 slice 3a) the template stored the bare
+        # PATH command; that is an update even when the args already match.
+        for name, drop_json in (("legacy-current-args", False), ("legacy-old-args", True)):
+            spawn = render_spawn("codex", name, codex_home="/synthetic/different-home")
+            spawn["command"] = "codex"
+            if drop_json:
+                spawn["args"].remove("--json")
+            actor = self.actor(name, spawn=spawn)
+            result = self.run_rerender(actor_id=name, apply=True)["actors"][0]
+            self.assertEqual(result["status"], "update", result.get("reason"))
+            self.assertTrue(result["verified"])
+            self.assertEqual(result["spawn"]["command"], "{codex_binary}")
+            self.assertIn("--json", result["spawn"]["args"])
+            self.assertEqual(result["spawn"]["args"][-1], actor["spawn"]["args"][-1])
+            self.assertEqual(result["spawn"]["env"], actor["spawn"]["env"])
+            again = self.run_rerender(actor_id=name)["actors"][0]
+            self.assertEqual(again["status"], "no-op")
 
     def test_criterion_7_refusals_write_nothing(self):
         base = render_spawn("codex", "worker")
@@ -871,6 +895,10 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
 
 
 class CodexRoutingTest(ScratchTest):
+    def setUp(self):
+        super().setUp()
+        install_fake_codex_custody(self, forwarding_codex_script())
+
     def test_fixture_token_is_fresh_under_the_real_clock(self):
         auth = self.root / "auth.json"
         auth.write_text(json.dumps(auth_document()))

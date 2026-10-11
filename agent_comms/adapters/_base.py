@@ -13,7 +13,7 @@ from pathlib import Path
 from . import DispatchContext, DispatchStart
 from .. import paths, supervisor
 from ..policies import compile_policy, scoped_env
-from ..runtime_pins import claude_binary_path
+from ..runtime_pins import claude_binary_path, codex_binary_path
 from ..spawn import DEFAULT_WORKER_PROMPT, claude_settings_for_policy
 
 SPAWN_GRACE_SECONDS = 2.0
@@ -143,6 +143,7 @@ class ProcessSpawnAdapter:
         "codex_home",
         "agent_comms_home",
         "claude_binary",
+        "codex_binary",
         "python",
         "worker_prompt",
     )
@@ -607,10 +608,13 @@ class ProcessSpawnAdapter:
                 # adapter can import the package, on PATH or not.
                 "python": sys.executable,
             },
-            # Resolved only by a spawn that names it: the Claude pin is
-            # per platform and fails closed where none is certified, which
-            # must not touch a fake or codex dispatch.
-            lazy={"claude_binary": lambda: str(claude_binary_path())},
+            # Resolved only by a spawn that names it: a runtime pin is per
+            # platform and fails closed where none is certified, which must
+            # not touch a dispatch of another runtime.
+            lazy={
+                "claude_binary": lambda: str(claude_binary_path()),
+                "codex_binary": lambda: str(codex_binary_path()),
+            },
         )
         if json_string:
             values = _PlaceholderValues(

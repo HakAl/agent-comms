@@ -12,15 +12,20 @@ class CodexCellPreflightTest(unittest.TestCase):
             enter = stack.enter_context
             home = h.Path(enter(h.tempfile.TemporaryDirectory()))
             enter(P.object(h, "codex_cert_home", return_value=home))
-            which = enter(P.object(h.shutil, "which", return_value=None))
+            custody = home / "custody" / "bin" / "codex"
+            enter(P.object(h, "codex_binary_path", return_value=custody))
             run = enter(P.object(h.subprocess, "run"))
-            self.assertFalse(h.codex_cell_preflight()[0] or run.called)
-            which.return_value = "/fake/codex"
+            ready, reason = h.codex_cell_preflight()
+            self.assertFalse(ready or run.called)
+            self.assertIn("no codex custody copy", reason)
+            custody.parent.mkdir(parents=True)
+            custody.write_text("")
             errors = (h.subprocess.TimeoutExpired("secret", 10), OSError("secret"))
             for value in (1, 0, *errors):
                 run.side_effect = value if isinstance(value, Exception) else None
                 run.return_value = Mock(returncode=value, stdout="", stderr="")
                 ready, reason = h.codex_cell_preflight()
+                self.assertEqual(run.call_args.args[0][0], str(custody))
                 self.assertEqual((ready, "secret" in reason), (False, False))
                 self.assertTrue(reason.endswith(f"CODEX_HOME={home} codex login"))
             run.side_effect = None

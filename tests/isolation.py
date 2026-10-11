@@ -36,7 +36,8 @@ Switches (environment variables):
     and creates both scratch directories under a base short enough for a
     control socket under ``<scratch home>/.agent-comms/run/s``. The cert
     inputs reach the cells as ``AGENT_COMMS_TEST_*`` names, which the strip
-    keeps (``AGENT_COMMS_TEST_CODEX_CERT_HOME``).
+    keeps (``AGENT_COMMS_TEST_CODEX_CERT_HOME``,
+    ``AGENT_COMMS_TEST_CODEX_VERSIONS_DIR``).
 ``AGENT_COMMS_TEST_KEEP_SCRATCH=1``
     Keep the scratch directories and print their paths to stderr, so a run
     can be audited for what it would have written under a real home.

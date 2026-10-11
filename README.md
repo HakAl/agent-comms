@@ -78,8 +78,10 @@ uv sync
 # 2. Set up a team for your project. This writes the actor registry
 #    (~/.agent-comms/actors.json: you, one architect, one worker per
 #    runtime), registers them in the mailbox at
-#    ~/.agent-comms/agent-comms.sqlite, provisions the codex worker's home,
-#    and binds the architect seat in your own Claude Code (`claude mcp
+#    ~/.agent-comms/agent-comms.sqlite, provisions the codex worker's home
+#    and its custody copy of the pinned Codex (workers never run the codex
+#    on PATH, which updates itself), and binds the architect seat in your
+#    own Claude Code (`claude mcp
 #    add`) and Codex CLI (<project>/.codex/config.toml, kept out of git).
 #    No file is edited by hand. On a
 #    terminal it asks for anything left out; --yes takes the defaults.
@@ -120,8 +122,8 @@ with its own `--actor-id`.
 ## Check the install
 
 `agent-comms doctor` checks the install, the runtime root, the registry and
-the ledger, the platform pins, each runtime the team uses (binary, digest,
-version, login), every codex worker's home and any login that refresh could
+the ledger, the platform pins, each runtime the team uses (custody copy,
+digest, version, login), every codex worker's home and any login that refresh could
 not recover, the monitor heartbeat, the architect's MCP seats and the admin
 token. It writes nothing and repairs nothing: every failing check carries the
 command or step that fixes it. The output is one JSON report:

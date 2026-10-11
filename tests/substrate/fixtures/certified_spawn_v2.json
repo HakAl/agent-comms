@@ -29,7 +29,7 @@
       "workspace-write",
       "{worker_prompt}"
     ],
-    "command": "codex",
+    "command": "{codex_binary}",
     "env": {
       "CODEX_HOME": "{codex_home}"
     }

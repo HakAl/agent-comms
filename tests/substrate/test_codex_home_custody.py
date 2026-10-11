@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from tests.codex_custody_support import install_fake_codex_custody
 from agent_comms import codex_home, codex_refresh_driver, paths, provisioning
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import AuthStale, CodexAdapter
@@ -95,6 +96,10 @@ class AdapterPreflightTest(_Base):
     custody-managed home (the provisioned default home or any home inside the
     runtime custody root) is strict; a legacy literal home outside the custody
     root stays on the permissive auth-only check."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        install_fake_codex_custody(self)
 
     def _ctx(self, home: Path) -> DispatchContext:
         spawn = render_spawn("codex", "alpha-codex-worker")
@@ -821,10 +826,11 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 19 binds the cycle approval destination; 20 binds reply snapshots;
         # 21 refuses stale single-log adapters before structured codex output;
         # 24 adds the {agent_comms_home} spawn placeholder (AGENT_COMMS_HOME);
-        # 25 binds the Codex worker's MCP server per run with -c and checks it.
+        # 25 binds the Codex worker's MCP server per run with -c and checks it;
+        # 26 runs Codex workers from the custody copy ({codex_binary}) only.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 25)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 26)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

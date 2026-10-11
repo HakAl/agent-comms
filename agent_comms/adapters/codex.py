@@ -11,6 +11,14 @@ from .. import codex_binding, paths
 from ..codex_home import preflight_home_snapshot
 from ..codex_auth_refresh import codex_auth_snapshot
 from ..policies import WORKER_DISPATCH_POLICY_VERSION
+from ..runtime_pins import (
+    BundleNotDigestible,
+    bundle_sha256,
+    codex_binary_path,
+    codex_bundle_path,
+    codex_pin,
+    codex_pinned_sha256,
+)
 from ..spawn import CODEX_ARGS_INTRODUCED
 from ..store import WORKER_DISPATCH_POLICY
 
@@ -32,6 +40,18 @@ class AuthStale(RuntimeError):
 
 class McpBindingMismatch(RuntimeError):
     """Codex would not bind the worker's agent-comms server as intended."""
+
+
+class CodexCustodyUnavailable(RuntimeError):
+    """The custody copy of the pinned Codex is missing or unreadable."""
+
+
+class CodexCustodyDigestMismatch(RuntimeError):
+    """The custody copy of the pinned Codex differs from the certified bundle."""
+
+
+class CodexSpawnRowNotPinnedError(RuntimeError):
+    """A Codex actor's stored command is not the custody binary."""
 
 
 class CodexAdapter(ProcessSpawnAdapter):
@@ -133,6 +153,7 @@ class CodexAdapter(ProcessSpawnAdapter):
         if context.recipient.get("runtime") not in self.supported_runtimes:
             return
 
+        self._check_custody()
         codex_home = self._resolved_codex_home(context)
         if self._custody_managed(context, codex_home):
             # Managed home: strict preflight is authoritative (never an
@@ -162,6 +183,51 @@ class CodexAdapter(ProcessSpawnAdapter):
             raise
         except Exception as exc:
             raise self._auth_stale(codex_home, str(exc)) from exc
+
+    @staticmethod
+    def _check_custody() -> None:
+        """Refuse unless the custody bundle is the certified one, byte for byte.
+
+        Workers never run the ``codex`` on PATH, which updates itself; they
+        run ``<custody>/<pinned version>/bin/codex``, and the bundle digest
+        stands in for the version check because it pins the exact bytes.
+        """
+        bundle = codex_bundle_path()
+        version = codex_pin().version
+        if not (bundle / "bin" / "codex").is_file():
+            raise CodexCustodyUnavailable(
+                f"no custody copy of codex {version}: {bundle / 'bin' / 'codex'} is missing; "
+                "recover with: agent-comms custody codex"
+            )
+        expected = codex_pinned_sha256()
+        if not expected:
+            raise CodexCustodyDigestMismatch(
+                f"the codex {version} pin records no bundle sha256; recover with: make certify RUNTIME=codex"
+            )
+        try:
+            actual = bundle_sha256(bundle)
+        except (BundleNotDigestible, OSError) as exc:
+            raise CodexCustodyUnavailable(
+                f"custody copy of codex {version} cannot be verified: {exc}; path={bundle}; "
+                "recover with: agent-comms custody codex --replace"
+            ) from exc
+        if actual != expected:
+            raise CodexCustodyDigestMismatch(
+                f"custody copy of codex {version} differs from the certified bundle: expected sha256 {expected}, "
+                f"got {actual}; path={bundle}; recover with: agent-comms custody codex --replace"
+            )
+
+    def _validate_rendered_command(self, command: str, context: DispatchContext) -> None:
+        if context.recipient.get("runtime") not in self.supported_runtimes:
+            return
+        # Exact match on the absolute custody path, never a resolve() here: the
+        # binding check and launch run this string in the worker's directory.
+        if command != str(codex_binary_path()):
+            actor_id = context.recipient.get("id")
+            raise CodexSpawnRowNotPinnedError(
+                f"Codex spawn command is not the custody binary: rendered command={command!r}; "
+                f"actor_id={actor_id!r}; recover with: agent-comms rerender-spawn {actor_id} --apply"
+            )
 
     @staticmethod
     def _custody_managed(context: DispatchContext, codex_home: Path) -> bool:

@@ -39,9 +39,13 @@ from .dispatch_ledger import DISPATCH_TERMINAL_STATUSES
 from .monitor import heartbeat_is_fresh
 from .runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
+    CODEX_PINNED_SHA256_ENV,
+    BundleNotDigestible,
     PlatformNotCertified,
     RuntimePin,
+    bundle_sha256,
     claude_versions_dir,
+    codex_versions_dir,
     current_platform,
     custody_binary_sha256,
     pin_for,
@@ -401,40 +405,64 @@ def _codex_home_of(actor: dict) -> tuple[Path | None, str | None]:
         return None, str(exc)
 
 
+def check_codex_custody(pin: RuntimePin, *, run: Runner = subprocess.run, bundle: Path | None = None) -> dict:
+    """Workers run the custody copy of the pinned Codex, never the ``codex``
+    on PATH, so this checks the copy: present, digest certified, version."""
+    check_id = "runtime:codex"
+    bundle = bundle or codex_versions_dir() / pin.version
+    codex = bundle / "bin" / "codex"
+    fill = home_prefix() + sh("agent-comms", "custody", "codex")
+    replace = f"{fill} --replace"
+    certify = f"re-certify codex {pin.version} with `make certify RUNTIME=codex` in a checkout"
+    if not codex.is_file():
+        return check(check_id, FAIL, f"no custody copy of codex {pin.version}: {codex} is missing", fill)
+    expected = os.environ.get(CODEX_PINNED_SHA256_ENV) or pin.sha256 or ""
+    if not expected:
+        return check(check_id, FAIL, f"the codex {pin.version} pin records no bundle sha256", certify)
+    try:
+        actual = bundle_sha256(bundle)
+    except (BundleNotDigestible, OSError) as exc:
+        return check(check_id, FAIL, f"custody copy of codex {pin.version} cannot be verified: {exc}", replace)
+    if actual != expected:
+        return check(
+            check_id,
+            FAIL,
+            f"custody copy of codex {pin.version} differs from the certified bundle: expected sha256 {expected}, got {actual}; path={bundle}",
+            replace,
+        )
+    result = _run_quietly(run, [str(codex), "--version"])
+    if isinstance(result, Exception):
+        return check(check_id, FAIL, f"could not execute {codex} --version: {result}", replace)
+    installed, output = _version_from(result)
+    if result.returncode != 0 or installed is None:
+        return check(check_id, FAIL, f"{codex} --version exited {result.returncode}: {output!r}", replace)
+    if not _version_matches(installed, pin):
+        return check(check_id, FAIL, f"custody codex reports {installed}, the pin is {pin.version}; path={codex}", certify)
+    return check(check_id, OK, f"codex {installed} custody at {codex}, digest certified")
+
+
 def check_codex(
     pin: RuntimePin | None,
     workers: list[dict],
     dead_credentials: list[dict],
     *,
-    which: Callable[[str], str | None] = shutil.which,
     run: Runner = subprocess.run,
+    bundle: Path | None = None,
     auth_source: Path | None = None,
     now: datetime | None = None,
     ledger: LedgerRef | None = None,
 ) -> list[dict]:
-    """``runtime:codex`` plus one entry per worker home and per dead login."""
-    check_id = "runtime:codex"
+    """``runtime:codex`` (the custody copy), ``runtime:codex:auth`` (the
+    shared login), one entry per worker home and one per dead login."""
     ledger = ledger or LedgerRef(paths.db_path(), False)
     if pin is None:
-        return [check(check_id, SKIP, "platform is not certified for codex (see platform)")]
-    codex = which("codex")
-    if codex is None:
-        return [check(check_id, FAIL, "codex is not on PATH", "install the Codex CLI so that `codex` is on PATH, then rerun doctor")]
-    install = f"install codex {pin.version} (certified for {pin.platform}), or re-certify it with `make certify RUNTIME=codex` in a checkout"
-    result = _run_quietly(run, [codex, "--version"])
-    if isinstance(result, Exception):
-        return [check(check_id, FAIL, f"could not execute {codex} --version: {result}", install)]
-    installed, output = _version_from(result)
-    if result.returncode != 0 or installed is None:
-        return [check(check_id, FAIL, f"{codex} --version exited {result.returncode}: {output!r}", install)]
-    if not _version_matches(installed, pin):
-        return [check(check_id, FAIL, f"codex version drifted: expected {pin.version} ({pin.boundary}), got {installed}; path={codex}", install)]
-    checks: list[dict] = []
+        return [check("runtime:codex", SKIP, "platform is not certified for codex (see platform)")]
+    checks = [check_codex_custody(pin, run=run, bundle=bundle)]
     source = (auth_source or paths.runtime_codex_auth_source()).expanduser()
     if not source.is_file():
-        checks.append(check(check_id, FAIL, f"codex {installed} at {codex}; shared auth {source} is missing", _codex_login(source.parent)))
+        checks.append(check("runtime:codex:auth", FAIL, f"shared auth {source} is missing", _codex_login(source.parent)))
     else:
-        checks.append(check(check_id, OK, f"codex {installed} at {codex}; shared auth {source} present"))
+        checks.append(check("runtime:codex:auth", OK, f"shared auth {source} present"))
     for worker in workers:
         worker_id = worker["id"]
         home_id = f"runtime:codex:home:{worker_id}"
@@ -632,7 +660,6 @@ def run_doctor(
                 pins.get("codex"),
                 snapshot.workers("codex") if snapshot else [],
                 snapshot.dead_credentials if snapshot else [],
-                which=which,
                 run=run,
                 now=now,
                 ledger=ledger,

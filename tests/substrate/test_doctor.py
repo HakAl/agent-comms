@@ -17,7 +17,7 @@ from unittest import mock
 from agent_comms import cli, codex_binding, doctor, mcp_clients, paths, runtime_pins
 from agent_comms.cli._helpers import bootstrap_store
 from agent_comms.db import LEDGER_SCHEMA_VERSION
-from agent_comms.runtime_pins import RuntimePin
+from agent_comms.runtime_pins import RuntimePin, bundle_sha256, codex_versions_dir
 from agent_comms.store import Store
 
 NOW = datetime.now(timezone.utc)
@@ -71,6 +71,14 @@ def _registry(root: Path, *, workers=("fake",), seats=None, humans=(HUMAN,)) -> 
 
 class _Scratch(unittest.TestCase):
     """A runtime root, registry and ledger under a temporary directory."""
+
+    def codex_custody(self, version: str) -> str:
+        """A custody bundle for ``version`` where doctor looks; its digest."""
+        bundle = codex_versions_dir() / version
+        (bundle / "bin").mkdir(parents=True)
+        (bundle / "bin" / "codex").write_bytes(b"codex")
+        (bundle / "bin" / "codex").chmod(0o755)
+        return bundle_sha256(bundle)
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -490,10 +498,17 @@ class ClaudeCheckTest(_Scratch):
 class CodexCheckTest(_Scratch):
     def setUp(self) -> None:
         super().setUp()
-        self.pin = RuntimePin("codex", CERTIFIED_PLATFORM, "0.157.0", "exact", "2026-09-26")
-        self.which = lambda name: "/opt/bin/codex" if name == "codex" else None
+        self.bundle = self.root / "custody" / "0.157.0"
+        (self.bundle / "bin").mkdir(parents=True)
+        (self.bundle / "bin" / "codex").write_bytes(b"codex")
+        (self.bundle / "bin" / "codex").chmod(0o755)
+        self.pin = RuntimePin("codex", CERTIFIED_PLATFORM, "0.157.0", "exact", "2026-09-26", bundle_sha256(self.bundle))
         self.version = _runner({("--version",): {"stdout": "codex-cli 0.157.0"}})
         self.auth_source = self.runtime_root / "codex-auth" / "auth.json"
+
+    @staticmethod
+    def by_id(results: list[dict]) -> dict:
+        return {item["id"]: item for item in results}
 
     def _write_auth(self, path: Path, *, age_days: float = 1) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -518,37 +533,59 @@ class CodexCheckTest(_Scratch):
     def test_uncertified_pin_skips(self) -> None:
         self.assertEqual(doctor.check_codex(None, [], [])[0]["status"], doctor.SKIP)
 
-    def test_codex_absent_from_path(self) -> None:
-        [result] = doctor.check_codex(self.pin, [], [], which=lambda _name: None)
+    def test_missing_custody_copy_names_the_fill_command(self) -> None:
+        result = doctor.check_codex_custody(self.pin, bundle=self.root / "custody" / "absent")
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertIn("not on PATH", result["detail"])
-        self.assertIn("install the Codex CLI", result["fix"])
+        self.assertIn("no custody copy of codex 0.157.0", result["detail"])
+        self.assertEqual(result["fix"], "agent-comms custody codex")
+
+    def test_tampered_custody_copy_names_replace(self) -> None:
+        (self.bundle / "bin" / "codex").write_bytes(b"other")
+        result = doctor.check_codex_custody(self.pin, bundle=self.bundle, run=self.version)
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn("differs from the certified bundle", result["detail"])
+        self.assertEqual(result["fix"], "agent-comms custody codex --replace")
+
+    def test_pin_without_a_bundle_digest_names_certify(self) -> None:
+        bare = RuntimePin("codex", CERTIFIED_PLATFORM, "0.157.0", "exact", "2026-09-26")
+        result = doctor.check_codex_custody(bare, bundle=self.bundle, run=self.version)
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn("records no bundle sha256", result["detail"])
+        self.assertIn("make certify RUNTIME=codex", result["fix"])
+
+    def test_the_path_codex_is_not_consulted(self) -> None:
+        self._write_auth(self.auth_source)
+        with mock.patch("shutil.which", side_effect=AssertionError("PATH lookup")):
+            results = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))
+        self.assertEqual(results["runtime:codex"]["status"], doctor.OK, results)
+        self.assertIn(str(self.bundle / "bin" / "codex"), results["runtime:codex"]["detail"])
+        self.assertEqual(results["runtime:codex:auth"]["status"], doctor.OK, results)
 
     def test_version_drift_respects_the_boundary(self) -> None:
         drift = _runner({("--version",): {"stdout": "codex-cli 0.158.0"}})
-        [result] = doctor.check_codex(self.pin, [], [], which=self.which, run=drift)
+        result = doctor.check_codex_custody(self.pin, bundle=self.bundle, run=drift)
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertIn("expected 0.157.0 (exact), got 0.158.0", result["detail"])
-        self.assertIn("install codex 0.157.0", result["fix"])
-        minor = RuntimePin("codex", CERTIFIED_PLATFORM, "0.157.0", "minor", "2026-09-26")
+        self.assertIn("custody codex reports 0.158.0, the pin is 0.157.0", result["detail"])
+        self.assertIn("make certify RUNTIME=codex", result["fix"])
+        minor = RuntimePin("codex", CERTIFIED_PLATFORM, "0.157.0", "minor", "2026-09-26", self.pin.sha256)
         patch = _runner({("--version",): {"stdout": "codex-cli 0.157.4"}})
         self._write_auth(self.auth_source)
-        [result] = doctor.check_codex(minor, [], [], which=self.which, run=patch)
+        result = doctor.check_codex_custody(minor, bundle=self.bundle, run=patch)
         self.assertEqual(result["status"], doctor.OK, result)
 
     def test_version_failure_is_reported(self) -> None:
         broken = _runner({("--version",): {"stdout": "", "stderr": "boom", "returncode": 2}})
-        [result] = doctor.check_codex(self.pin, [], [], which=self.which, run=broken)
+        result = doctor.check_codex_custody(self.pin, bundle=self.bundle, run=broken)
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("exited 2", result["detail"])
-        self.assertIn("install codex 0.157.0", result["fix"])
+        self.assertEqual(result["fix"], "agent-comms custody codex --replace")
 
     def test_missing_shared_auth_prescribes_the_login(self) -> None:
-        [result] = doctor.check_codex(self.pin, [], [], which=self.which, run=self.version)
+        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))["runtime:codex:auth"]
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertEqual(result["fix"], f"CODEX_HOME={self.auth_source.parent} codex login")
         self._write_auth(self.auth_source)
-        [result] = doctor.check_codex(self.pin, [], [], which=self.which, run=self.version)
+        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))["runtime:codex:auth"]
         self.assertEqual(result["status"], doctor.OK, result)
 
     def test_worker_homes_missing_stale_and_fresh(self) -> None:
@@ -563,7 +600,7 @@ class CodexCheckTest(_Scratch):
             self._worker("t-codex-stale", stale),
             self._worker("t-codex-fresh", fresh),
         ]
-        results = {item["id"]: item for item in doctor.check_codex(self.pin, workers, [], which=self.which, run=self.version, now=NOW)}
+        results = {item["id"]: item for item in doctor.check_codex(self.pin, workers, [], bundle=self.bundle, run=self.version, now=NOW)}
         self.assertEqual(results["runtime:codex"]["status"], doctor.OK)
         missing_check = results["runtime:codex:home:t-codex-missing"]
         self.assertEqual(missing_check["status"], doctor.FAIL)
@@ -587,7 +624,7 @@ class CodexCheckTest(_Scratch):
         custom = self.root / "custom homes" / "t-codex-custom"
         worker = self._worker("t-codex-custom", custom, project_root="/srv/my project")
         ledger = doctor.LedgerRef(self.root / "scratch ledger.sqlite", True)
-        results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], which=self.which, run=self.version, now=NOW, ledger=ledger)}
+        results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], bundle=self.bundle, run=self.version, now=NOW, ledger=ledger)}
         fix = results["runtime:codex:home:t-codex-custom"]["fix"]
         self.assertEqual(
             shlex.split(fix),
@@ -598,22 +635,22 @@ class CodexCheckTest(_Scratch):
             ],
         )
         self._provision(custom, "t-codex-custom", age_days=20)
-        results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], which=self.which, run=self.version, now=NOW, ledger=ledger)}
+        results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], bundle=self.bundle, run=self.version, now=NOW, ledger=ledger)}
         self.assertEqual(shlex.split(results["runtime:codex:home:t-codex-custom"]["fix"]), [f"CODEX_HOME={custom}", "codex", "login"])
         bare = {"id": "t-codex-bare", "kind": "agent", "role": "worker", "runtime": "codex", "project_root": "/srv", "spawn_json": json.dumps({"env": {}})}
-        results = {item["id"]: item for item in doctor.check_codex(self.pin, [bare], [], which=self.which, run=self.version, ledger=ledger)}
+        results = {item["id"]: item for item in doctor.check_codex(self.pin, [bare], [], bundle=self.bundle, run=self.version, ledger=ledger)}
         self.assertTrue(results["runtime:codex:home:t-codex-bare"]["fix"].endswith(f"agent-comms --db {shlex.quote(str(ledger.path))} bootstrap"))
 
     def test_shared_auth_login_is_quoted(self) -> None:
         source = self.root / "auth dir" / "auth.json"
-        [result] = doctor.check_codex(self.pin, [], [], which=self.which, run=self.version, auth_source=source)
+        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version, auth_source=source))["runtime:codex:auth"]
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertEqual(shlex.split(result["fix"]), [f"CODEX_HOME={source.parent}", "codex", "login"])
 
     def test_worker_without_codex_home_in_spawn(self) -> None:
         self._write_auth(self.auth_source)
         worker = {"id": "t-codex-bare", "kind": "agent", "role": "worker", "runtime": "codex", "project_root": "/srv", "spawn_json": json.dumps({"env": {}})}
-        results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], which=self.which, run=self.version)}
+        results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], bundle=self.bundle, run=self.version)}
         result = results["runtime:codex:home:t-codex-bare"]
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("CODEX_HOME", result["detail"])
@@ -624,7 +661,7 @@ class CodexCheckTest(_Scratch):
             {"lineage_key": str(self.root / "homes" / "a" / "auth.json"), "dead_reason": "expired", "dead_at": "2026-09-01T00:00:00+00:00"},
             {"lineage_key": str(self.root / "homes" / "b" / "auth.json"), "dead_reason": "revoked", "dead_at": "2026-09-02T00:00:00+00:00"},
         ]
-        results = doctor.check_codex(self.pin, [], dead, which=self.which, run=self.version)
+        results = doctor.check_codex(self.pin, [], dead, bundle=self.bundle, run=self.version)
         logins = [item for item in results if item["id"].startswith("runtime:codex:login:")]
         self.assertEqual(len(logins), 2)
         self.assertEqual([item["status"] for item in logins], [doctor.FAIL, doctor.FAIL])
@@ -1083,7 +1120,7 @@ class DoctorCommandTest(_Scratch):
         self.bootstrap(workers=("claude", "codex"), seats={"t-architect": []})
         pins = {
             "claude": RuntimePin("claude", "test-platform", "9.9.9", "exact", "2026-09-26", hashlib.sha256(b"claude").hexdigest()),
-            "codex": RuntimePin("codex", "test-platform", "0.157.0", "exact", "2026-09-26"),
+            "codex": RuntimePin("codex", "test-platform", "0.157.0", "exact", "2026-09-26", self.codex_custody("0.157.0")),
         }
         binary = self.root / "custody" / "9.9.9"
         binary.parent.mkdir()
@@ -1092,7 +1129,7 @@ class DoctorCommandTest(_Scratch):
             {
                 (str(binary), "--version"): {"stdout": "9.9.9"},
                 ("auth", "status"): {"stdout": json.dumps({"loggedIn": True})},
-                ("/opt/bin/codex", "--version"): {"stdout": "codex-cli 0.157.0"},
+                (str(codex_versions_dir() / "0.157.0" / "bin" / "codex"), "--version"): {"stdout": "codex-cli 0.157.0"},
             }
         )
         with mock.patch.object(doctor, "current_platform", return_value="test-platform"), \
@@ -1108,8 +1145,9 @@ class DoctorCommandTest(_Scratch):
         self.assertEqual(result["platform"], "test-platform")
         self.assertEqual(by_id["platform"]["status"], doctor.OK)
         self.assertEqual(by_id["runtime:claude"]["status"], doctor.OK, by_id["runtime:claude"])
-        self.assertEqual(by_id["runtime:codex"]["status"], doctor.FAIL)
-        self.assertEqual(by_id["runtime:codex"]["fix"], f"CODEX_HOME={self.runtime_root / 'codex-auth'} codex login")
+        self.assertEqual(by_id["runtime:codex"]["status"], doctor.OK, by_id["runtime:codex"])
+        self.assertEqual(by_id["runtime:codex:auth"]["status"], doctor.FAIL)
+        self.assertEqual(by_id["runtime:codex:auth"]["fix"], f"CODEX_HOME={self.runtime_root / 'codex-auth'} codex login")
         home_check = by_id["runtime:codex:home:t-codex-worker"]
         self.assertEqual(home_check["status"], doctor.FAIL)
         self.assertIn("--override-protected", home_check["fix"])
