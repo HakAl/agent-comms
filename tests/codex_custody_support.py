@@ -60,9 +60,58 @@ def python_shim_script() -> str:
     return f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'
 
 
+# The worker binding preflight runs ``codex -c key=value ... mcp get
+# agent-comms --json``. With no other config layer, Codex resolves what the
+# -c values set, so the stand-in prints that and needs no real Codex.
+_MCP_GET_STAND_IN = """
+import json, sys, tomllib
+
+def merge(into, table):
+    for key, value in table.items():
+        if isinstance(value, dict) and isinstance(into.get(key), dict) and key != "env":
+            merge(into[key], value)
+        else:
+            into[key] = value
+
+args, config = sys.argv[1:], {}
+while args[:1] in (["-c"], ["--config"], ["-p"], ["--profile"]):
+    if args[0] in ("-c", "--config"):  # a profile layer is not modelled
+        merge(config, tomllib.loads(args[1]))
+    args = args[2:]
+if args[:2] != ["mcp", "get"]:
+    sys.exit(0)
+server = config.get("mcp_servers", {}).get(args[2])
+if server is None:
+    sys.exit("no such server")
+print(json.dumps({
+    "name": args[2],
+    "enabled": server.get("enabled", True),
+    "disabled_reason": None,
+    "transport": {
+        "type": "stdio",
+        "command": server.get("command"),
+        "args": server.get("args", []),
+        "env": server.get("env"),
+        "env_vars": server.get("env_vars", []),
+        "cwd": server.get("cwd"),
+    },
+    "enabled_tools": server.get("enabled_tools"),
+    "disabled_tools": server.get("disabled_tools", []),
+    "startup_timeout_sec": None,
+    "tool_timeout_sec": None,
+}))
+"""
+
+
+def mcp_get_codex_script() -> str:
+    """A ``bin/codex`` that answers ``codex mcp get`` from its ``-c`` values,
+    for tests that dispatch a Codex worker without a real Codex."""
+    return f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(_MCP_GET_STAND_IN)} "$@"\n'
+
+
 def forwarding_codex_script() -> str:
-    """A ``bin/codex`` that runs the ``codex`` on PATH, for tests whose
-    binding preflight asks the real Codex (``codex mcp get``)."""
+    """A ``bin/codex`` that runs the ``codex`` on PATH, for tests that ask
+    the real Codex what it resolves; skip them when it is absent."""
     real = shutil.which("codex")
     if real is None:
         return "#!/bin/sh\necho 'codex CLI unavailable' >&2\nexit 127\n"

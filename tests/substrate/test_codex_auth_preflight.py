@@ -20,7 +20,7 @@ from agent_comms.adapters.codex import AuthStale, CODEX_AUTH_STALE_AFTER, CodexA
 from agent_comms.adapters.fake import FakeAdapter
 from agent_comms.spawn import render_spawn
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
-from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
+from tests.codex_custody_support import install_fake_codex_custody, mcp_get_codex_script
 
 
 NOW = datetime(2026, 6, 7, 12, 0, 0, tzinfo=timezone.utc)
@@ -93,7 +93,7 @@ def _supervised_boundary(pid: int = 4321):
 
 class CodexAuthPreflightTest(unittest.TestCase):
     def setUp(self) -> None:
-        install_fake_codex_custody(self, forwarding_codex_script())
+        install_fake_codex_custody(self, mcp_get_codex_script())
 
     def test_t1_fresh_auth_dispatch_spawns(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

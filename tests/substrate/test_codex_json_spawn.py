@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
+from tests.codex_custody_support import install_fake_codex_custody, mcp_get_codex_script
 from agent_comms import codex_home, paths, supervisor
 from agent_comms.adapters.codex import AuthStale, CodexAdapter
 from agent_comms.adapters.claude import ClaudeAdapter
@@ -73,7 +73,7 @@ class ScratchTest(unittest.TestCase):
 class SnapshotTest(ScratchTest):
     def setUp(self):
         super().setUp()
-        install_fake_codex_custody(self, forwarding_codex_script())
+        install_fake_codex_custody(self, mcp_get_codex_script())
 
     def test_criterion_13_frozen_baseline_byte_format_admission_both_branches(self):
         # baseline codex.py and codex_home.py preflight_home_snapshot
@@ -897,7 +897,7 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
 class CodexRoutingTest(ScratchTest):
     def setUp(self):
         super().setUp()
-        install_fake_codex_custody(self, forwarding_codex_script())
+        install_fake_codex_custody(self, mcp_get_codex_script())
 
     def test_fixture_token_is_fresh_under_the_real_clock(self):
         auth = self.root / "auth.json"
