@@ -160,10 +160,18 @@ worker, the runtime adapter starts the worker with a generated MCP
 configuration and a restricted tool policy. Nothing needs to be added to the
 worker's CLI by hand. A Codex worker is bound with `-c
 mcp_servers.agent-comms.*` overrides on every run, which outrank its home's
-config and the project entry above, and before the run the adapter checks
-what Codex resolves with everything the launch loads (its profile, start
-directory and every `-c`, in order); a dispatch whose binding differs fails
-before the worker starts, naming the conflicting field. A worker's stored
+config and the project entry above. Its home's `config.toml` holds only
+trust (its project, your home, and an `AGENT_COMMS_HOME` outside it); the
+sandbox and approval policy are flags on the spawn. Before the run the
+adapter checks what Codex resolves with everything the launch loads (the
+home's config, a `--profile` in stored spawn args, the start directory and
+every `-c`, in order); a dispatch whose binding differs fails before the
+worker starts, naming the conflicting field. A home provisioned by an
+older version still holds an `agent-comms` entry and a
+`<worker>.config.toml` profile; both are harmless (the check verifies the
+result), and `agent-comms provision-codex-home` rewrites the config. A
+stored spawn that still passes `--profile <worker>` is updated by
+`agent-comms rerender-spawn --runtime codex --apply`. A worker's stored
 spawn args may not set `mcp_servers.agent-comms` (or the whole
 `mcp_servers` table) with `-c`, since a later `-c` would win; such a
 dispatch is refused. The worker runs the custody copy of the pinned Codex

@@ -335,14 +335,34 @@ class WorkerPropagationTest(_Home):
         self.assertEqual(adapter._format_arg("{agent_comms_home}", context), str(Path.home() / ".agent-comms"))
 
     def test_codex_base_config_binds_and_trusts_the_home(self) -> None:
-        config = tomllib.loads(provisioning.render_codex_base_config("w", self.tmp.name))
-        args = config["mcp_servers"]["agent-comms"]["args"]
-        self.assertEqual(args[-2:], ["--home", str(self.home)])
+        # The home reaches the worker's server through the per-run -c binding
+        # (slice 3b); the base config only trusts it.
+        config = tomllib.loads(provisioning.render_codex_base_config(self.tmp.name))
+        self.assertNotIn("mcp_servers", config)
         self.assertEqual(config["projects"][str(self.home)]["trust_level"], "trusted")
         del os.environ[paths.HOME_ENV]
-        config = tomllib.loads(provisioning.render_codex_base_config("w", self.tmp.name))
-        self.assertNotIn("--home", config["mcp_servers"]["agent-comms"]["args"])
+        config = tomllib.loads(provisioning.render_codex_base_config(self.tmp.name))
         self.assertEqual(set(config["projects"]), {self.tmp.name, str(Path.home())})
+
+
+def _worker_overrides(actor_id: str, project: str, db: str) -> dict:
+    """The worker's per-run ``-c`` binding, each value parsed as TOML."""
+    from agent_comms.adapters import DispatchContext
+    from agent_comms.adapters.codex import CodexAdapter
+
+    context = DispatchContext(
+        dispatch={"dispatch_id": "dispatch_20260101_000000_00000000", "policy_name": policies.WORKER_DISPATCH_POLICY},
+        recipient={"id": actor_id, "runtime": "codex", "project_root": project},
+        message={"id": "m"}, ttl_seconds=30, expected_close_by="2026-01-01T00:00:00+00:00", db_path=db,
+    )
+    argv = CodexAdapter()._runtime_prefix_args(context)
+    prefix = "mcp_servers.agent-comms."
+    server = {}
+    for flag, pair in zip(argv[::2], argv[1::2]):
+        assert flag == "-c" and pair.startswith(prefix), pair
+        key, value = pair[len(prefix):].split("=", 1)
+        server[key] = tomllib.loads(f"v = {value}")["v"]
+    return server
 
 
 class GeneratedConfigEscapingTest(_Home):
@@ -356,7 +376,7 @@ class GeneratedConfigEscapingTest(_Home):
     def test_home_equal_to_an_outside_project_is_trusted_once(self) -> None:
         project = str(self.home)
         self.assertFalse(self.home.is_relative_to(Path.home()))
-        text = provisioning.render_codex_base_config("w", project)
+        text = provisioning.render_codex_base_config(project)
         config = tomllib.loads(text)
         self.assertEqual(set(config["projects"]), {project, str(Path.home())})
         self.assertEqual(text.count("[projects."), 2)
@@ -365,13 +385,11 @@ class GeneratedConfigEscapingTest(_Home):
         home = self.odd_home()
         project = str(Path(self.tmp.name).resolve() / 'p"r\\j')
         db = str(Path(self.tmp.name).resolve() / 'l"g.sqlite')
-        config = tomllib.loads(provisioning.render_codex_base_config('w', project, db))
-        server = config["mcp_servers"]["agent-comms"]
+        config = tomllib.loads(provisioning.render_codex_base_config(project))
+        self.assertEqual(set(config["projects"]), {project, str(Path.home()), str(home)})
+        server = _worker_overrides("w", project, db)
         self.assertEqual(server["args"], ["--actor-id", "w", "--db", db, "--home", str(home)])
         self.assertEqual(server["env"]["AGENT_COMMS_PROJECT_ROOT"], project)
-        self.assertEqual(set(config["projects"]), {project, str(Path.home()), str(home)})
-        profile = tomllib.loads(provisioning.render_codex_profile_config(project))
-        self.assertEqual(set(profile["projects"]), {project})
 
     def test_codex_configs_round_trip_non_ascii_and_control_characters(self) -> None:
         odd = "proj-\U0001F600-\u00e9-\u4e2d-tab\there-del\x7f-nl\n"
@@ -379,15 +397,13 @@ class GeneratedConfigEscapingTest(_Home):
         os.environ[paths.HOME_ENV] = str(home)
         project = str(Path(self.tmp.name).resolve() / odd)
         db = str(Path(self.tmp.name).resolve() / (odd + ".sqlite"))
-        config = tomllib.loads(provisioning.render_codex_base_config(odd, project, db))
-        server = config["mcp_servers"]["agent-comms"]
+        config = tomllib.loads(provisioning.render_codex_base_config(project))
+        self.assertIn(project, config["projects"])
+        self.assertIn(str(home), config["projects"])
+        server = _worker_overrides(odd, project, db)
         self.assertEqual(server["args"], ["--actor-id", odd, "--db", db, "--home", str(home)])
         self.assertEqual(server["env"]["AGENT_COMMS_ACTOR_ID"], odd)
         self.assertEqual(server["env"]["AGENT_COMMS_PROJECT_ROOT"], project)
-        self.assertIn(project, config["projects"])
-        self.assertIn(str(home), config["projects"])
-        profile = tomllib.loads(provisioning.render_codex_profile_config(project))
-        self.assertEqual(set(profile["projects"]), {project})
 
     def test_claude_mcp_config_round_trips_quotes_and_backslashes(self) -> None:
         from agent_comms.adapters import DispatchContext
@@ -439,6 +455,12 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },
+        # 27 adds none; Codex drops --profile {actor_id} (Claude still uses
+        # {actor_id}), and a v26 server would refuse the profile-less home.
+        27: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
     }
 
     def test_spawn_placeholders_are_recorded_for_this_contract(self) -> None:
@@ -454,6 +476,19 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             for text in texts:
                 found |= {name for _, name, _, _ in string.Formatter().parse(str(text)) if name}
         self.assertEqual(found, self.PLACEHOLDERS_BY_CONTRACT[code_identity.CONTRACT_VERSION])
+
+    def test_a_server_loaded_at_contract_26_must_reconnect(self) -> None:
+        # A v26 server requires the per-actor profile a v27 home lacks, and
+        # renders --profile; it must refuse and reconnect.
+        from agent_comms import code_identity
+
+        loaded_surface = {"agent_comms/spawn.py": "before-profile-retired"}
+        with mock.patch.object(code_identity, "LOADED_CODE_IDENTITY", code_identity._identity_from_surface(loaded_surface)), \
+                mock.patch.object(code_identity, "LOADED_SURFACE", loaded_surface), \
+                mock.patch.object(code_identity, "LOADED_CONTRACT_VERSION", 26):
+            with self.assertRaises(code_identity.StaleModuleError) as raised:
+                code_identity.require_fresh_module()
+        self.assertIn(f"v26 -> v{code_identity.CONTRACT_VERSION}", str(raised.exception))
 
     def test_a_server_loaded_at_contract_25_must_reconnect(self) -> None:
         # A v25 server cannot format {codex_binary}; it must refuse, not

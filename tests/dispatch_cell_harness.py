@@ -17,12 +17,11 @@ from typing import Callable, Iterator
 
 from agent_comms.codex_auth_refresh import access_token_remaining_seconds
 from agent_comms.codex_auth_refresh import spawn_freshness_margin_seconds
-from agent_comms import paths, supervisor
+from agent_comms import supervisor
 from agent_comms.adapters import DispatchContext, DispatchStart, RuntimeAdapter
 from agent_comms.adapters._base import AdapterStatus
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.adapters.codex import CodexAdapter
-from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
 from agent_comms.runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
     CLAUDE_VERSIONS_DIR_ENV,
@@ -859,28 +858,11 @@ def make_codex_harness(
     codex_home.mkdir(parents=True)
     cert_home = codex_cert_home()
     cert_snapshot = codex_cert_auth_copy_in(cert_home, codex_home)
+    # Trust and, in cert mode, the temp exclusions live in the base config:
+    # the spawn loads no profile, and the adapter binds agent-comms with -c.
     (codex_home / "config.toml").write_text(
         "\n".join(
             [
-                "[mcp_servers.agent-comms]",
-                f'command = "{paths.mcp_command()}"',
-                f'args = ["--db", "{root / "agent-comms.sqlite"}", "--actor-id", "{CODEX_WORKER_ID}"]',
-                'default_tools_approval_mode = "approve"',
-                "",
-                "[mcp_servers.agent-comms.env]",
-                'WAKE_POLICY = "worker_dispatch_readwrite_bounded"',
-                f'WAKE_POLICY_VERSION = "{WORKER_DISPATCH_POLICY_VERSION}"',
-                f'AGENT_COMMS_ACTOR_ID = "{CODEX_WORKER_ID}"',
-                f'AGENT_COMMS_PROJECT_ROOT = "{root / CODEX_WORKER_ID}"',
-                "",
-            ]
-        )
-    )
-    (codex_home / f"{CODEX_WORKER_ID}.config.toml").write_text(
-        "\n".join(
-            [
-                'sandbox_mode = "workspace-write"',
-                'approval_policy = "never"',
                 f'[projects."{root / CODEX_WORKER_ID}"]',
                 'trust_level = "trusted"',
                 "",

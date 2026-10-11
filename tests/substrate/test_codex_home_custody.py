@@ -139,10 +139,12 @@ class AdapterPreflightTest(_Base):
         (home / "config.toml").unlink()
         self.assertIn("base config", self._preflight_raises(home))
 
-    def test_missing_profile_config_refused(self) -> None:
+    def test_missing_profile_config_is_not_required(self) -> None:
+        # Slice 3b: the spawn loads no profile, so a home without one passes.
         home = self._good_home("noprofile")
         (home / "alpha-codex-worker.config.toml").unlink()
-        self.assertIn("profile config", self._preflight_raises(home))
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.custody)}):
+            CodexAdapter()._preflight(self._ctx(home))
 
     def test_invalid_auth_refused(self) -> None:
         home = self._good_home("badauth")
@@ -213,14 +215,6 @@ class AdapterPreflightTest(_Base):
                     CodexAdapter()._preflight(self._ctx(home))
             self.assertIn("base config", str(raised.exception))
 
-    def test_wrong_named_profile_config_refused(self) -> None:
-        # A managed home with only a foreign *.config.toml (not the exact
-        # actor-specific profile) is refused, proving the preflight requires the
-        # exact profile, not any first *.config.toml.
-        home = self._good_home("wrongprofile")
-        (home / "alpha-codex-worker.config.toml").unlink()
-        (home / "someone-else.config.toml").write_text("# not the actor profile\n")
-        self.assertIn("profile config", self._preflight_raises(home))
 
     def test_stale_freshness_uses_exact_timedelta_not_truncated_days(self) -> None:
         # A 1.75-day-old auth against a 1.5-day threshold is stale; a 1.25-day-old
@@ -718,9 +712,9 @@ class ProductionScratchBoundaryTest(_Base):
         self.assertTrue((outside / "config.toml").is_file())
 
     def test_provision_repair_carries_the_ledger_and_keeps_custody_homes_custody(self) -> None:
-        # SETUP-003: on a ledger other than the default one the rewritten config
-        # binds that ledger; a home under the custody root keeps the shared
-        # runtime auth (linked before login) whichever ledger it serves.
+        # SETUP-003: a home under the custody root keeps the shared runtime
+        # auth (linked before login) whichever ledger it serves. The rewritten
+        # config binds no ledger: the dispatch binds it per run (slice 3b).
         custody = self.root / "prod-custody-c"
         runtime_auth = self.root / "runtime-auth-c" / "auth.json"  # absent
         store = Store(self.root / "explicit-c.sqlite")  # is_default_db_open False
@@ -732,20 +726,17 @@ class ProductionScratchBoundaryTest(_Base):
                 mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
                 contextlib.redirect_stderr(stderr):
             provision_codex_home.handle(store, args)
-        server = tomllib.loads((inside / "config.toml").read_text())["mcp_servers"]["agent-comms"]
-        self.assertEqual(server["args"], ["--actor-id", "alpha-codex-worker", "--db", os.path.abspath(str(self.root / "explicit-c.sqlite"))])
+        self.assertNotIn("mcp_servers", tomllib.loads((inside / "config.toml").read_text()))
         self.assertTrue((inside / "auth.json").is_symlink())
         self.assertEqual(os.readlink(inside / "auth.json"), str(runtime_auth.resolve()))
         self.assertIn("codex login", stderr.getvalue())
-        # A legacy home outside the custody root on the same ledger: legacy auth, but the ledger still bound.
+        # A legacy home outside the custody root on the same ledger: legacy auth.
         outside = self.root / "legacy-home-c"
         args.codex_home = str(outside)
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), contextlib.redirect_stderr(io.StringIO()):
             provision_codex_home.handle(store, args)
-        server = tomllib.loads((outside / "config.toml").read_text())["mcp_servers"]["agent-comms"]
-        self.assertEqual(server["args"][-2:], ["--db", os.path.abspath(str(self.root / "explicit-c.sqlite"))])
+        self.assertNotIn("mcp_servers", tomllib.loads((outside / "config.toml").read_text()))
         self.assertFalse((outside / "auth.json").exists())
-        # The default ledger binds nothing: the server opens it on its own.
         production = Store(self.root / "prod-c.sqlite")
         production._db.is_default_db_open = True
         production.init()
@@ -754,8 +745,7 @@ class ProductionScratchBoundaryTest(_Base):
                 mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
                 contextlib.redirect_stderr(io.StringIO()):
             provision_codex_home.handle(production, args)
-        server = tomllib.loads((inside / "config.toml").read_text())["mcp_servers"]["agent-comms"]
-        self.assertEqual(server["args"], ["--actor-id", "alpha-codex-worker"])
+        self.assertNotIn("mcp_servers", tomllib.loads((inside / "config.toml").read_text()))
 
     def test_scratch_default_provision_uses_legacy_home_and_auth_without_enforcement(self) -> None:
         # F1: on the scratch surface (is_default_db_open False) the DEFAULT form
@@ -827,10 +817,11 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 21 refuses stale single-log adapters before structured codex output;
         # 24 adds the {agent_comms_home} spawn placeholder (AGENT_COMMS_HOME);
         # 25 binds the Codex worker's MCP server per run with -c and checks it;
-        # 26 runs Codex workers from the custody copy ({codex_binary}) only.
+        # 26 runs Codex workers from the custody copy ({codex_binary}) only;
+        # 27 drops the per-actor profile and --profile from Codex workers.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 26)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 27)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

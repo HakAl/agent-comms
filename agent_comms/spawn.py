@@ -11,6 +11,10 @@ from .store import WORKER_DISPATCH_POLICY
 
 ALLOWED_RUNTIMES = ("claude", "codex", "fake")
 CODEX_ARGS_INTRODUCED = ("--json",)
+# Adjacent pairs an older template stored, which rerender drops: the worker's
+# home no longer holds a per-actor profile (ac-4ao.10 slice 3b). The second
+# value is the placeholder or the actor's own id.
+CODEX_ARGS_RETIRED = ("--profile",)
 # Commands an older template stored, which rerender replaces with the
 # custody binary (ac-4ao.10 slice 3a).
 CODEX_COMMANDS_INTRODUCED = {"codex": "{codex_binary}"}
@@ -29,6 +33,20 @@ def worker_prompt_slot(args: list, marker: str) -> int | None:
     if string_args and marker in string_args[-1]:
         return len(string_args) - 1
     return None
+
+
+def _without_retired(args: list, actor_id: str) -> list:
+    """``args`` without the first pair of each retired flag and its value,
+    when that value is the ``{actor_id}`` placeholder or the actor's own id.
+    Only the pair the old template rendered is retired, so a repeated pair
+    stays and the prefix comparison refuses it."""
+    kept = list(args)
+    for flag in CODEX_ARGS_RETIRED:
+        for index in range(len(kept) - 1):
+            if kept[index] == flag and kept[index + 1] in ("{actor_id}", actor_id):
+                del kept[index:index + 2]
+                break
+    return kept
 
 
 def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
@@ -59,9 +77,10 @@ def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
     prefix = rendered["args"][:rendered_slot]
     if args[:slot] == prefix and not command_migrates:
         return "no-op", stored
-    if args[:slot] not in (prefix, [arg for arg in prefix if arg not in CODEX_ARGS_INTRODUCED]):
+    current = _without_retired(args[:slot], actor["id"])
+    if current not in (prefix, [arg for arg in prefix if arg not in CODEX_ARGS_INTRODUCED]):
         raise ValidationError(
-            f"stored prefix differs beyond introduced elements: stored={args[:slot]!r}; rendered={prefix!r}"
+            f"stored prefix differs beyond introduced and retired elements: stored={args[:slot]!r}; rendered={prefix!r}"
         )
     rendered["args"][rendered_slot] = args[slot]
     rendered["env"] = env
@@ -219,8 +238,6 @@ def _codex_spawn(codex_home: str | None) -> dict:
             "never",
             "exec",
             "--json",
-            "--profile",
-            "{actor_id}",
             "--skip-git-repo-check",
             "--ephemeral",
             "--sandbox",

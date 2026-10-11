@@ -159,7 +159,7 @@ class CodexAdapter(ProcessSpawnAdapter):
             # Managed home: strict preflight is authoritative (never an
             # environment switch). A home that resolves outside the runtime
             # custody root, is a symlink, is missing the regular generated
-            # base/profile configs, or has an unresolvable/non-regular/invalid/
+            # base config, or has an unresolvable/non-regular/invalid/
             # stale auth file creates zero native process. Homes outside the
             # custody root keep the auth-only check below.
             custody_root = paths.codex_custody_root()

@@ -1,7 +1,7 @@
 """Per-worker Codex home isolation: actor enumeration and spawn-time preflight.
 
-Each Codex worker runs with its own ``CODEX_HOME`` (generated config and
-profile, plus an ``auth.json`` that may be shared by a lineage of workers).
+Each Codex worker runs with its own ``CODEX_HOME`` (generated trust config,
+plus an ``auth.json`` that may be shared by a lineage of workers).
 This module enumerates the registered Codex actors and their homes, and
 preflights a resolved home before a native spawn.
 """
@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .schema import ValidationError, identity_to_path_segment
+from .schema import ValidationError
 
 
 def _scan_codex_actors(conn) -> tuple[list[dict], list[dict]]:
@@ -95,9 +95,9 @@ def preflight_home_snapshot(
     """Preflight a resolved Codex home for a native spawn.
 
     Requires a real home directory (not a symlink), the regular generated base
-    config, the EXACT actor-specific regular generated profile config (when
-    ``actor_id`` is supplied), and a resolvable/regular/parseable/fresh auth
-    file. ``stale_after`` is an exact ``timedelta`` (default 13 days); the
+    config and a resolvable/regular/parseable/fresh auth file. No per-actor
+    profile is required: the spawn no longer loads one (ac-4ao.10 slice 3b),
+    and one an older version wrote is ignored. ``stale_after`` is an exact ``timedelta`` (default 13 days); the
     freshness comparison uses the full timedelta and is never truncated through
     ``.days`` (so a threshold of, e.g., 1.5 days is honored exactly). Returns
     ``(ok, reason)``; ``reason`` is None on success.
@@ -115,29 +115,6 @@ def preflight_home_snapshot(
             "generated base config.toml is missing or not a regular file",
             None,
         )
-    if actor_id is not None:
-        # Require the EXACT actor-specific generated profile, not any first
-        # ``*.config.toml`` entry.
-        profile = codex_home / f"{identity_to_path_segment(actor_id)}.config.toml"
-        if profile.is_symlink() or not profile.is_file():
-            return (
-                False,
-                "generated profile config is missing or not a regular file",
-                None,
-            )
-    else:
-        profile_ok = False
-        for entry in codex_home.iterdir():
-            if entry.name.endswith(".config.toml") and entry.name != "config.toml":
-                if entry.is_file() and not entry.is_symlink():
-                    profile_ok = True
-                break
-        if not profile_ok:
-            return (
-                False,
-                "generated profile config is missing or not a regular file",
-                None,
-            )
     auth = codex_home / "auth.json"
     from .codex_auth_refresh import codex_auth_snapshot
 

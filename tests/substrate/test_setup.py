@@ -331,7 +331,7 @@ class SetupCommandTest(_Scratch):
         home = self.root / "codex-homes" / "default" / "my-project-codex-worker"
         self.assertEqual(result["codex_homes"], [str(home)])
         self.assertTrue((home / "config.toml").is_file())
-        self.assertTrue((home / "my-project-codex-worker.config.toml").is_file())
+        self.assertFalse((home / "my-project-codex-worker.config.toml").exists())
         auth = home / "auth.json"
         self.assertTrue(auth.is_symlink())
         self.assertFalse(auth.exists())
@@ -340,16 +340,18 @@ class SetupCommandTest(_Scratch):
         actors = {actor["id"]: actor for actor in Store(self.db).list_actors()}
         worker = actors["my-project-codex-worker"]
         self.assertEqual(worker["spawn"]["env"]["CODEX_HOME"], str(home))
-        # SETUP-002 F1: the worker's config.toml is its only ledger binding (the
-        # adapter's child environment carries no AGENT_COMMS_DB), so it names
-        # the ledger setup registered the worker in.
+        # SETUP-002 F1: the adapter's child environment carries no
+        # AGENT_COMMS_DB, so the ledger reaches the worker's server only
+        # through the per-run -c binding (slice 3b), never the home's config.
         config = tomllib.loads((home / "config.toml").read_text())
-        self.assertEqual(config["mcp_servers"]["agent-comms"]["args"], ["--actor-id", "my-project-codex-worker", "--db", str(self.db)])
-        self.assertEqual(config["mcp_servers"]["agent-comms"]["command"], MCP_COMMAND)
+        self.assertNotIn("mcp_servers", config)
         context = DispatchContext(
             dispatch={"dispatch_id": "dispatch_20260927_120000_abcdef12", "policy_name": WORKER_DISPATCH_POLICY},
             recipient=worker, message={"id": "m"}, ttl_seconds=30, expected_close_by="2026-09-27T12:00:30+00:00", db_path=str(self.db),
         )
+        binding = CodexAdapter().mcp_binding(context)
+        self.assertEqual(binding.args, ["--actor-id", "my-project-codex-worker", "--db", str(self.db)])
+        self.assertEqual(binding.command, MCP_COMMAND)
         with mock.patch.dict(os.environ, {"AGENT_COMMS_DB": "/elsewhere/ledger.sqlite"}):
             env = CodexAdapter()._build_env(context, compile_policy(WORKER_DISPATCH_POLICY), worker["spawn"], zdotdir=self.root / "zdot")
         self.assertNotIn("AGENT_COMMS_DB", env)
@@ -371,7 +373,7 @@ class SetupCommandTest(_Scratch):
             rc, result = self.setup("--runtimes", "codex", "--clients", "", "--human-id", HUMAN)
         self.assertEqual(rc, 0, result)
         home = Path(result["codex_homes"][0])
-        (home / "my-project-codex-worker.config.toml").unlink()
+        (home / "config.toml").unlink()
         (home / "auth.json").unlink()
         # Shared auth is fresh, so the only problem is the broken home.
         self.auth_dir.mkdir(parents=True, exist_ok=True)
@@ -388,13 +390,18 @@ class SetupCommandTest(_Scratch):
             rc = cli.run(argv[1:])
         self.assertEqual(rc, 0, buffer.getvalue())
         config = tomllib.loads((home / "config.toml").read_text())
-        self.assertEqual(config["mcp_servers"]["agent-comms"]["args"], ["--actor-id", "my-project-codex-worker", "--db", str(self.db)])
-        self.assertTrue((home / "my-project-codex-worker.config.toml").is_file())
+        self.assertNotIn("mcp_servers", config)
         auth = home / "auth.json"
         self.assertTrue(auth.is_symlink())
         self.assertEqual(os.readlink(auth), str(paths.runtime_codex_auth_source().resolve()))
-        # The real server, built from the repaired binding, binds the worker in the selected ledger.
-        args = config["mcp_servers"]["agent-comms"]["args"]
+        # The real server, built from the per-run binding a dispatch on this
+        # ledger renders, binds the worker in the selected ledger.
+        worker = {actor["id"]: actor for actor in Store(self.db).list_actors()}["my-project-codex-worker"]
+        context = DispatchContext(
+            dispatch={"dispatch_id": "dispatch_20260927_120000_abcdef12", "policy_name": WORKER_DISPATCH_POLICY},
+            recipient=worker, message={"id": "m"}, ttl_seconds=30, expected_close_by="2026-09-27T12:00:30+00:00", db_path=str(self.db),
+        )
+        args = CodexAdapter().mcp_binding(context).args
         server = mcp_server.create_server(db_path=args[args.index("--db") + 1], actor_id="my-project-codex-worker")
         self.assertIsNotNone(server)
         with self.assertRaisesRegex(ValidationError, "unknown actor"):

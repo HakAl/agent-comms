@@ -486,7 +486,7 @@ class WorkerBindingTest(_Project):
         self.assertEqual((values["enabled"], values["cwd"], values["disabled_tools"], values["env_vars"]), (True, str(self.project), [], []))
         # The check ran codex itself, as the worker will: its home, cwd and overrides.
         [call] = runner.calls
-        self.assertEqual(call["argv"], [str(self.codex_binary), "-p", "t-codex-worker", *overrides, "mcp", "get", "agent-comms", "--json"])
+        self.assertEqual(call["argv"], [str(self.codex_binary), *overrides, "mcp", "get", "agent-comms", "--json"])
         self.assertEqual(call["cwd"], str(self.project))
         self.assertEqual(call["env"]["CODEX_HOME"], str(self.worker_home))
         self.assertEqual(result.observed_values["codex_mcp_binding"], "verified")
@@ -538,10 +538,10 @@ class WorkerBindingTest(_Project):
         self.dispatch(runner)
         [call] = runner.calls
         overrides = codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"})
-        # The template's own --profile comes later, so it wins; stored -c
-        # follow ours, in launch order.
+        # The template passes no --profile (slice 3b), so a stored one is the
+        # profile the launch loads; stored -c follow ours, in launch order.
         self.assertEqual(call["argv"], [
-            str(self.codex_binary), "-p", "t-codex-worker", *overrides, "-c", 'model="o3"', "-c", 'mcp_servers.other.command="/y"',
+            str(self.codex_binary), "-p", "other", *overrides, "-c", 'model="o3"', "-c", 'mcp_servers.other.command="/y"',
             "mcp", "get", "agent-comms", "--json",
         ])
         self.assertEqual(call["cwd"], str(self.project / "sub"))
@@ -621,7 +621,7 @@ class RealCodexResolutionTest(_Project):
         # architect's project entry would rebind the worker without -c.
         worker_home = self.root / "worker-home"
         worker_home.mkdir()
-        (worker_home / "config.toml").write_text(provisioning.render_codex_base_config("t-codex-worker", str(self.project), str(self.db)))
+        (worker_home / "config.toml").write_text(provisioning.render_codex_base_config(str(self.project)))
         observed, _ = self.resolve(self.project, codex_home=worker_home)
         self.assertEqual(observed["transport"]["args"][:2], ["--actor-id", "t-architect"])
         context = DispatchContext(
@@ -635,7 +635,12 @@ class RealCodexResolutionTest(_Project):
         self.assertIsNone(error)
         self.assertEqual(codex_binding.effective_problems(observed, adapter.mcp_binding(context)), [], observed)
 
-    def native_dispatch(self, worker_home: Path, *stored: str):
+    def native_dispatch_ok(self, worker_home: Path, *stored: str) -> None:
+        """The binding check passes: the dispatch reaches the worker's start."""
+        with self.assertRaisesRegex(AssertionError, "^started$"):
+            self.native_dispatch(worker_home, *stored, expect_start=True)
+
+    def native_dispatch(self, worker_home: Path, *stored: str, expect_start: bool = False):
         spawn = render_spawn("codex", "t-codex-worker", codex_home=str(worker_home))
         args = list(spawn["args"])
         at = args.index("exec") + 1
@@ -652,17 +657,27 @@ class RealCodexResolutionTest(_Project):
             try:
                 CodexAdapter().dispatch(context)
             finally:
-                started.assert_not_called()
+                if not expect_start:
+                    started.assert_not_called()
 
     def test_native_codex_refuses_what_the_launch_would_rebind(self) -> None:
         worker_home = _fresh_codex_home(self.root / "worker-home")
-        provisioning.write_codex_home(worker_home, "t-codex-worker", str(self.project), db_path=str(self.db))
+        provisioning.write_codex_home(worker_home, "t-codex-worker", str(self.project))
         # INTEGRATION-004 F1: a stored -c naming the architect.
         stored = ["-c", f'mcp_servers.agent-comms.args=["--actor-id","t-architect","--db",{json.dumps(str(self.db))}]']
         with self.assertRaisesRegex(McpBindingMismatch, "stored spawn args"):
             self.native_dispatch(worker_home, *stored)
-        # The worker's profile layer restricting the tools: Codex loads it, so the check does.
-        (worker_home / "t-codex-worker.config.toml").write_text('[mcp_servers.agent-comms]\nenabled_tools = ["whoami"]\n')
+        # A profile the template no longer names is not loaded (slice 3b)...
+        profile = worker_home / "t-codex-worker.config.toml"
+        profile.write_text('[mcp_servers.agent-comms]\nenabled_tools = ["whoami"]\n')
+        self.native_dispatch_ok(worker_home)
+        # ...but a stored --profile loads it, and so does the check.
+        with self.assertRaisesRegex(McpBindingMismatch, "enabled_tools restricts"):
+            self.native_dispatch(worker_home, "--profile", "t-codex-worker")
+        # The base config restricting the tools: Codex loads it, so the check does.
+        profile.unlink()
+        base = worker_home / "config.toml"
+        base.write_text(base.read_text() + '\n[mcp_servers.agent-comms]\nenabled_tools = ["whoami"]\n')
         with self.assertRaisesRegex(McpBindingMismatch, "enabled_tools restricts"):
             self.native_dispatch(worker_home)
 
