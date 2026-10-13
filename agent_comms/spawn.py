@@ -5,19 +5,12 @@ import difflib
 import shlex
 import sys
 
-from .policies import WORKER_DISPATCH_POLICY_VERSION, compile_policy
+from . import runtimes
+from .policies import compile_policy
 from .schema import ValidationError
 from .store import WORKER_DISPATCH_POLICY
 
-ALLOWED_RUNTIMES = ("claude", "codex", "fake")
-CODEX_ARGS_INTRODUCED = ("--json",)
-# Adjacent pairs an older template stored, which rerender drops: the worker's
-# home no longer holds a per-actor profile (ac-4ao.10 slice 3b). The second
-# value is the placeholder or the actor's own id.
-CODEX_ARGS_RETIRED = ("--profile",)
-# Commands an older template stored, which rerender replaces with the
-# custody binary (ac-4ao.10 slice 3a).
-CODEX_COMMANDS_INTRODUCED = {"codex": "{codex_binary}"}
+ALLOWED_RUNTIMES = runtimes.NAMES
 
 
 def worker_prompt_slot(args: list, marker: str) -> int | None:
@@ -35,13 +28,13 @@ def worker_prompt_slot(args: list, marker: str) -> int | None:
     return None
 
 
-def _without_retired(args: list, actor_id: str) -> list:
+def _without_retired(args: list, actor_id: str, retired: tuple[str, ...]) -> list:
     """``args`` without the first pair of each retired flag and its value,
     when that value is the ``{actor_id}`` placeholder or the actor's own id.
     Only the pair the old template rendered is retired, so a repeated pair
     stays and the prefix comparison refuses it."""
     kept = list(args)
-    for flag in CODEX_ARGS_RETIRED:
+    for flag in retired:
         for index in range(len(kept) - 1):
             if kept[index] == flag and kept[index + 1] in ("{actor_id}", actor_id):
                 del kept[index:index + 2]
@@ -49,10 +42,20 @@ def _without_retired(args: list, actor_id: str) -> list:
     return kept
 
 
+def _rerenderable() -> list[str]:
+    return [runtime.name for runtime in runtimes.registered() if runtime.rerender is not None]
+
+
+def _wrong_runtime() -> ValidationError:
+    return ValidationError(f"wrong runtime: rerender-spawn requires {' or '.join(_rerenderable())}")
+
+
 def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
     """Accept exactly the existing template prefix, preserving the prompt and env."""
-    if actor.get("runtime") != "codex":
-        raise ValidationError("wrong runtime: rerender-spawn requires codex")
+    if actor.get("runtime") not in _rerenderable():
+        raise _wrong_runtime()
+    runtime = runtimes.get(actor["runtime"])
+    migration = runtime.rerender
     stored = actor.get("spawn")
     if not isinstance(stored, dict) or not stored:
         raise ValidationError("no stored spawn block")
@@ -60,7 +63,7 @@ def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
     env = stored.get("env", {})
     if not isinstance(args, list) or not isinstance(env, dict):
         raise ValidationError("stored spawn args or env has an invalid shape")
-    rendered = render_spawn("codex", actor["id"], codex_home=env.get("CODEX_HOME"))
+    rendered = runtime.render_spawn(actor["id"], codex_home=env.get("CODEX_HOME"))
     marker = compile_policy(WORKER_DISPATCH_POLICY).bootstrap_marker
     try:
         slot = worker_prompt_slot(args, marker)
@@ -70,15 +73,15 @@ def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
         raise ValidationError("no worker prompt slot")
     if slot != len(args) - 1:
         raise ValidationError("worker prompt slot is not the last element")
-    command_migrates = CODEX_COMMANDS_INTRODUCED.get(stored.get("command")) == rendered["command"]
+    command_migrates = migration.commands_introduced.get(stored.get("command")) == rendered["command"]
     if stored.get("command") != rendered["command"] and not command_migrates:
         raise ValidationError("stored command differs from template command")
     rendered_slot = worker_prompt_slot(rendered["args"], marker)
     prefix = rendered["args"][:rendered_slot]
     if args[:slot] == prefix and not command_migrates:
         return "no-op", stored
-    current = _without_retired(args[:slot], actor["id"])
-    if current not in (prefix, [arg for arg in prefix if arg not in CODEX_ARGS_INTRODUCED]):
+    current = _without_retired(args[:slot], actor["id"], migration.args_retired)
+    if current not in (prefix, [arg for arg in prefix if arg not in migration.args_introduced]):
         raise ValidationError(
             f"stored prefix differs beyond introduced and retired elements: stored={args[:slot]!r}; rendered={prefix!r}"
         )
@@ -100,9 +103,9 @@ def rerender_spawns(
     from .cli._helpers import require_unprotected_or_override
 
     if (actor_id is None) == (runtime is None):
-        raise ValidationError("select one actor or --runtime codex")
-    if runtime is not None and runtime != "codex":
-        raise ValidationError("wrong runtime: rerender-spawn requires codex")
+        raise ValidationError(f"select one actor or --runtime {' or '.join(_rerenderable())}")
+    if runtime is not None and runtime not in _rerenderable():
+        raise _wrong_runtime()
     actors = (
         [actor for actor in store.list_actors() if actor["id"] == actor_id]
         if actor_id is not None
@@ -217,76 +220,7 @@ def render_spawn(runtime: str, actor_id: str, *, codex_home: str | None = None) 
     This is intentionally pure: it only returns placeholder-bearing data for
     the runtime adapters to resolve at dispatch time.
     """
-    runtime = runtime.strip()
-    if runtime not in ALLOWED_RUNTIMES:
-        allowed = ", ".join(ALLOWED_RUNTIMES)
-        raise ValidationError(f"unsupported runtime {runtime!r}; allowed: {allowed}")
-
-    if runtime == "codex":
-        return _codex_spawn(codex_home)
-    if runtime == "claude":
-        return _claude_spawn()
-    return _fake_spawn()
-
-
-def _codex_spawn(codex_home: str | None) -> dict:
-    env_home = codex_home if codex_home is not None else "{codex_home}"
-    return {
-        "command": "{codex_binary}",
-        "args": [
-            "--ask-for-approval",
-            "never",
-            "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--ephemeral",
-            "--sandbox",
-            "workspace-write",
-            "{worker_prompt}",
-        ],
-        "env": {"CODEX_HOME": env_home},
-    }
-
-
-def _claude_spawn() -> dict:
-    return {
-        "command": "{claude_binary}",
-        "args": [
-            "-p",
-            "--no-session-persistence",
-            "--output-format",
-            "stream-json",
-            "--strict-mcp-config",
-            "--mcp-config",
-            _claude_mcp_config(),
-            "--settings",
-            "{claude_settings}",
-            "--permission-mode",
-            "dontAsk",
-            "{worker_prompt}",
-        ],
-    }
-
-
-def _claude_mcp_config() -> str:
-    return _escaped_json(
-        {
-            "mcpServers": {
-                "agent-comms": {
-                    "alwaysLoad": True,
-                    "args": ["--db", "{db_path}", "--actor-id", "{actor_id}"],
-                    "command": "{mcp_command}",
-                    "env": {
-                        "AGENT_COMMS_ACTOR_ID": "{actor_id}",
-                        "AGENT_COMMS_HOME": "{agent_comms_home}",
-                        "AGENT_COMMS_PROJECT_ROOT": "{project_root}",
-                        "WAKE_POLICY": WORKER_DISPATCH_POLICY,
-                        "WAKE_POLICY_VERSION": WORKER_DISPATCH_POLICY_VERSION,
-                    },
-                }
-            }
-        }
-    )
+    return runtimes.get(runtime.strip()).render_spawn(actor_id, codex_home=codex_home)
 
 
 def claude_settings_for_policy(policy, hooks_path: str, python: str, *, quote: bool = True) -> str:  # type: ignore[no-untyped-def]
@@ -359,27 +293,6 @@ def _claude_settings() -> str:
     return claude_settings_for_policy(
         compile_policy(WORKER_DISPATCH_POLICY), "{hooks_path}", "{python}", quote=False
     )
-
-
-def _fake_spawn() -> dict:
-    # {python} resolves at dispatch time to the interpreter running the
-    # dispatch, which can import agent_comms by definition; a bare "python3"
-    # only worked when the project environment happened to be first on PATH.
-    policy = compile_policy(WORKER_DISPATCH_POLICY)
-    return {
-        "command": "{python}",
-        "args": [
-            "-m",
-            "agent_comms.adapters.fake_worker",
-            "--actor-id",
-            "{actor_id}",
-            "--message-id",
-            "{message_id}",
-            "--db",
-            "{db_path}",
-            policy.bootstrap_marker,
-        ],
-    }
 
 
 def _escaped_json(value: dict) -> str:

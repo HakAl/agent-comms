@@ -17,9 +17,7 @@ subprocess runner instead of patching the world.
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import shlex
 import shutil
 import sqlite3
@@ -31,37 +29,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import mcp_clients, paths, supervisor
+from . import runtimes as runtime_registry
+from .checks import (  # noqa: F401 - doctor's names for callers and tests
+    FAIL,
+    OK,
+    SEMVER_RE,
+    SKIP,
+    WARN,
+    LedgerRef,
+    Runner,
+    check,
+    home_prefix,
+    sh,
+)
 from .actors import OPERATOR_ACTOR_ENV
 from .cli._helpers import load_actor_config
-from .codex_home import preflight_home_snapshot
 from .db import LEDGER_SCHEMA_VERSION, Database
 from .dispatch_ledger import DISPATCH_TERMINAL_STATUSES
 from .monitor import heartbeat_is_fresh
-from .runtime_pins import (
-    CLAUDE_PINNED_SHA256_ENV,
-    CODEX_PINNED_SHA256_ENV,
-    BundleNotDigestible,
-    PlatformNotCertified,
-    RuntimePin,
-    bundle_sha256,
-    claude_versions_dir,
-    codex_versions_dir,
-    current_platform,
-    custody_binary_sha256,
-    pin_for,
-)
+from .runtime_pins import PlatformNotCertified, RuntimePin, current_platform, pin_for
+from .runtimes.claude import check_claude  # noqa: F401 - doctor's names for callers and tests
+from .runtimes.codex import check_codex, check_codex_custody  # noqa: F401
 from .schema import ValidationError
 
-OK, FAIL, WARN, SKIP = "ok", "fail", "warn", "skip"
 CONSOLE_SCRIPTS = ("agent-comms-mcp", "agent-comms-monitor", "agent-comms-seat")
-SEMVER_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
-Runner = Callable[..., "subprocess.CompletedProcess[str]"]
-
-
-def check(check_id: str, status: str, detail: str, fix: str | None = None) -> dict:
-    if status not in (OK, FAIL, WARN, SKIP):
-        raise ValueError(f"unknown check status {status!r}")
-    return {"id": check_id, "status": status, "detail": detail, "fix": fix}
 
 
 def report(platform: str, checks: list[dict]) -> dict:
@@ -71,44 +62,6 @@ def report(platform: str, checks: list[dict]) -> dict:
         "checks": checks,
         "fixes": [item["fix"] for item in checks if item["status"] == FAIL and item["fix"]],
     }
-
-
-_PLACEHOLDER = re.compile(r"^<[^<>]+>$")
-
-
-def sh(*argv: object) -> str:
-    """A shell line from an argv, quoting every word except ``<placeholders>``."""
-    return " ".join(str(arg) if _PLACEHOLDER.match(str(arg)) else shlex.quote(str(arg)) for arg in argv)
-
-
-@dataclass(frozen=True)
-class LedgerRef:
-    """The ledger doctor was pointed at, so every repair targets the same one.
-
-    ``explicit`` mirrors the CLI: ``--db`` or ``AGENT_COMMS_DB`` was given.
-    A repair rendered for an explicit ledger carries ``--db``; one for the
-    default ledger carries nothing, which is what the consumer commands
-    resolve to. Under ``AGENT_COMMS_HOME`` every repair sets it, so a line
-    pasted into another shell still targets this install.
-    """
-
-    path: Path
-    explicit: bool
-
-    def db_args(self) -> list[str]:
-        return ["--db", str(self.path)] if self.explicit else []
-
-    def cli(self, *args: object) -> str:
-        return home_prefix() + sh("agent-comms", *self.db_args(), *args)
-
-    def monitor(self, human: str) -> str:
-        return home_prefix() + sh("agent-comms-monitor", *self.db_args(), "--human-actor-id", human)
-
-
-def home_prefix() -> str:
-    """``AGENT_COMMS_HOME=<root> `` for an install with its own home, else empty."""
-    home = paths.home_override()
-    return f"{paths.HOME_ENV}={shlex.quote(str(home))} " if home is not None else ""
 
 
 def _ledger(db_path: Path, ledger: LedgerRef | None) -> LedgerRef:
@@ -174,12 +127,13 @@ def read_ledger(db_path: Path) -> LedgerSnapshot:
                 # and so does fake work not yet terminal (a queued row only
                 # starts on a reconcile pass).
                 terminal = sorted(DISPATCH_TERMINAL_STATUSES)
+                unmonitored = [runtime.name for runtime in runtime_registry.registered() if not runtime.monitored]
                 monitored += (
                     " d left join actors a on a.id = d.recipient_actor_id"
-                    " where coalesce(a.runtime, '') <> 'fake'"
+                    f" where coalesce(a.runtime, '') not in ({', '.join('?' for _ in unmonitored)})"
                     f" or d.status not in ({', '.join('?' for _ in terminal)})"
                 )
-                params = tuple(terminal)
+                params = (*unmonitored, *terminal)
             snapshot.monitored_dispatch_count = int(conn.execute(monitored, params).fetchone()[0])
         if _table_exists(conn, "codex_refresh_claims"):
             snapshot.dead_credentials = [
@@ -304,7 +258,7 @@ def runtimes_in_use(snapshot: LedgerSnapshot | None, config: dict | None) -> set
 
 def check_platform(platform: str, runtimes: set[str]) -> tuple[dict, dict[str, RuntimePin]]:
     """The platform check and the pins it resolved."""
-    wanted = sorted(runtimes & {"claude", "codex"})
+    wanted = sorted(runtimes & {runtime.name for runtime in runtime_registry.registered() if runtime.pinned})
     if not wanted:
         return check("platform", SKIP, f"{platform}: no claude or codex worker registered"), {}
     pins: dict[str, RuntimePin] = {}
@@ -315,199 +269,6 @@ def check_platform(platform: str, runtimes: set[str]) -> tuple[dict, dict[str, R
             return check("platform", FAIL, str(exc).split("; recover with:")[0], str(exc)), pins
     versions = ", ".join(f"{runtime} {pin.version}" for runtime, pin in pins.items())
     return check("platform", OK, f"{platform} certified: {versions}"), pins
-
-
-def _version_from(result: subprocess.CompletedProcess[str]) -> tuple[str | None, str]:
-    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
-    match = SEMVER_RE.search(output)
-    return (match.group(1) if match else None), output
-
-
-def _version_matches(installed: str, pin: RuntimePin) -> bool:
-    if pin.boundary == "minor":
-        return installed.split(".")[:2] == pin.version.split(".")[:2]
-    return installed == pin.version
-
-
-def _run_quietly(run: Runner, argv: list[str]) -> subprocess.CompletedProcess[str] | Exception:
-    try:
-        return run(argv, text=True, capture_output=True, check=False, timeout=10)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return exc
-
-
-def check_claude(
-    pin: RuntimePin | None,
-    *,
-    run: Runner = subprocess.run,
-    binary: Path | None = None,
-) -> dict:
-    check_id = "runtime:claude"
-    if pin is None:
-        return check(check_id, SKIP, "platform is not certified for claude (see platform)")
-    binary = binary or claude_versions_dir() / pin.version
-    recover = "or re-certify and bump the pin"
-    install = f"install Claude Code {pin.version} at {binary}, {recover}"
-    if not binary.is_file():
-        return check(
-            check_id,
-            FAIL,
-            f"pinned Claude binary is missing; expected claude {pin.version}; path={binary}",
-            f"download Claude Code {pin.version} and place the executable at {binary}, {recover}",
-        )
-    expected = os.environ.get(CLAUDE_PINNED_SHA256_ENV) or pin.sha256 or ""
-    try:
-        actual = custody_binary_sha256(binary)
-    except OSError as exc:
-        return check(check_id, FAIL, f"pinned Claude binary at {binary} cannot be read: {exc}", sh("chmod", "u+rx", binary))
-    if actual != expected:
-        return check(
-            check_id,
-            FAIL,
-            f"pinned Claude digest mismatch: expected sha256 {expected}, got {actual}; path={binary}",
-            f"populate runtime custody at {binary} with the certified Claude {pin.version} binary, {recover}",
-        )
-    result = _run_quietly(run, [str(binary), "--version"])
-    if isinstance(result, Exception):
-        return check(check_id, FAIL, f"could not execute {binary} --version: {result}", install)
-    installed, output = _version_from(result)
-    if result.returncode != 0 or installed is None:
-        return check(check_id, FAIL, f"{binary} --version exited {result.returncode}: {output!r}", install)
-    if not _version_matches(installed, pin):
-        return check(check_id, FAIL, f"pinned Claude version drifted: expected {pin.version}, got {installed}; path={binary}", install)
-    login = sh(binary, "auth", "login")
-    result = _run_quietly(run, [str(binary), "auth", "status"])
-    if isinstance(result, Exception):
-        return check(check_id, FAIL, f"could not execute {binary} auth status: {result}", login)
-    logged_in = False
-    if result.returncode == 0:
-        try:
-            logged_in = bool(json.loads(result.stdout).get("loggedIn"))
-        except (ValueError, AttributeError):
-            logged_in = False
-    if not logged_in:
-        return check(check_id, FAIL, f"claude {installed} at {binary} is not logged in", login)
-    return check(check_id, OK, f"claude {installed} at {binary}, digest certified, logged in")
-
-
-def _codex_home_of(actor: dict) -> tuple[Path | None, str | None]:
-    try:
-        spawn = json.loads(actor.get("spawn_json") or "{}")
-    except (TypeError, ValueError):
-        return None, "malformed spawn_json"
-    env = spawn.get("env") if isinstance(spawn, dict) else None
-    value = env.get("CODEX_HOME") if isinstance(env, dict) else None
-    if not value:
-        return None, "no spawn.env.CODEX_HOME"
-    try:
-        return paths.resolve_codex_home(actor["id"], str(value)), None
-    except ValidationError as exc:
-        return None, str(exc)
-
-
-def check_codex_custody(pin: RuntimePin, *, run: Runner = subprocess.run, bundle: Path | None = None) -> dict:
-    """Workers run the custody copy of the pinned Codex, never the ``codex``
-    on PATH, so this checks the copy: present, digest certified, version."""
-    check_id = "runtime:codex"
-    bundle = bundle or codex_versions_dir() / pin.version
-    codex = bundle / "bin" / "codex"
-    fill = home_prefix() + sh("agent-comms", "custody", "codex")
-    replace = f"{fill} --replace"
-    certify = f"re-certify codex {pin.version} with `make certify RUNTIME=codex` in a checkout"
-    if not codex.is_file():
-        return check(check_id, FAIL, f"no custody copy of codex {pin.version}: {codex} is missing", fill)
-    expected = os.environ.get(CODEX_PINNED_SHA256_ENV) or pin.sha256 or ""
-    if not expected:
-        return check(check_id, FAIL, f"the codex {pin.version} pin records no bundle sha256", certify)
-    try:
-        actual = bundle_sha256(bundle)
-    except (BundleNotDigestible, OSError) as exc:
-        return check(check_id, FAIL, f"custody copy of codex {pin.version} cannot be verified: {exc}", replace)
-    if actual != expected:
-        return check(
-            check_id,
-            FAIL,
-            f"custody copy of codex {pin.version} differs from the certified bundle: expected sha256 {expected}, got {actual}; path={bundle}",
-            replace,
-        )
-    result = _run_quietly(run, [str(codex), "--version"])
-    if isinstance(result, Exception):
-        return check(check_id, FAIL, f"could not execute {codex} --version: {result}", replace)
-    installed, output = _version_from(result)
-    if result.returncode != 0 or installed is None:
-        return check(check_id, FAIL, f"{codex} --version exited {result.returncode}: {output!r}", replace)
-    if not _version_matches(installed, pin):
-        return check(check_id, FAIL, f"custody codex reports {installed}, the pin is {pin.version}; path={codex}", certify)
-    return check(check_id, OK, f"codex {installed} custody at {codex}, digest certified")
-
-
-def check_codex(
-    pin: RuntimePin | None,
-    workers: list[dict],
-    dead_credentials: list[dict],
-    *,
-    run: Runner = subprocess.run,
-    bundle: Path | None = None,
-    auth_source: Path | None = None,
-    now: datetime | None = None,
-    ledger: LedgerRef | None = None,
-) -> list[dict]:
-    """``runtime:codex`` (the custody copy), ``runtime:codex:auth`` (the
-    shared login), one entry per worker home and one per dead login."""
-    ledger = ledger or LedgerRef(paths.db_path(), False)
-    if pin is None:
-        return [check("runtime:codex", SKIP, "platform is not certified for codex (see platform)")]
-    checks = [check_codex_custody(pin, run=run, bundle=bundle)]
-    source = (auth_source or paths.runtime_codex_auth_source()).expanduser()
-    if not source.is_file():
-        checks.append(check("runtime:codex:auth", FAIL, f"shared auth {source} is missing", _codex_login(source.parent)))
-    else:
-        checks.append(check("runtime:codex:auth", OK, f"shared auth {source} present"))
-    for worker in workers:
-        worker_id = worker["id"]
-        home_id = f"runtime:codex:home:{worker_id}"
-        home, why = _codex_home_of(worker)
-        if home is None:
-            checks.append(check(home_id, FAIL, f"{worker_id}: {why}", f"re-register {worker_id} so its spawn carries CODEX_HOME: {ledger.cli('bootstrap')}"))
-            continue
-        ok, reason, _snapshot = preflight_home_snapshot(home, actor_id=worker_id, now=now)
-        if ok:
-            checks.append(check(home_id, OK, f"{worker_id}: {home} provisioned, auth fresh"))
-            continue
-        if reason and reason.startswith("auth.json"):
-            checks.append(check(home_id, FAIL, f"{worker_id}: {home}: {reason}", _codex_login(home)))
-            continue
-        # The repair names the inspected home and the inspected ledger, so it
-        # cannot land on the default home or the default ledger by accident.
-        checks.append(
-            check(
-                home_id,
-                FAIL,
-                f"{worker_id}: {home}: {reason}; the worker is protected, so the repair needs an override reason",
-                ledger.cli(
-                    "provision-codex-home",
-                    "--actor-id", worker_id,
-                    "--project-root", worker.get("project_root") or "<project-root>",
-                    "--codex-home", home,
-                    "--override-protected", "doctor: restore the missing codex home",
-                ),
-            )
-        )
-    for row in dead_credentials:
-        lineage = str(row["lineage_key"])
-        checks.append(
-            check(
-                f"runtime:codex:login:{lineage}",
-                FAIL,
-                f"expired login (refresh failed: {row['dead_reason']} since {row['dead_at']}); lineage {lineage}",
-                _codex_login(Path(lineage).parent),
-            )
-        )
-    return checks
-
-
-def _codex_login(home: Path | str) -> str:
-    return f"CODEX_HOME={shlex.quote(str(home))} codex login"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -650,23 +411,11 @@ def run_doctor(
     runtimes = runtimes_in_use(snapshot, config)
     platform_check, pins = check_platform(platform, runtimes)
     checks.append(platform_check)
-    if "claude" in runtimes:
-        checks.append(check_claude(pins.get("claude"), run=run))
-    else:
-        checks.append(check("runtime:claude", SKIP, "no claude worker registered"))
-    if "codex" in runtimes:
-        checks.extend(
-            check_codex(
-                pins.get("codex"),
-                snapshot.workers("codex") if snapshot else [],
-                snapshot.dead_credentials if snapshot else [],
-                run=run,
-                now=now,
-                ledger=ledger,
-            )
-        )
-    else:
-        checks.append(check("runtime:codex", SKIP, "no codex worker registered"))
+    for runtime in runtime_registry.registered():
+        if runtime.name in runtimes:
+            checks.extend(runtime.doctor_checks(pins.get(runtime.name), snapshot, run=run, now=now, ledger=ledger))
+        elif (skip := runtime.doctor_skip()) is not None:
+            checks.append(skip)
     if snapshot is not None and snapshot.schema_version <= LEDGER_SCHEMA_VERSION:
         # A roster problem (several humans, no architect) fails the ledger
         # check but the ledger itself was read, so the checks that only need

@@ -1,0 +1,150 @@
+{
+  "rc": 0,
+  "setup": {
+    "actors": [
+      "my-project-architect",
+      "my-project-fake-worker"
+    ],
+    "claude_custody": null,
+    "clients": [
+      "claude",
+      "codex"
+    ],
+    "codex_custody": null,
+    "codex_homes": [],
+    "doctor": {
+      "fixes": [],
+      "ok": true
+    },
+    "human": {
+      "display_name": "alice",
+      "id": "01M36YTJV9XBW95S6ZWV47C4RG",
+      "reused": false
+    },
+    "mcp": {
+      "applied": [
+        {
+          "client": "claude",
+          "commands": [
+            [
+              "claude",
+              "mcp",
+              "add",
+              "agent-comms",
+              "--scope",
+              "local",
+              "--",
+              "<BIN>/agent-comms-mcp",
+              "--actor-id",
+              "my-project-architect",
+              "--db",
+              "<ROOT>/ledger dir/ledger.sqlite"
+            ]
+          ],
+          "notes": []
+        },
+        {
+          "client": "codex",
+          "commands": [],
+          "notes": [
+            "git is not on PATH; nothing excludes <ROOT>/my project/.codex/config.toml from version control",
+            "wrote [mcp_servers.agent-comms] in <ROOT>/my project/.codex/config.toml",
+            "Codex loads it once the project is trusted: open codex in <ROOT>/my project and accept the trust prompt"
+          ]
+        }
+      ],
+      "pending": []
+    },
+    "next": [
+      "agent-comms --db '<ROOT>/ledger dir/ledger.sqlite' doctor"
+    ],
+    "ok": true,
+    "project_root": "<ROOT>/my project",
+    "registry": "<RUNTIME_ROOT>/actors.json",
+    "runtime_root": "<RUNTIME_ROOT>",
+    "runtimes": [
+      "fake"
+    ],
+    "team": "my-project"
+  },
+  "doctor": {
+    "ok": true,
+    "platform": "darwin-arm64",
+    "checks": [
+      {
+        "id": "install",
+        "status": "ok",
+        "detail": "agent-comms-mcp, agent-comms-monitor, agent-comms-seat under <BIN>",
+        "fix": null
+      },
+      {
+        "id": "runtime_root",
+        "status": "ok",
+        "detail": "<RUNTIME_ROOT> exists and is writable",
+        "fix": null
+      },
+      {
+        "id": "registry",
+        "status": "ok",
+        "detail": "3 actors, teams: my-project in <RUNTIME_ROOT>/actors.json",
+        "fix": null
+      },
+      {
+        "id": "ledger",
+        "status": "ok",
+        "detail": "<ROOT>/ledger dir/ledger.sqlite: schema 3, 1 human, 1 architect, 1 worker",
+        "fix": null
+      },
+      {
+        "id": "platform",
+        "status": "skip",
+        "detail": "darwin-arm64: no claude or codex worker registered",
+        "fix": null
+      },
+      {
+        "id": "runtime:claude",
+        "status": "skip",
+        "detail": "no claude worker registered",
+        "fix": null
+      },
+      {
+        "id": "runtime:codex",
+        "status": "skip",
+        "detail": "no codex worker registered",
+        "fix": null
+      },
+      {
+        "id": "monitor",
+        "status": "warn",
+        "detail": "no monitor heartbeat yet and nothing has been dispatched",
+        "fix": "agent-comms-monitor --db '<ROOT>/ledger dir/ledger.sqlite' --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG"
+      },
+      {
+        "id": "mcp:my-project-architect:claude",
+        "status": "ok",
+        "detail": "my-project-architect claude seat in <ROOT>/claude.json binds my-project-architect",
+        "fix": null
+      },
+      {
+        "id": "mcp:my-project-architect:codex",
+        "status": "ok",
+        "detail": "my-project-architect codex seat in <ROOT>/my project/.codex/config.toml binds my-project-architect",
+        "fix": null
+      },
+      {
+        "id": "mcp:my-project-architect:codex:effective",
+        "status": "ok",
+        "detail": "codex resolves agent-comms in <ROOT>/my project to my-project-architect",
+        "fix": null
+      },
+      {
+        "id": "admin_token",
+        "status": "warn",
+        "detail": "no admin token at <RUNTIME_ROOT>/admin-token (needed for the operator dispatch path and the fake demo)",
+        "fix": "(umask 077; head -c 32 /dev/urandom | xxd -p -c 64 > <RUNTIME_ROOT>/admin-token)"
+      }
+    ],
+    "fixes": [],
+    "runtime_root": "<RUNTIME_ROOT>"
+  }
+}

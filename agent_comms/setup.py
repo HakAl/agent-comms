@@ -41,9 +41,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import doctor, mcp_clients, paths, supervisor
+from . import runtimes as runtime_registry
 from .cli._helpers import bootstrap_store, load_actor_config
-from .custody import fill_codex_custody
-from .runtime_pins import PlatformNotCertified, claude_versions_dir, current_platform, pin_for
+from .runtime_pins import PlatformNotCertified, current_platform, pin_for
 from .schema import ValidationError, validate_actor_id_for_kind
 from .spawn import ALLOWED_RUNTIMES
 from .store import Store
@@ -52,9 +52,7 @@ from .store import Store
 # config/actors.example.json would have said.
 CAPABILITIES = {
     "architect": ["planning", "review"],
-    "claude": ["implementation"],
-    "codex": ["implementation", "review"],
-    "fake": ["demo"],
+    **{runtime.name: list(runtime.capabilities) for runtime in runtime_registry.registered()},
 }
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 Ask = Callable[[str, str], str]
@@ -92,18 +90,25 @@ def parse_list(value: object) -> list[str] | None:
     return [item for item in items if item]
 
 
+def _platform_pin(runtime) -> tuple[object | None, str | None]:  # type: ignore[no-untyped-def]
+    """``runtime``'s pin on this platform and why there is none. Resolved
+    here, through this module's names, so tests can stand a platform in."""
+    if not runtime.pinned:
+        return None, None
+    try:
+        return pin_for(runtime.name, current_platform()), None
+    except PlatformNotCertified as exc:
+        return None, str(exc)
+
+
 def detect_runtimes(which: Callable[[str], str | None] = shutil.which) -> list[str]:
     """The native runtimes this machine appears to have; ``fake`` when none."""
-    found = []
-    try:
-        pin = pin_for("claude", current_platform())
-        if (claude_versions_dir() / pin.version).is_file():
-            found.append("claude")
-    except PlatformNotCertified:
-        pass
-    if which("codex"):
-        found.append("codex")
-    return found or ["fake"]
+    found = [
+        runtime.name
+        for runtime in runtime_registry.registered()
+        if runtime.detect(which, _platform_pin(runtime)[0])
+    ]
+    return found or [runtime.name for runtime in runtime_registry.registered() if runtime.fallback]
 
 
 def console_ask(prompt: str, default: str) -> str:
@@ -464,26 +469,13 @@ def run_setup(
 
     # --- ledger and worker homes ------------------------------------------
     bootstrap_store(store, config_path, codex_custody=True)
-    codex_homes = [str(paths.provisioned_codex_home(workers["codex"]))] if "codex" in workers else []
-
-    claude_custody = None
-    if "claude" in workers:
-        try:
-            pin = pin_for("claude", current_platform())
-            binary = claude_versions_dir() / pin.version
-            claude_custody = {"version": pin.version, "path": str(binary), "present": binary.is_file()}
-        except PlatformNotCertified as exc:
-            claude_custody = {"version": None, "path": None, "present": False, "detail": str(exc)}
-
-    # Best effort: a missing custody copy fails dispatch and doctor names
-    # the fill command, so setup records why and carries on.
-    codex_custody = None
-    if "codex" in workers:
-        try:
-            filled = fill_codex_custody(which=which, run=run)
-            codex_custody = {"present": True, "path": filled["path"], "status": filled["status"]}
-        except (ValidationError, PlatformNotCertified, OSError, ValueError) as exc:
-            codex_custody = {"present": False, "reason": str(exc)}
+    provisioned: dict = {}
+    for runtime in runtime_registry.registered():
+        if runtime.name in workers:
+            pin, pin_error = _platform_pin(runtime)
+            provisioned.update(runtime.provision(workers[runtime.name], pin=pin, pin_error=pin_error, which=which, run=run))
+        else:
+            provisioned.update(runtime.provision_absent())
 
     # --- the seats ---------------------------------------------------------
     ledger = doctor.LedgerRef(db_path, db_explicit)
@@ -502,9 +494,10 @@ def run_setup(
         "clients": clients,
         "actors": [architect, *workers.values()],
         "human": {"id": human, "display_name": actors[human].get("display_name", human), "reused": reused},
-        "codex_homes": codex_homes,
-        "claude_custody": claude_custody,
-        "codex_custody": codex_custody,
+        # Placed by name, so the report keeps its key order.
+        "codex_homes": provisioned["codex_homes"],
+        "claude_custody": provisioned["claude_custody"],
+        "codex_custody": provisioned["codex_custody"],
         "mcp": {"applied": applied, "pending": pending},
         "doctor": {"ok": report["ok"], "fixes": report["fixes"]},
         "next": list(dict.fromkeys(steps)),

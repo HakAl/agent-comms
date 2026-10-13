@@ -1,14 +1,10 @@
 from __future__ import annotations
 
+from .. import runtimes
 from . import RuntimeAdapter
-from .claude import ClaudeAdapter
-from .codex import CodexAdapter
-from .fake import FakeAdapter
 
 ADAPTERS_BY_RUNTIME: dict[str, type[RuntimeAdapter]] = {
-    "claude": ClaudeAdapter,
-    "codex": CodexAdapter,
-    "fake": FakeAdapter,
+    runtime.name: runtime.adapter_class for runtime in runtimes.registered()
 }
 
 

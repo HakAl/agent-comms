@@ -22,7 +22,7 @@ from ..runtime_pins import (
     codex_pin,
     codex_pinned_sha256,
 )
-from ..spawn import CODEX_ARGS_INTRODUCED
+from ..runtimes.codex import ARGS_INTRODUCED as CODEX_ARGS_INTRODUCED
 from ..store import WORKER_DISPATCH_POLICY
 
 
