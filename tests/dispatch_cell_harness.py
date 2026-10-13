@@ -235,9 +235,10 @@ def long_running_worker_spawn(
     ``codex_stub_dir`` becomes a custody directory whose bundle's
     ``bin/codex`` is a stub (pin it with :func:`codex_pin_env_for_versions_dir`):
     every Codex run carries the per-run ``-c`` binding and is preflighted
-    with ``codex ... mcp get``, so the stub hands any ``mcp`` invocation to
-    the real custody Codex (the preflight stays real) and otherwise sleeps,
-    ignoring the options.
+    with ``codex ... mcp get`` and ``codex ... app-server`` (the policy
+    hook's trust), so the stub hands those invocations to the real custody
+    Codex (the preflight stays real) and otherwise sleeps, ignoring the
+    options.
     """
     if claude_versions_dir is not None:
         binary = claude_versions_dir / claude_pin().version
@@ -263,7 +264,7 @@ def long_running_worker_spawn(
         stub.write_text(
             "#!/bin/sh\n"
             'for arg in "$@"; do\n'
-            f'  if [ "$arg" = mcp ]; then exec {shlex.quote(real_codex)} "$@"; fi\n'
+            f'  case "$arg" in mcp|app-server) exec {shlex.quote(real_codex)} "$@";; esac\n'
             "done\n"
             "printf '%s' \"$$\" > \"$AGENT_COMMS_TIMEOUT_CHILD_PID_FILE\"\n"
             "exec sleep 60\n"

@@ -177,3 +177,21 @@ spawn args may not set `mcp_servers.agent-comms` (or the whole
 dispatch is refused. The worker runs the custody copy of the pinned Codex
 (`agent-comms custody codex` fills it), never the `codex` on `PATH`; the
 architect's seat above keeps using the `codex` you run yourself.
+
+A Codex worker runs the same PreToolUse policy hook as a Claude worker. The
+hook is declared with `-c hooks.PreToolUse=...` on every run, and
+`-c hooks.state=...` trusts exactly that hook by the hash Codex computes for
+it, so nothing is written to the worker's home and
+`--dangerously-bypass-hook-trust` is never used. Hooks shipped in the
+worker's project stay untrusted and do not run. Before the run the adapter
+asks Codex whether it would run the hook (`codex app-server`, `hooks/list`,
+with everything the launch loads) and runs the hook once as Codex would, on
+a call it must deny; either failing refuses the dispatch. Stored spawn args
+may not set `hooks` with `-c` or pass `--dangerously-bypass-hook-trust`. The
+hook confines `apply_patch` to the project, taking relative paths from the
+turn's working directory as Codex does, and denies a patch that selects
+another environment. Codex runs the tool anyway when a hook
+crashes or times out mid-run, and it does not run PreToolUse for input
+written to a command that is already running (`write_stdin`), so the
+sandbox and the stripped credentials stay the boundary for file writes and
+network.

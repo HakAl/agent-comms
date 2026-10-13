@@ -60,9 +60,12 @@ def python_shim_script() -> str:
     return f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'
 
 
-# The worker binding preflight runs ``codex -c key=value ... mcp get
-# agent-comms --json``. With no other config layer, Codex resolves what the
-# -c values set, so the stand-in prints that and needs no real Codex.
+# The worker preflight runs ``codex -c key=value ... mcp get agent-comms
+# --json`` and asks ``codex -c ... app-server`` for ``hooks/list``. With no
+# other config layer, Codex resolves what the -c values set, so the stand-in
+# answers from those and needs no real Codex. It lists the declared hook as
+# trusted when the -c state gives it a trusted_hash; the hash itself is
+# checked against real Codex by the certification cells.
 _MCP_GET_STAND_IN = """
 import json, sys, tomllib
 
@@ -78,6 +81,28 @@ while args[:1] in (["-c"], ["--config"], ["-p"], ["--profile"]):
     if args[0] in ("-c", "--config"):  # a profile layer is not modelled
         merge(config, tomllib.loads(args[1]))
     args = args[2:]
+if args == ["app-server"]:
+    hooks = config.get("hooks", {})
+    states = hooks.get("state", {})
+    listed = []
+    for group, matcher in enumerate(hooks.get("PreToolUse", [])):
+        for index, handler in enumerate(matcher.get("hooks", [])):
+            key = f"/<session-flags>/config.toml:pre_tool_use:{group}:{index}"
+            state = states.get(key, {})
+            listed.append({
+                "key": key,
+                "command": handler.get("command"),
+                "enabled": state.get("enabled", True),
+                "trustStatus": "trusted" if state.get("trusted_hash") else "untrusted",
+            })
+    for line in sys.stdin:
+        request = json.loads(line)
+        if request.get("id") == 1:
+            print(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}), flush=True)
+        elif request.get("id") == 2:
+            data = [{"cwd": cwd, "hooks": listed} for cwd in request["params"]["cwds"]]
+            print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"data": data}}), flush=True)
+    sys.exit(0)
 if args[:2] != ["mcp", "get"]:
     sys.exit(0)
 server = config.get("mcp_servers", {}).get(args[2])
@@ -104,8 +129,9 @@ print(json.dumps({
 
 
 def mcp_get_codex_script() -> str:
-    """A ``bin/codex`` that answers ``codex mcp get`` from its ``-c`` values,
-    for tests that dispatch a Codex worker without a real Codex."""
+    """A ``bin/codex`` that answers ``codex mcp get`` and ``hooks/list`` from
+    its ``-c`` values, for tests that dispatch a Codex worker without a real
+    Codex."""
     return f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(_MCP_GET_STAND_IN)} "$@"\n'
 
 

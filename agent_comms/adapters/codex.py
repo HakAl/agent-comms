@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import tempfile
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import DispatchContext
 from ._base import ProcessSpawnAdapter
-from .. import codex_binding, paths
+from .. import codex_binding, codex_hook, paths
 from ..codex_home import preflight_home_snapshot
 from ..codex_auth_refresh import codex_auth_snapshot
-from ..policies import WORKER_DISPATCH_POLICY_VERSION
+from ..policies import WORKER_DISPATCH_POLICY_VERSION, compile_policy
 from ..runtime_pins import (
     BundleNotDigestible,
     bundle_sha256,
@@ -42,6 +45,13 @@ class McpBindingMismatch(RuntimeError):
     """Codex would not bind the worker's agent-comms server as intended."""
 
 
+class PolicyHookUnverified(RuntimeError):
+    """Codex would not run the worker's policy hook, or the hook does not run."""
+
+
+HookLister = Callable[..., "tuple[list | None, str | None]"]
+
+
 class CodexCustodyUnavailable(RuntimeError):
     """The custody copy of the pinned Codex is missing or unreadable."""
 
@@ -65,14 +75,28 @@ class CodexAdapter(ProcessSpawnAdapter):
     asks Codex itself (``codex mcp get --json`` with the worker's home, cwd
     and overrides) and refuses the dispatch on any difference. The check
     runs through ``mcp_runner`` so hermetic tests stub it.
+
+    The worker's PreToolUse policy hook is declared and trusted the same
+    way, per run (``codex_hook``). The preflight asks Codex whether it would
+    run that hook (``hooks/list`` through ``hook_lister``) and runs the hook
+    once as Codex would (through ``hook_runner``), since Codex runs the tool
+    anyway when a hook cannot start.
     """
 
     runtime_label = "codex"
     supported_runtimes = ("codex",)
 
-    def __init__(self, *, mcp_runner: codex_binding.Runner | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        mcp_runner: codex_binding.Runner | None = None,
+        hook_lister: HookLister | None = None,
+        hook_runner: codex_binding.Runner | None = None,
+    ) -> None:
         super().__init__()
         self._mcp_runner = mcp_runner or subprocess.run
+        self._hook_lister = hook_lister or codex_hook.list_hooks
+        self._hook_runner = hook_runner or subprocess.run
 
     def mcp_binding(self, context: DispatchContext) -> codex_binding.Binding:
         actor_id = str(context.recipient["id"])
@@ -95,8 +119,23 @@ class CodexAdapter(ProcessSpawnAdapter):
         if context.recipient.get("runtime") not in self.supported_runtimes:
             return []
         # Headless exec cancels MCP tool calls that need approval.
-        return codex_binding.config_overrides(
-            self.mcp_binding(context), extra={"default_tools_approval_mode": "approve"}
+        return [
+            *codex_binding.config_overrides(
+                self.mcp_binding(context), extra={"default_tools_approval_mode": "approve"}
+            ),
+            *codex_hook.config_overrides(self.policy_hook_command(context)),
+        ]
+
+    @staticmethod
+    def policy_hook_command(context: DispatchContext) -> str:
+        """The PreToolUse hook command for this dispatch's policy and root."""
+        policy = compile_policy(str(context.dispatch["policy_name"]))
+        return codex_hook.hook_command(
+            python=sys.executable,
+            hook_path=str(paths.hooks_path()),
+            policy_name=policy.name,
+            project_root=str(context.recipient["project_root"]),
+            hook_sha256=str(policy.hook_sha256),
         )
 
     def _binding_preflight(
@@ -112,6 +151,19 @@ class CodexAdapter(ProcessSpawnAdapter):
             raise McpBindingMismatch(
                 f"the stored spawn args for {context.recipient['id']} set {codex_binding.SERVER_NAME} with -c "
                 f"({', '.join(conflicting)}), which would override the per-run binding; remove them from the spawn block"
+            )
+        hooks = [value for value in launch.overrides if codex_hook.touches_hooks(value)]
+        if hooks:
+            raise PolicyHookUnverified(
+                f"the stored spawn args for {context.recipient['id']} set hooks with -c ({', '.join(hooks)}), "
+                "which could replace or disable the policy hook; remove them from the spawn block"
+            )
+        # Exact-hash trust is the contract; the bypass would also run every
+        # untrusted hook while hooks/list still reports ours trusted.
+        if codex_hook.BYPASS_TRUST_FLAG in launch.flags:
+            raise PolicyHookUnverified(
+                f"the stored spawn args for {context.recipient['id']} pass {codex_hook.BYPASS_TRUST_FLAG}, "
+                "which would run untrusted hooks; remove it from the spawn block"
             )
         # The check loads what the launch loads: the same profile layer,
         # start directory and every -c in launch order.
@@ -132,7 +184,30 @@ class CodexAdapter(ProcessSpawnAdapter):
                 f"dispatch in {cwd}: {'; '.join(problems)}; remove the conflicting entry from the worker's "
                 f"CODEX_HOME config or the project's .codex/config.toml layers"
             )
-        return {"codex_mcp_binding": "verified"}
+        self._policy_hook_preflight(context, command, cwd=cwd, env=env, overrides=overrides)
+        return {"codex_mcp_binding": "verified", "codex_policy_hook": "verified"}
+
+    def _policy_hook_preflight(
+        self, context: DispatchContext, command: str, *, cwd: str, env: dict[str, str], overrides: list[str]
+    ) -> None:
+        hook = self.policy_hook_command(context)
+        entries, error = self._hook_lister(command, cwd=cwd, env=env, overrides=overrides)
+        if entries is None:
+            raise PolicyHookUnverified(f"worker policy hook not verified: {error}")
+        problems = codex_hook.trust_problems(entries, hook)
+        if problems:
+            raise PolicyHookUnverified(
+                f"Codex would not run the policy hook for {context.recipient['id']} in {cwd}: "
+                f"{'; '.join(problems)}; recover with: make certify RUNTIME=codex"
+            )
+        # A fresh, empty ZDOTDIR, as the worker gets: the login shell Codex
+        # runs a hook in must not read the operator's zsh startup files.
+        with tempfile.TemporaryDirectory(prefix="agent-comms-hook-") as zdotdir:
+            error = codex_hook.smoke_run(
+                hook, cwd=cwd, env={**env, "ZDOTDIR": zdotdir}, runner=self._hook_runner
+            )
+        if error:
+            raise PolicyHookUnverified(f"worker policy hook for {context.recipient['id']} does not run: {error}")
 
     def _separate_stdout(
         self,

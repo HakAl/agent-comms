@@ -3,9 +3,11 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import base64
 import contextlib
 import functools
+import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,9 +20,9 @@ from pathlib import Path
 from unittest import mock
 
 from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
-from agent_comms import cli, codex_binding, doctor, mcp_clients, paths, provisioning, setup, supervisor
+from agent_comms import cli, codex_binding, codex_hook, doctor, mcp_clients, paths, provisioning, setup, supervisor
 from agent_comms.adapters import DispatchContext
-from agent_comms.adapters.codex import CodexAdapter, McpBindingMismatch
+from agent_comms.adapters.codex import CodexAdapter, McpBindingMismatch, PolicyHookUnverified
 from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
 from agent_comms.spawn import render_spawn
 from agent_comms.store import WORKER_DISPATCH_POLICY
@@ -69,6 +71,40 @@ class StubCodex:
     def __call__(self, argv, **kwargs):
         self.calls.append({"argv": list(argv), **kwargs})
         return _completed(argv, self.returncode, stdout=json.dumps(self.observed) if self.observed is not None else "", stderr=self.stderr)
+
+
+class StubHooks:
+    """A ``hooks/list`` lister and a hook runner standing in for Codex: by
+    default Codex lists the policy hook trusted and the hook denies."""
+
+    DENY = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}})
+
+    def __init__(self, *, entry: dict | None = None, listed: list | None = None, error: str | None = None,
+                 stdout: str = DENY, returncode: int = 0) -> None:
+        self.entry, self.listed, self.error = entry or {}, listed, error
+        self.stdout, self.returncode = stdout, returncode
+        self.list_calls: list[dict] = []
+        self.run_calls: list[dict] = []
+
+    def lister(self, codex, **kwargs):
+        self.list_calls.append({"codex": codex, **kwargs})
+        if self.error is not None:
+            return None, self.error
+        if self.listed is not None:
+            return self.listed, None
+        # The command Codex lists is the one the overrides declared.
+        command = _declared_hook_command(kwargs["overrides"])
+        return [{"key": codex_hook.STATE_KEY, "command": command, "enabled": True, "trustStatus": "trusted", **self.entry}], None
+
+    def runner(self, argv, **kwargs):
+        self.run_calls.append({"argv": list(argv), **kwargs})
+        return _completed(argv, self.returncode, stdout=self.stdout, stderr="")
+
+
+def _declared_hook_command(overrides: list[str]) -> str:
+    """The command the ``-c hooks.PreToolUse=...`` value declares."""
+    [value] = [value for value in overrides if value.startswith("hooks.PreToolUse=")]
+    return tomllib.loads(value)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
 
 class RewriteTest(unittest.TestCase):
@@ -449,8 +485,9 @@ class WorkerBindingTest(_Project):
             db_path=str(self.db),
         )
 
-    def dispatch(self, runner: StubCodex):
-        adapter = CodexAdapter(mcp_runner=runner)
+    def dispatch(self, runner: StubCodex, hooks: StubHooks | None = None):
+        hooks = hooks or StubHooks()
+        adapter = CodexAdapter(mcp_runner=runner, hook_lister=hooks.lister, hook_runner=hooks.runner)
         spawned = supervisor.SupervisedSpawn(
             popen=types.SimpleNamespace(pid=4300), run_token="a" * 32, control_socket="/s", child_pid=4301, wrapper_pid=4300, run_dir="/r"
         )
@@ -471,7 +508,10 @@ class WorkerBindingTest(_Project):
         runner = StubCodex(resolved(binding))
         _adapter, spawn, result = self.dispatch(runner)
         child = spawn.call_args.args[0]
-        overrides = codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"})
+        overrides = [
+            *codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"}),
+            *codex_hook.config_overrides(CodexAdapter.policy_hook_command(self.context)),
+        ]
         self.assertEqual(child[0], str(self.codex_binary))
         self.assertEqual(child[1:1 + len(overrides)], overrides)
         self.assertEqual(child[1 + len(overrides):][:2], ["--ask-for-approval", "never"])
@@ -479,6 +519,8 @@ class WorkerBindingTest(_Project):
         values = {}
         for flag, pair in zip(overrides[::2], overrides[1::2]):
             self.assertEqual(flag, "-c")
+            if pair.startswith("hooks."):
+                continue
             key, _, value = pair.partition("=")
             values[key.removeprefix("mcp_servers.agent-comms.")] = tomllib.loads(f"v = {value}")["v"]
         self.assertEqual(values["args"], binding.args)
@@ -490,6 +532,7 @@ class WorkerBindingTest(_Project):
         self.assertEqual(call["cwd"], str(self.project))
         self.assertEqual(call["env"]["CODEX_HOME"], str(self.worker_home))
         self.assertEqual(result.observed_values["codex_mcp_binding"], "verified")
+        self.assertEqual(result.observed_values["codex_policy_hook"], "verified")
         # The prompt is still the last argument and separate stdout still applies.
         self.assertIn("t-codex-worker", child[-1])
 
@@ -537,7 +580,10 @@ class WorkerBindingTest(_Project):
         runner = StubCodex(resolved(binding))
         self.dispatch(runner)
         [call] = runner.calls
-        overrides = codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"})
+        overrides = [
+            *codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"}),
+            *codex_hook.config_overrides(CodexAdapter.policy_hook_command(self.context)),
+        ]
         # The template passes no --profile (slice 3b), so a stored one is the
         # profile the launch loads; stored -c follow ours, in launch order.
         self.assertEqual(call["argv"], [
@@ -545,6 +591,79 @@ class WorkerBindingTest(_Project):
             "mcp", "get", "agent-comms", "--json",
         ])
         self.assertEqual(call["cwd"], str(self.project / "sub"))
+
+    def test_the_policy_hook_is_checked_as_the_launch_loads_it(self) -> None:
+        self.with_stored("-c", 'model="o3"', "-C", "sub")
+        hooks = StubHooks()
+        runner = StubCodex(resolved(CodexAdapter().mcp_binding(self.context)))
+        _adapter, _spawn, result = self.dispatch(runner, hooks)
+        [listed] = hooks.list_calls
+        [mcp_call] = runner.calls
+        # hooks/list loads what codex mcp get loaded: same binary, overrides, cwd, env.
+        self.assertEqual(listed["codex"], str(self.codex_binary))
+        self.assertEqual([listed["codex"], *listed["overrides"], "mcp", "get", "agent-comms", "--json"], mcp_call["argv"])
+        self.assertEqual((listed["cwd"], listed["env"]), (mcp_call["cwd"], mcp_call["env"]))
+        # The hook ran once, as Codex runs it, on a call it must deny.
+        [ran] = hooks.run_calls
+        command = CodexAdapter.policy_hook_command(self.context)
+        self.assertEqual(ran["argv"][1:], ["-lc", command])
+        self.assertEqual(json.loads(ran["input"])["tool_name"], codex_hook.SMOKE_TOOL)
+        self.assertNotEqual(ran["env"]["ZDOTDIR"], os.environ.get("ZDOTDIR"))
+        self.assertEqual(result.observed_values["codex_policy_hook"], "verified")
+
+    def test_the_hook_command_carries_policy_root_and_fingerprint(self) -> None:
+        words = shlex.split(CodexAdapter.policy_hook_command(self.context))
+        self.assertEqual(words[:2], [sys.executable, str(paths.hooks_path())])
+        self.assertEqual(words[2:8], ["--runtime", "codex", "--policy", WORKER_DISPATCH_POLICY, "--project-root", str(self.project)])
+        self.assertEqual(words[8:], ["--sha256", hashlib.sha256(paths.hooks_path().read_bytes()).hexdigest()])
+
+    def test_a_hook_codex_would_not_run_starts_nothing(self) -> None:
+        binding = CodexAdapter().mcp_binding(self.context)
+        for hooks, expected in (
+            (StubHooks(entry={"trustStatus": "untrusted"}), "'untrusted', not trusted"),
+            (StubHooks(entry={"trustStatus": "modified"}), "'modified', not trusted"),
+            (StubHooks(entry={"enabled": False}), "the hook is disabled"),
+            (StubHooks(listed=[]), "codex lists no hook"),
+            (StubHooks(error="app-server hooks/list timed out after 5s"), "not verified: app-server hooks/list timed out"),
+            (StubHooks(stdout=""), "does not run: the policy hook printed no decision"),
+            (StubHooks(stdout=StubHooks.DENY.replace("deny", "allow")), "answered 'allow'"),
+            (StubHooks(returncode=127), "exited 127"),
+        ):
+            with self.subTest(expected), self.assertRaisesRegex(PolicyHookUnverified, expected), \
+                    mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                self.dispatch(StubCodex(resolved(binding)), hooks)
+            spawn.assert_not_called()
+
+    def test_stored_options_that_set_hooks_start_nothing(self) -> None:
+        binding = CodexAdapter().mcp_binding(self.context)
+        for extra in (
+            ["-c", 'hooks.state={{"k"={{enabled=false}}}}'],
+            ["--config=hooks.PreToolUse=[]"],
+            ["--config", "hooks={{}}"],
+        ):
+            with self.subTest(extra):
+                self.setUp()
+                self.with_stored(*extra)
+                runner, hooks = StubCodex(resolved(binding)), StubHooks()
+                with self.assertRaisesRegex(PolicyHookUnverified, "stored spawn args for t-codex-worker set hooks"), \
+                        mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                    self.dispatch(runner, hooks)
+                spawn.assert_not_called()
+                self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
+
+    def test_stored_hook_trust_bypass_starts_nothing(self) -> None:
+        # The operator chose exact-hash trust, never the bypass, which would
+        # also admit every untrusted hook (Lookout INTEGRATION-007 F1).
+        for extra in (["--dangerously-bypass-hook-trust"], ["--json", "--dangerously-bypass-hook-trust=true"]):
+            with self.subTest(extra):
+                self.setUp()
+                self.with_stored(*extra)
+                runner, hooks = StubCodex(resolved(CodexAdapter().mcp_binding(self.context))), StubHooks()
+                with self.assertRaisesRegex(PolicyHookUnverified, "--dangerously-bypass-hook-trust"), \
+                        mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                    self.dispatch(runner, hooks)
+                spawn.assert_not_called()
+                self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
 
     def test_home_is_bound_when_set(self) -> None:
         home = self.root / "h"
@@ -634,6 +753,34 @@ class RealCodexResolutionTest(_Project):
         observed, error = self.resolve(self.project, overrides=overrides, codex_home=worker_home)
         self.assertIsNone(error)
         self.assertEqual(codex_binding.effective_problems(observed, adapter.mcp_binding(context)), [], observed)
+
+    def test_native_codex_trusts_exactly_the_policy_hook(self) -> None:
+        worker_home = self.root / "worker-home"
+        worker_home.mkdir()
+        # A lower layer switching our hook off: the per-run state sets enabled too.
+        (worker_home / "config.toml").write_text(
+            provisioning.render_codex_base_config(str(self.project))
+            + f"\n[hooks.state.{json.dumps(codex_hook.STATE_KEY)}]\nenabled = false\n"
+        )
+        context = DispatchContext(
+            dispatch={"dispatch_id": "d", "policy_name": WORKER_DISPATCH_POLICY},
+            recipient={"id": "t-codex-worker", "runtime": "codex", "project_root": str(self.project)},
+            message={"id": "m"}, ttl_seconds=30, expected_close_by="", db_path=str(self.db),
+        )
+        overrides = CodexAdapter()._runtime_prefix_args(context)
+        command = CodexAdapter.policy_hook_command(context)
+
+        def problems(values: list[str], expected_command: str = command) -> list[str]:
+            entries, error = codex_hook.list_hooks(REAL_CODEX, cwd=str(self.project), env=self.env(worker_home), overrides=values)
+            self.assertIsNone(error)
+            return codex_hook.trust_problems(entries, expected_command)
+
+        self.assertEqual(problems(overrides), [])
+        # The same trust for another command: Codex sees the change.
+        other = command + " --extra"
+        tampered = [value.replace(json.dumps(command)[1:-1], json.dumps(other)[1:-1], 1) if value.startswith("hooks.PreToolUse=") else value
+                    for value in overrides]
+        self.assertTrue(any("'modified', not trusted" in problem for problem in problems(tampered, other)))
 
     def native_dispatch_ok(self, worker_home: Path, *stored: str) -> None:
         """The binding check passes: the dispatch reaches the worker's start."""

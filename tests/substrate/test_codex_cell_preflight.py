@@ -56,5 +56,5 @@ class CodexCellPreflightTest(unittest.TestCase):
         for case in next(iter(suite)):
             setattr(case, case._testMethodName, Mock(side_effect=AssertionError()))
         result = suite.run(unittest.TestResult())
-        self.assertEqual((result.testsRun, result.errors, result.failures), (8, [], []))
-        self.assertEqual([reason for _, reason in result.skipped], ["stale"] * 8)
+        self.assertEqual((result.testsRun, result.errors, result.failures), (9, [], []))
+        self.assertEqual([reason for _, reason in result.skipped], ["stale"] * 9)

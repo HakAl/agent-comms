@@ -213,6 +213,7 @@ class LaunchOptions:
     overrides: list[str] = field(default_factory=list)  # each -c value, in order
     profile: str | None = None
     cd: str | None = None
+    flags: list[str] = field(default_factory=list)  # each long option that takes no value
 
 
 def launch_options(args: list[str]) -> LaunchOptions:
@@ -228,6 +229,7 @@ def launch_options(args: list[str]) -> LaunchOptions:
         if token.startswith("--"):
             name, eq, inline = token.partition("=")
             if name not in _VALUE_LONGS:
+                options.flags.append(name)
                 continue
         elif token.startswith("-") and len(token) > 1 and token[1] in _VALUE_SHORTS:
             name, inline = token[:2], token[2:].removeprefix("=")

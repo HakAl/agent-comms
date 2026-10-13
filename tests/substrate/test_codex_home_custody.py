@@ -819,9 +819,10 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 25 binds the Codex worker's MCP server per run with -c and checks it;
         # 26 runs Codex workers from the custody copy ({codex_binary}) only;
         # 27 drops the per-actor profile and --profile from Codex workers.
+        # 28 declares and trusts the Codex worker's policy hook per run.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 27)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 28)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

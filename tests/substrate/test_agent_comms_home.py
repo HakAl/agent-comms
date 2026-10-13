@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import sys
 import tempfile
 import time
@@ -346,7 +347,8 @@ class WorkerPropagationTest(_Home):
 
 
 def _worker_overrides(actor_id: str, project: str, db: str) -> dict:
-    """The worker's per-run ``-c`` binding, each value parsed as TOML."""
+    """The worker's per-run ``-c`` binding, each value parsed as TOML; the
+    policy hook's command under ``"hook"``, as the shell will split it."""
     from agent_comms.adapters import DispatchContext
     from agent_comms.adapters.codex import CodexAdapter
 
@@ -359,7 +361,14 @@ def _worker_overrides(actor_id: str, project: str, db: str) -> dict:
     prefix = "mcp_servers.agent-comms."
     server = {}
     for flag, pair in zip(argv[::2], argv[1::2]):
-        assert flag == "-c" and pair.startswith(prefix), pair
+        assert flag == "-c", flag
+        if pair.startswith("hooks.PreToolUse="):
+            command = tomllib.loads(pair)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            server["hook"] = shlex.split(command)
+            continue
+        if pair.startswith("hooks.state="):
+            continue
+        assert pair.startswith(prefix), pair
         key, value = pair[len(prefix):].split("=", 1)
         server[key] = tomllib.loads(f"v = {value}")["v"]
     return server
@@ -390,6 +399,7 @@ class GeneratedConfigEscapingTest(_Home):
         server = _worker_overrides("w", project, db)
         self.assertEqual(server["args"], ["--actor-id", "w", "--db", db, "--home", str(home)])
         self.assertEqual(server["env"]["AGENT_COMMS_PROJECT_ROOT"], project)
+        self.assertEqual(server["hook"][server["hook"].index("--project-root") + 1], project)
 
     def test_codex_configs_round_trip_non_ascii_and_control_characters(self) -> None:
         odd = "proj-\U0001F600-\u00e9-\u4e2d-tab\there-del\x7f-nl\n"
@@ -404,6 +414,7 @@ class GeneratedConfigEscapingTest(_Home):
         self.assertEqual(server["args"], ["--actor-id", odd, "--db", db, "--home", str(home)])
         self.assertEqual(server["env"]["AGENT_COMMS_ACTOR_ID"], odd)
         self.assertEqual(server["env"]["AGENT_COMMS_PROJECT_ROOT"], project)
+        self.assertEqual(server["hook"][server["hook"].index("--project-root") + 1], project)
 
     def test_claude_mcp_config_round_trips_quotes_and_backslashes(self) -> None:
         from agent_comms.adapters import DispatchContext
@@ -461,6 +472,12 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },
+        # 28 adds none; the adapter renders the Codex worker's policy hook
+        # per run, and a v27 server would dispatch Codex workers without it.
+        28: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
     }
 
     def test_spawn_placeholders_are_recorded_for_this_contract(self) -> None:
@@ -476,6 +493,18 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             for text in texts:
                 found |= {name for _, name, _, _ in string.Formatter().parse(str(text)) if name}
         self.assertEqual(found, self.PLACEHOLDERS_BY_CONTRACT[code_identity.CONTRACT_VERSION])
+
+    def test_a_server_loaded_at_contract_27_must_reconnect(self) -> None:
+        # A v27 server would launch Codex workers without the policy hook.
+        from agent_comms import code_identity
+
+        loaded_surface = {"agent_comms/adapters/codex.py": "before-policy-hook"}
+        with mock.patch.object(code_identity, "LOADED_CODE_IDENTITY", code_identity._identity_from_surface(loaded_surface)), \
+                mock.patch.object(code_identity, "LOADED_SURFACE", loaded_surface), \
+                mock.patch.object(code_identity, "LOADED_CONTRACT_VERSION", 27):
+            with self.assertRaises(code_identity.StaleModuleError) as raised:
+                code_identity.require_fresh_module()
+        self.assertIn(f"v27 -> v{code_identity.CONTRACT_VERSION}", str(raised.exception))
 
     def test_a_server_loaded_at_contract_26_must_reconnect(self) -> None:
         # A v26 server requires the per-actor profile a v27 home lacks, and

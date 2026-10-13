@@ -12,14 +12,14 @@ from . import paths
 logger = logging.getLogger(__name__)
 
 SURFACE_ROOT = paths.REPO_ROOT.resolve()
-CONTRACT_VERSION: int = 27
+CONTRACT_VERSION: int = 28
 # Version of the consumer-visible dispatch contract. A loaded MCP process
 # refuses dispatch when its version differs from this checkout's, so advance it
 # for any change a stale process could misapply. A contract-compatible change to
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "5a806c286f2b66867f714a0d06ea49e02f581ed600bc15e79d07a118d5f9d842"
+    "191f5ad37792bbc5a868ba5d6750694a83e59efafe5a8d0e39a85dd399494557"
 )
 
 
@@ -36,6 +36,7 @@ INCLUDED_EXPLICIT = frozenset(
         "agent_comms/codex_auth_refresh.py",
         "agent_comms/codex_auth_constants.py",
         "agent_comms/codex_binding.py",
+        "agent_comms/codex_hook.py",
         "agent_comms/db.py",
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
@@ -75,6 +76,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/codex_auth_refresh.py",
         "agent_comms/codex_auth_constants.py",
         "agent_comms/codex_binding.py",
+        "agent_comms/codex_hook.py",
         "agent_comms/db.py",
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
