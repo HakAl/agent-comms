@@ -16,7 +16,6 @@ from ..policies import compile_policy, scoped_env
 from ..runtime_pins import claude_binary_path, codex_binary_path
 from ..spawn import DEFAULT_WORKER_PROMPT, claude_settings_for_policy
 
-SPAWN_GRACE_SECONDS = 2.0
 # SIGTERM -> grace -> SIGKILL window the per-dispatch supervisor enforces on the
 # native runtime child at the hard TTL.
 KILL_AFTER_SECONDS = 30.0
@@ -95,13 +94,6 @@ def _same_run_exit_evidence(observed: dict) -> dict | None:
         if isinstance(token, str) and token and secrets.compare_digest(token, current):
             return evidence
     return None
-
-
-def _configured_spawn_grace_seconds() -> float:
-    try:
-        return float(os.environ.get("AGENT_COMMS_SPAWN_GRACE_SECONDS", str(SPAWN_GRACE_SECONDS)))
-    except ValueError:
-        return SPAWN_GRACE_SECONDS
 
 
 def _json_string_body(value: str) -> str:

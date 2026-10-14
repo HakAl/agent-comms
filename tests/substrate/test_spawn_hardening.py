@@ -282,11 +282,10 @@ class SpawnHardeningTest(unittest.TestCase):
 
     def test_f2_alive_proceeds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
-            with mock.patch.dict(os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "0.05"}):
-                with _supervised_ready():
-                    adapter = TestAdapter()
-                    result = adapter.dispatch(_context(Path(temp_dir), spawn=_spawn("import time; time.sleep(1)")))
-                    _best_effort_halt(adapter, result)
+            with _supervised_ready():
+                adapter = TestAdapter()
+                result = adapter.dispatch(_context(Path(temp_dir), spawn=_spawn("import time; time.sleep(1)")))
+                _best_effort_halt(adapter, result)
 
         self.assertEqual(result.spawn_handle, "fake:alpha-fake-worker:" + result.spawn_handle.rsplit(":", 1)[1])
 
@@ -468,20 +467,6 @@ class SpawnHardeningTest(unittest.TestCase):
         worker_exit = dispatch["observed_values"]["worker_exit"]
         self.assertEqual(worker_exit["returncode"], 124)
         self.assertEqual(worker_exit["source"], "child")
-
-    def test_f2_grace_override(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
-            with mock.patch.dict(os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "0.05"}):
-                with _supervised_ready():
-                    adapter = TestAdapter()
-                    result = adapter.dispatch(_context(Path(temp_dir), spawn=_spawn("import time; time.sleep(1)")))
-                    _best_effort_halt(adapter, result)
-            with mock.patch.dict(os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "not-a-float"}):
-                with _supervised_ready():
-                    clean = TestAdapter().dispatch(_context(Path(temp_dir), spawn=_spawn("raise SystemExit(0)")))
-
-        self.assertIn("worker_log", result.observed_values)
-        self.assertIn("worker_log", clean.observed_values)
 
     def test_f3_allowlist(self) -> None:
         policy = compile_policy(WORKER_DISPATCH_POLICY)

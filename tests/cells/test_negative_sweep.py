@@ -491,7 +491,7 @@ class NegativeSweepTest(unittest.TestCase):
             self.assertNotIn(malicious, combined_env)
 
     def test_monitor_restart_reconciles_overdue_dispatch_to_dlq_and_pages_producer(self) -> None:
-        with mock.patch.dict(os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "0"}), tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             child_pid_file = root / "child.pid"
             store = Store(root / "agent-comms.sqlite")
@@ -556,7 +556,7 @@ class NegativeSweepTest(unittest.TestCase):
             self.assertEqual(page["parent_message_id"], started[0]["message_id"])
 
     def test_receiver_crash_before_close_goes_to_dlq(self) -> None:
-        with mock.patch.dict(os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "0"}), tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store = Store(root / "agent-comms.sqlite")
             seed_dispatch_actors(store, root)
@@ -583,7 +583,7 @@ class NegativeSweepTest(unittest.TestCase):
 
             reconciled = Store(root / "agent-comms.sqlite")._dispatch_by_idempotency_key_fresh("alpha-architect", "worker-crash")
             self.assertEqual(reconciled["status"], "dlq")
-            self.assertEqual(reconciled["failure_reason"], "timeout")
+            self.assertEqual(reconciled["failure_reason"], "worker_exited_before_close")
 
 
 if __name__ == "__main__":

@@ -83,7 +83,7 @@ def claude_pin_env(root: Path) -> dict[str, str]:
 
 class TtlRuntimeDeathTest(unittest.TestCase):
     def test_ttl_kills_actual_runtime_task_and_monitor_dlqs(self) -> None:
-        with mock.patch.dict(os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "0"}), tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             child_pid_file = root / "child.pid"
             store = Store(root / "agent-comms.sqlite")

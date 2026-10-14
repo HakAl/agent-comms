@@ -478,6 +478,13 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },
+        # 29 adds none; a worker that exited on its own before closing settles
+        # as worker_exited_before_close even when reconcile first sees it past
+        # its TTL, where a v28 server would label it timeout.
+        29: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
     }
 
     def test_spawn_placeholders_are_recorded_for_this_contract(self) -> None:

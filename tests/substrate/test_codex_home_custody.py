@@ -822,7 +822,7 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 28 declares and trusts the Codex worker's policy hook per run.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 28)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 29)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

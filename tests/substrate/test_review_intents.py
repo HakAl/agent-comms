@@ -1111,8 +1111,8 @@ class CodeIdentityGovernanceTest(unittest.TestCase):
         )
 
     def test_contract_version_nineteen_and_digest_declared(self) -> None:
-        self.assertEqual(code_identity.CONTRACT_VERSION, 28)
-        self.assertEqual(code_identity.current_contract_version(), 28)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 29)
+        self.assertEqual(code_identity.current_contract_version(), 29)
         self.assertEqual(
             code_identity.contract_surface_digest(),
             code_identity.CONTRACT_SURFACE_DIGEST,

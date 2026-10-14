@@ -12,14 +12,14 @@ from . import paths
 logger = logging.getLogger(__name__)
 
 SURFACE_ROOT = paths.REPO_ROOT.resolve()
-CONTRACT_VERSION: int = 28
+CONTRACT_VERSION: int = 29
 # Version of the consumer-visible dispatch contract. A loaded MCP process
 # refuses dispatch when its version differs from this checkout's, so advance it
 # for any change a stale process could misapply. A contract-compatible change to
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "7fa41ca761f4d938b134b57180121eed46734809473b71be93a45ff426cd7cea"
+    "41c0f18f6efc024bc37745eae838f2add06027d9f5610d1bdfc6051473b7b9bf"
 )
 
 

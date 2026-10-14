@@ -14,6 +14,7 @@ from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.fake import FakeAdapter
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 from agent_comms import supervisor
+from tests.isolation import cert_scratch_base
 
 ROOT = Path(__file__).resolve().parents[2]
 HUMAN_ID = "01M36YTJV9XBW95S6ZWV47C4RG"
@@ -166,9 +167,7 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertEqual(ledger["status"], "closed")
 
     def test_fake_worker_dies_before_close_goes_to_dlq_and_pages_human(self) -> None:
-        with mock.patch.dict(
-            os.environ, {"AGENT_COMMS_SPAWN_GRACE_SECONDS": "0"}
-        ), tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             root = Path(temp_dir)
             with self.isolated_real_spawn(root) as (_registry, control_root):
                 db_path = root / "agent-comms.sqlite"
@@ -211,7 +210,11 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertIn("producer_paged", [action["status"] for action in observed_actions])
                 self.assertEqual(len(store.list_inbox("alpha-architect")), 1)
 
-    def test_fake_runtime_exit_124_within_grace_times_out_to_dlq_and_pages_producer(self) -> None:
+    def test_worker_exiting_124_at_once_is_dlq_before_close_and_pages_producer(self) -> None:
+        """Exit 124 from the worker itself is not a timeout (only the
+        supervisor's own deadline kill is). The worker exits at once, so its
+        exit may land before or after the start commit; either way the
+        dispatch ends ``worker_exited_before_close``."""
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
             root = Path(temp_dir)
             with self.isolated_real_spawn(root) as (_registry, control_root):
@@ -249,7 +252,7 @@ class FakeAdapterTest(unittest.TestCase):
                 )
                 adapter = FakeAdapter()
                 started = store.start_queued_dispatches(lambda _runtime: adapter, ttl_seconds=1)
-                self.assertEqual(started[0]["status"], "in_flight", started[0])
+                self.assertIn(started[0]["status"], ("in_flight", "dlq"), started[0])
                 self.assert_test_control_root(started[0], control_root)
 
                 time.sleep(1.1)
@@ -257,8 +260,128 @@ class FakeAdapterTest(unittest.TestCase):
                 ledger = store._dispatch_by_idempotency_key_fresh("alpha-architect", "fake-exit-124")
 
                 self.assertEqual(ledger["status"], "dlq")
-                self.assertEqual(ledger["failure_reason"], "timeout")
-                self.assertIn("dlq", [action["status"] for action in actions])
+                self.assertEqual(ledger["failure_reason"], "worker_exited_before_close")
+                # The dlq is a reconcile action only when the start commit won.
+                self.assertIn("producer_paged", [action["status"] for action in actions])
+                self.assertEqual(len(store.list_inbox("alpha-architect")), 1)
+
+    def test_worker_that_exits_before_close_is_not_a_timeout_when_reconciled_after_its_ttl(self) -> None:
+        """A worker that exits on its own without closing is
+        ``worker_exited_before_close`` whenever reconcile first sees it. The
+        worker waits for a gate the test opens once the dispatch is in flight,
+        so its exit always lands after the start commit, then reconcile runs
+        past the TTL: the order that used to report ``timeout``."""
+        with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
+            root = Path(temp_dir)
+            gate = root / "exit-now"
+            with self.isolated_real_spawn(root) as (_registry, control_root):
+                db_path = root / "agent-comms.sqlite"
+                store = Store(db_path)
+                store.register_actor(HUMAN_ID, "human", "alice")
+                store.register_agent_actor(
+                    "alpha-architect", "alpha", "architect",
+                    str(root / "alpha-architect"), [],
+                )
+                store.register_agent_actor(
+                    "alpha-fake-worker",
+                    "alpha",
+                    "worker",
+                    str(root / "alpha-fake-worker"),
+                    [],
+                    owner="alpha-architect",
+                    runtime="fake",
+                    spawn={
+                        "command": sys.executable,
+                        "args": [
+                            "-c",
+                            (
+                                "import os, time\n"
+                                f"while not os.path.exists({str(gate)!r}):\n"
+                                "    time.sleep(0.01)\n"
+                                "raise SystemExit(124)"
+                            ),
+                            f"WakePolicy={WORKER_DISPATCH_POLICY}",
+                        ],
+                    },
+                )
+                store.dispatch_agent(
+                    "alpha-architect", "alpha-fake-worker", "fake-exit-after-start",
+                    "Ping", "Please exit without closing.", [],
+                )
+                adapter = FakeAdapter()
+                started = store.start_queued_dispatches(lambda _runtime: adapter, ttl_seconds=1)
+                self.assertEqual(started[0]["status"], "in_flight", started[0])
+                self.assert_test_control_root(started[0], control_root)
+                gate.touch()
+
+                def child_exit() -> Optional[dict]:
+                    row = store._dispatch_by_idempotency_key_fresh("alpha-architect", "fake-exit-after-start")
+                    evidence = row["observed_values"].get("worker_exit")
+                    if isinstance(evidence, dict) and evidence.get("source") == "child":
+                        return evidence
+                    return None
+
+                self.assertEqual(wait_until(child_exit)["returncode"], 124)
+                time.sleep(1.1)
+                store.reconcile_dispatches(lambda _runtime: adapter, human_actor_id=HUMAN_ID)
+                ledger = store._dispatch_by_idempotency_key_fresh("alpha-architect", "fake-exit-after-start")
+
+                self.assertEqual(ledger["status"], "dlq")
+                self.assertEqual(ledger["failure_reason"], "worker_exited_before_close")
+
+    def test_worker_exit_recorded_before_the_start_commit_is_dlq_before_close(self) -> None:
+        """The other order: the start commit already sees the worker's exit.
+        The adapter waits after spawning until the exit is recorded."""
+        with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
+            root = Path(temp_dir)
+            with self.isolated_real_spawn(root) as (_registry, control_root):
+                db_path = root / "agent-comms.sqlite"
+                store = Store(db_path)
+                store.register_actor(HUMAN_ID, "human", "alice")
+                store.register_agent_actor(
+                    "alpha-architect", "alpha", "architect",
+                    str(root / "alpha-architect"), [],
+                )
+                store.register_agent_actor(
+                    "alpha-fake-worker",
+                    "alpha",
+                    "worker",
+                    str(root / "alpha-fake-worker"),
+                    [],
+                    owner="alpha-architect",
+                    runtime="fake",
+                    spawn={
+                        "command": sys.executable,
+                        "args": ["-c", "raise SystemExit(124)", f"WakePolicy={WORKER_DISPATCH_POLICY}"],
+                    },
+                )
+                store.dispatch_agent(
+                    "alpha-architect", "alpha-fake-worker", "fake-exit-before-commit",
+                    "Ping", "Please exit without closing.", [],
+                )
+
+                def exit_recorded() -> bool:
+                    row = store._dispatch_by_idempotency_key_fresh("alpha-architect", "fake-exit-before-commit")
+                    evidence = row["observed_values"].get("worker_exit")
+                    return isinstance(evidence, dict) and evidence.get("source") == "child"
+
+                class ExitBeforeCommit(FakeAdapter):
+                    def dispatch(self, context):  # type: ignore[no-untyped-def]
+                        start = super().dispatch(context)
+                        wait_until(exit_recorded)
+                        return start
+
+                adapter = ExitBeforeCommit()
+                started = store.start_queued_dispatches(lambda _runtime: adapter, ttl_seconds=1)
+                self.assertEqual(started[0]["status"], "dlq", started[0])
+                self.assertEqual(started[0]["failure_reason"], "worker_exited_before_close")
+                self.assert_test_control_root(started[0], control_root)
+
+                time.sleep(1.1)
+                actions = store.reconcile_dispatches(lambda _runtime: adapter, human_actor_id=HUMAN_ID)
+                ledger = store._dispatch_by_idempotency_key_fresh("alpha-architect", "fake-exit-before-commit")
+
+                self.assertEqual(ledger["failure_reason"], "worker_exited_before_close")
                 self.assertIn("producer_paged", [action["status"] for action in actions])
                 self.assertEqual(len(store.list_inbox("alpha-architect")), 1)
 
