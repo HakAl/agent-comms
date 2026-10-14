@@ -1,4 +1,4 @@
-"""Permanent refresh failures, as printed by Codex (verified against rust-v0.153.4).
+"""Permanent refresh failures, as printed by Codex (verified against codex-cli 0.160.0, the pinned version).
 
 These are Codex's own user-facing error messages. They are matched verbatim to
 tell a login that must be redone apart from a transient refresh failure.

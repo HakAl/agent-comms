@@ -190,8 +190,38 @@ a call it must deny; either failing refuses the dispatch. Stored spawn args
 may not set `hooks` with `-c` or pass `--dangerously-bypass-hook-trust`. The
 hook confines `apply_patch` to the project, taking relative paths from the
 turn's working directory as Codex does, and denies a patch that selects
-another environment. Codex runs the tool anyway when a hook
-crashes or times out mid-run, and it does not run PreToolUse for input
+another environment. Like Claude Code, Codex runs the tool anyway when a
+hook crashes or times out mid-run, and it does not run PreToolUse for input
 written to a command that is already running (`write_stdin`), so the
 sandbox and the stripped credentials stay the boundary for file writes and
 network.
+
+## Claude and Codex differences
+
+Each remaining difference in how agent-comms wires the two runtimes, and
+why. A Codex limit names the Codex version or issue it was found on; the
+pinned versions are in `agent_comms/runtime_pins.json`. Our choice can
+change without waiting for Codex. One row is neither: the runtimes simply
+have different file tools.
+
+| Area | Claude Code | Codex | Why |
+|---|---|---|---|
+| Architect seat | `claude mcp add --scope local`, an entry per project directory in `~/.claude.json` | `[mcp_servers.agent-comms]` in `<project>/.codex/config.toml`, written by `setup` | Codex limit: `codex mcp add` has no scope option and writes the user config (0.160.0). Our choice: never edit `~/.codex/config.toml`. |
+| Where the seat applies | the directory it was added in | a trusted project only; in git, any directory up to the git root; outside git, the start directory | Codex limit, observed with 0.157.0 ([Codex CLI](#codex-cli)). |
+| Same server name in several config layers | one scope's entry wins whole | fields merge across layers, so `setup` pins every field | Codex limit, observed with 0.157.0. |
+| `doctor` | checks the recorded local-scope entry | also asks Codex for the entry it resolves (`codex mcp get --json`) | Our choice, following from the row above: Claude's entry is the binding as written, and `claude mcp get` has no JSON output. |
+| `agent-comms-seat` launcher | refuses to launch when the directory's seat binds another actor | no check | Our choice: not built for Codex; `doctor` covers it. |
+| Worker MCP binding | `--strict-mcp-config --mcp-config`: only that server loads | `-c mcp_servers.agent-comms.*` on every run; other configured servers can still load; the effective binding is checked before the run | Codex limit: no option to load only the servers given (0.160.0). |
+| Worker tool approval | `--permission-mode dontAsk` and an allowlist in `--settings` | `--ask-for-approval never`, and `default_tools_approval_mode = "approve"` for the agent-comms server | Codex limit: headless `codex exec` cancels an MCP tool call that needs approval (recorded before the Codex pin; not rechecked on 0.160.0). |
+| Worker home and login | your Claude configuration and login | a home per worker holding trust only; `auth.json` links to one shared login, refreshed by the monitor after it expires | Codex limit: ChatGPT refresh tokens are single-use, so processes refreshing one login concurrently log each other out ([openai/codex-plugin-cc#789](https://github.com/openai/codex-plugin-cc/issues/789)). |
+| Policy hook | declared in `--settings` | declared and trusted by hash with `-c` on every run; listed and run once before the run | Codex limit: a hook runs only once trusted (0.160.0). |
+| Hook output on allow | the allow decision | nothing | Codex limit: Codex treats a bare allow as a failed hook (0.160.0). |
+| Calls the hook sees | every tool call | every tool call except input to a running command (`write_stdin`) | Codex limit (0.160.0). |
+| File tools the hook confines | `Read`, `Edit`, `MultiEdit`, `Write` paths | `apply_patch` headers, relative to the turn's directory | Neither: each runtime has its own file tools, and the hook confines those. |
+| Reads outside the project | the sandbox denies named credential paths (`Glob` and `Grep` are not confined) | not confined: the `workspace-write` sandbox reads outside the workspace | Codex limit, observed with 0.160.0 on macOS. |
+| Pinned binary certification | by hand (see `CONTRIBUTING.md`) | automated | Our choice: not automated for Claude yet. |
+
+Shared by both: a PreToolUse hook that cannot start, crashes or times out
+lets the tool run. Our hook denies on any error it catches itself, and a
+Codex dispatch runs it once before the run; past that, the sandbox and the
+stripped credentials are the boundary.
