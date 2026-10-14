@@ -9,6 +9,7 @@ from . import (
     onboard_worker,
     register,
     rerender_spawn,
+    custody,
     agents,
     actors,
     admin,
@@ -27,6 +28,7 @@ from . import (
     version,
     doctor,
     setup,
+    bind_seat,
     demo,
 )
 
@@ -39,6 +41,7 @@ COMMAND_MODULES = [
     onboard_worker,
     register,
     rerender_spawn,
+    custody,
     agents,
     actors,
     admin,
@@ -57,6 +60,7 @@ COMMAND_MODULES = [
     version,
     doctor,
     setup,
+    bind_seat,
     demo,
 ]
 

@@ -111,11 +111,11 @@ def approval_payload(
 
 
 def approval_key_path(args: argparse.Namespace) -> Path:
-    raw = (
-        args.key
-        or os.environ.get("AGENT_COMMS_APPROVAL_KEY")
-        or "~/.agent-comms/approval-key"
-    )
+    raw = args.key or os.environ.get("AGENT_COMMS_APPROVAL_KEY")
+    if not raw:
+        from ..paths import runtime_root
+
+        return runtime_root() / "approval-key"
     return Path(raw).expanduser()
 
 

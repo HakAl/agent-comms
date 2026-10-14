@@ -30,7 +30,7 @@ from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.adapters.codex import CodexAdapter
 from agent_comms.cli import bootstrap_store, expand_path_value
 from agent_comms.onboarding import onboard_worker
-from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION, compile_policy
+from agent_comms.policies import compile_policy
 from agent_comms.schema import ValidationError
 from agent_comms.spawn import claude_settings_for_policy
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
@@ -214,70 +214,58 @@ class CodexProvisioningTest(unittest.TestCase):
             paths.REPO_ROOT / "config" / "codex-home" / "auth.json",
         )
 
-    def test_generated_base_config_derives_mcp_command_and_takes_root(self) -> None:
-        text = provisioning.render_codex_base_config("alpha-codex-worker", "/srv/ds")
-        self.assertIn(f'command = "{paths.mcp_command()}"', text)
-        self.assertIn('args = ["--actor-id", "alpha-codex-worker"]', text)
-        self.assertIn('AGENT_COMMS_PROJECT_ROOT = "/srv/ds"', text)
-        self.assertIn('[projects."/srv/ds"]', text)
-        self.assertIn('default_tools_approval_mode = "approve"', text)
+    def test_generated_base_config_trusts_the_root_and_binds_no_server(self) -> None:
+        text = provisioning.render_codex_base_config("/srv/ds")
+        config = tomllib.loads(text)
+        self.assertEqual(config["projects"]["/srv/ds"], {"trust_level": "trusted"})
+        # The server is bound per run with -c (slice 3b), never here.
+        self.assertNotIn("mcp_servers", config)
         # No unresolved template placeholder leaks into the generated config.
         for token in ("{mcp_command}", "{actor_id}", "{project_root}", "{codex_home}"):
             self.assertNotIn(token, text)
-        config = tomllib.loads(text)
-        self.assertEqual(
-            config["mcp_servers"]["agent-comms"]["env"]["WAKE_POLICY_VERSION"],
-            WORKER_DISPATCH_POLICY_VERSION,
-        )
 
-    def test_cell_harness_codex_config_uses_worker_policy_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            cert_home = root / "cert-home"
-            cert_home.mkdir()
-            (cert_home / "auth.json").write_text("{}")
-            with mock.patch.object(
-                dispatch_cell_harness,
-                "codex_cert_home",
-                return_value=cert_home,
-            ):
-                harness = dispatch_cell_harness.make_codex_harness(root / "cell")
-                config = tomllib.loads(
-                    (root / "cell" / "codex-home" / "config.toml").read_text()
-                )
-                harness.close()
+    def test_cell_harness_codex_config_holds_trust_and_cert_exclusions(self) -> None:
+        for exclude in (False, True):
+            with self.subTest(exclude_temp_writable_roots=exclude), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                cert_home = root / "cert-home"
+                cert_home.mkdir()
+                (cert_home / "auth.json").write_text("{}")
+                with mock.patch.object(
+                    dispatch_cell_harness,
+                    "codex_cert_home",
+                    return_value=cert_home,
+                ):
+                    harness = dispatch_cell_harness.make_codex_harness(
+                        root / "cell", exclude_temp_writable_roots=exclude
+                    )
+                    home = root / "cell" / "codex-home"
+                    config = tomllib.loads((home / "config.toml").read_text())
+                    names = sorted(path.name for path in home.glob("*.toml"))
+                    harness.close()
+                self.assertNotIn("mcp_servers", config)
+                self.assertEqual(names, ["config.toml"])
+                project = str(root / "cell" / dispatch_cell_harness.CODEX_WORKER_ID)
+                self.assertEqual(config["projects"][project], {"trust_level": "trusted"})
+                if exclude:
+                    self.assertEqual(
+                        config["sandbox_workspace_write"],
+                        {"exclude_slash_tmp": True, "exclude_tmpdir_env_var": True},
+                    )
+                else:
+                    self.assertNotIn("sandbox_workspace_write", config)
 
-        self.assertEqual(
-            config["mcp_servers"]["agent-comms"]["env"]["WAKE_POLICY_VERSION"],
-            WORKER_DISPATCH_POLICY_VERSION,
-        )
-
-    def test_write_codex_home_materializes_both_files(self) -> None:
+    def test_write_codex_home_materializes_the_base_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             home = Path(temp_dir) / "codex-home"
             written = provisioning.write_codex_home(
                 home, "alpha-codex-worker", "/srv/ds", auth_source=None
             )
-            self.assertEqual(
-                {p.name for p in written},
-                {"config.toml", "alpha-codex-worker.config.toml"},
-            )
-            profile = (home / "alpha-codex-worker.config.toml").read_text()
-            self.assertIn('sandbox_mode = "workspace-write"', profile)
-            base = (home / "config.toml").read_text()
-            self.assertIn('args = ["--actor-id", "alpha-codex-worker"]', base)
-            self.assertIn('AGENT_COMMS_ACTOR_ID = "alpha-codex-worker"', base)
-
-    def test_codex_base_config_carries_the_ledger_only_when_given(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            server = tomllib.loads(provisioning.render_codex_base_config("actor-a", "/srv/a"))["mcp_servers"]["agent-comms"]
-            self.assertEqual(server["args"], ["--actor-id", "actor-a"])
-            server = tomllib.loads(provisioning.render_codex_base_config("actor-a", "/srv/a", "/ledgers/team a.sqlite"))["mcp_servers"]["agent-comms"]
-            self.assertEqual(server["args"], ["--actor-id", "actor-a", "--db", "/ledgers/team a.sqlite"])
-            home = Path(temp_dir) / "home"
-            provisioning.write_codex_home(home, "actor-a", "/srv/a", db_path="/ledgers/x.sqlite")
-            server = tomllib.loads((home / "config.toml").read_text())["mcp_servers"]["agent-comms"]
-            self.assertEqual(server["args"][-2:], ["--db", "/ledgers/x.sqlite"])
+            self.assertEqual([p.name for p in written], ["config.toml"])
+            self.assertFalse((home / "alpha-codex-worker.config.toml").exists())
+            base = tomllib.loads((home / "config.toml").read_text())
+            self.assertIn("/srv/ds", base["projects"])
+            self.assertNotIn("mcp_servers", base)
 
     def test_write_codex_home_links_an_absent_source_only_on_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -321,15 +309,11 @@ class CodexProvisioningTest(unittest.TestCase):
             provisioning.write_codex_home(home_b, "actor-b", "/srv/b", auth_source=None)
 
             base_a = (home_a / "config.toml").read_text()
-            self.assertIn('args = ["--actor-id", "actor-a"]', base_a)
-            self.assertNotIn("actor-b", base_a)
+            self.assertIn('[projects."/srv/a"]', base_a)
+            self.assertNotIn("/srv/b", base_a)
             base_b = (home_b / "config.toml").read_text()
-            self.assertIn('args = ["--actor-id", "actor-b"]', base_b)
-            self.assertNotIn("actor-a", base_b)
-
-            profile_a = (home_a / "actor-a.config.toml").read_text()
-            self.assertIn('[projects."/srv/a"]', profile_a)
-            self.assertNotIn("/srv/b", profile_a)
+            self.assertIn('[projects."/srv/b"]', base_b)
+            self.assertNotIn("/srv/a", base_b)
 
     def test_write_codex_home_symlinks_auth_when_source_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -362,7 +346,7 @@ class CodexProvisioningTest(unittest.TestCase):
                 provisioning.write_codex_home(home, "actor-y", "/srv/y", auth_source=auth_source)
 
             self.assertTrue((home / "config.toml").is_file())
-            self.assertTrue((home / "actor-y.config.toml").is_file())
+            self.assertFalse((home / "actor-y.config.toml").exists())
             self.assertFalse((home / "auth.json").exists())
             self.assertIn(str(auth_source), stderr.getvalue())
             self.assertIn("warning", stderr.getvalue().lower())

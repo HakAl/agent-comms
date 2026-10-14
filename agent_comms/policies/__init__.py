@@ -28,6 +28,15 @@ CREDENTIAL_READ_DENY = (
 )
 
 
+def credential_read_deny() -> tuple[str, ...]:
+    """The worker sandbox's denied reads: the fixed credential paths plus
+    this install's runtime root when ``AGENT_COMMS_HOME`` moves it."""
+    from ..paths import home_override
+
+    home = home_override()
+    return CREDENTIAL_READ_DENY if home is None else (*CREDENTIAL_READ_DENY, str(home))
+
+
 @dataclass(frozen=True)
 class ClaudeSandbox:
     enabled: bool
@@ -178,7 +187,7 @@ def compile_policy(name: str) -> CompiledPolicy:
             allow_unsandboxed_commands=False,
             allow_write=(".",),
             allowed_domains=(),
-            deny_read=CREDENTIAL_READ_DENY,
+            deny_read=credential_read_deny(),
             allow_read=(),
         ),
     )

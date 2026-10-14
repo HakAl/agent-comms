@@ -17,18 +17,22 @@ from typing import Callable, Iterator
 
 from agent_comms.codex_auth_refresh import access_token_remaining_seconds
 from agent_comms.codex_auth_refresh import spawn_freshness_margin_seconds
-from agent_comms import paths, supervisor
+from agent_comms import supervisor
 from agent_comms.adapters import DispatchContext, DispatchStart, RuntimeAdapter
 from agent_comms.adapters._base import AdapterStatus
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.adapters.codex import CodexAdapter
-from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
 from agent_comms.runtime_pins import (
     CLAUDE_PINNED_SHA256_ENV,
     CLAUDE_VERSIONS_DIR_ENV,
+    CODEX_PINNED_SHA256_ENV,
+    CODEX_VERSIONS_DIR_ENV,
     PlatformNotCertified,
+    bundle_sha256,
     claude_binary_path,
     claude_pin,
+    codex_binary_path,
+    codex_pin,
     custody_binary_digest_matches,
 )
 from agent_comms.spawn import render_spawn
@@ -98,8 +102,18 @@ def provision_worker_git_root(project_root: Path) -> None:
     )
 
 
+CODEX_CERT_HOME_TEST_ENV = "AGENT_COMMS_TEST_CODEX_CERT_HOME"
+
+
 def codex_cert_home() -> Path:
-    return Path(os.environ.get("AGENT_COMMS_CODEX_CERT_HOME") or "~/.agent-comms/codex-cert-home").expanduser()
+    """The dedicated Codex login the cells copy auth.json from and back to.
+
+    ``AGENT_COMMS_TEST_CODEX_CERT_HOME`` comes first because it survives the
+    isolation strip (cert mode); the older ``AGENT_COMMS_CODEX_CERT_HOME``
+    only reaches a live-home run.
+    """
+    configured = os.environ.get(CODEX_CERT_HOME_TEST_ENV) or os.environ.get("AGENT_COMMS_CODEX_CERT_HOME")
+    return Path(configured or "~/.agent-comms/codex-cert-home").expanduser()
 
 
 def codex_cert_auth_copy_in(cert_home: Path, temp_home: Path) -> str:
@@ -213,7 +227,19 @@ def fake_worker_args(
     return args
 
 
-def long_running_worker_spawn(pid_file: Path, *, claude_versions_dir: Path | None = None) -> dict:
+def long_running_worker_spawn(
+    pid_file: Path, *, claude_versions_dir: Path | None = None, codex_stub_dir: Path | None = None
+) -> dict:
+    """A spawn block whose worker records its pid and sleeps, for TTL cells.
+
+    ``codex_stub_dir`` becomes a custody directory whose bundle's
+    ``bin/codex`` is a stub (pin it with :func:`codex_pin_env_for_versions_dir`):
+    every Codex run carries the per-run ``-c`` binding and is preflighted
+    with ``codex ... mcp get`` and ``codex ... app-server`` (the policy
+    hook's trust), so the stub hands those invocations to the real custody
+    Codex (the preflight stays real) and otherwise sleeps, ignoring the
+    options.
+    """
     if claude_versions_dir is not None:
         binary = claude_versions_dir / claude_pin().version
         binary.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +255,23 @@ def long_running_worker_spawn(pid_file: Path, *, claude_versions_dir: Path | Non
         binary.chmod(0o755)
         return {"command": "{claude_binary}", "args": ["{worker_prompt}"]}
 
+    if codex_stub_dir is not None:
+        real_codex = str(codex_binary_path())
+        if not Path(real_codex).is_file():
+            raise RuntimeError(f"no codex custody copy at {real_codex} for the long-running Codex stub")
+        stub = codex_stub_dir / codex_pin().version / "bin" / "codex"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            f'  case "$arg" in mcp|app-server) exec {shlex.quote(real_codex)} "$@";; esac\n'
+            "done\n"
+            "printf '%s' \"$$\" > \"$AGENT_COMMS_TIMEOUT_CHILD_PID_FILE\"\n"
+            "exec sleep 60\n"
+        )
+        stub.chmod(0o755)
+        return {"command": "{codex_binary}", "args": ["exec", "{worker_prompt}"]}
+
     script = (
         "import os, pathlib, time; "
         "pathlib.Path(os.environ['AGENT_COMMS_TIMEOUT_CHILD_PID_FILE']).write_text(str(os.getpid())); "
@@ -242,6 +285,13 @@ def claude_pin_env_for_versions_dir(versions_dir: Path) -> dict[str, str]:
     return {
         CLAUDE_VERSIONS_DIR_ENV: str(versions_dir),
         CLAUDE_PINNED_SHA256_ENV: hashlib.sha256(binary.read_bytes()).hexdigest(),
+    }
+
+
+def codex_pin_env_for_versions_dir(versions_dir: Path) -> dict[str, str]:
+    return {
+        CODEX_VERSIONS_DIR_ENV: str(versions_dir),
+        CODEX_PINNED_SHA256_ENV: bundle_sha256(versions_dir / codex_pin().version),
     }
 
 
@@ -759,15 +809,21 @@ def make_claude_harness(
 
 
 def codex_cell_preflight() -> tuple[bool, str]:
-    if shutil.which("codex") is None:
-        return False, "codex CLI unavailable"
+    # Workers run the custody copy of the pinned Codex, so the cells do too:
+    # certify.py fills a cert custody copy, a live run uses the real one.
+    try:
+        codex = codex_binary_path()
+    except PlatformNotCertified as exc:
+        return False, str(exc)
+    if not codex.is_file():
+        return False, f"no codex custody copy at {codex}; run agent-comms custody codex"
     codex_home = codex_cert_home()
     recovery = f"; run CODEX_HOME={codex_home} codex login"
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     try:
         result = subprocess.run(
-            ["codex", "login", "status"],
+            [str(codex), "login", "status"],
             env=env,
             text=True,
             capture_output=True,
@@ -790,36 +846,37 @@ def make_codex_harness(
     root: Path,
     child_pid_file: Path | None = None,
     spawn: dict | None = None,
+    exclude_temp_writable_roots: bool = False,
 ) -> DispatchCellHarness:
+    """A Codex cell harness on the cert login.
+
+    ``exclude_temp_writable_roots`` drops the system temp directories from
+    the worker's workspace-write roots (Codex makes them writable by
+    default), for a probe whose target lives in the temp tree: cert mode's
+    scratch home.
+    """
     codex_home = root / "codex-home"
     codex_home.mkdir(parents=True)
     cert_home = codex_cert_home()
     cert_snapshot = codex_cert_auth_copy_in(cert_home, codex_home)
+    # Trust and, in cert mode, the temp exclusions live in the base config:
+    # the spawn loads no profile, and the adapter binds agent-comms with -c.
     (codex_home / "config.toml").write_text(
         "\n".join(
             [
-                "[mcp_servers.agent-comms]",
-                f'command = "{paths.mcp_command()}"',
-                f'args = ["--db", "{root / "agent-comms.sqlite"}", "--actor-id", "{CODEX_WORKER_ID}"]',
-                'default_tools_approval_mode = "approve"',
-                "",
-                "[mcp_servers.agent-comms.env]",
-                'WAKE_POLICY = "worker_dispatch_readwrite_bounded"',
-                f'WAKE_POLICY_VERSION = "{WORKER_DISPATCH_POLICY_VERSION}"',
-                f'AGENT_COMMS_ACTOR_ID = "{CODEX_WORKER_ID}"',
-                f'AGENT_COMMS_PROJECT_ROOT = "{root / CODEX_WORKER_ID}"',
-                "",
-            ]
-        )
-    )
-    (codex_home / f"{CODEX_WORKER_ID}.config.toml").write_text(
-        "\n".join(
-            [
-                'sandbox_mode = "workspace-write"',
-                'approval_policy = "never"',
                 f'[projects."{root / CODEX_WORKER_ID}"]',
                 'trust_level = "trusted"',
                 "",
+                *(
+                    [
+                        "[sandbox_workspace_write]",
+                        "exclude_slash_tmp = true",
+                        "exclude_tmpdir_env_var = true",
+                        "",
+                    ]
+                    if exclude_temp_writable_roots
+                    else []
+                ),
             ]
         )
     )
@@ -873,7 +930,7 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
 
     A bounded runtime worker (Codex or Claude) must be OS-sandbox-denied from
     creating, connecting to, or writing anything under the FIXED protected
-    control root (``supervisor._DEFAULT_CONTROL_ROOT`` ==
+    control root (``supervisor.default_control_root()`` ==
     ``~/.agent-comms/run/s``). That is the real capability boundary.
 
     ``protected_root`` defaults to that fixed control root, which the pure-shape
@@ -881,7 +938,7 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
     (only the fixed root proves the real OS denial). A runtime-free caller that
     must not touch live production state passes an explicit TEST-OWNED root
     instead; an ambient ``AGENT_COMMS_SUPERVISOR_ROOT`` would not suffice because
-    this helper consumes ``_DEFAULT_CONTROL_ROOT`` directly.
+    this helper consumes ``default_control_root()`` directly.
 
     The ``run_token`` the supervisor persists into observed values is a same-run
     correlation / authentication nonce, NOT a same-uid secret and NOT cross-user
@@ -901,7 +958,7 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
     the in-cwd sentinel the script writes (asserted deterministically, not from
     the prompt echo), and the protected paths checked for disk mutations.
     """
-    protected_root = protected_root if protected_root is not None else supervisor._DEFAULT_CONTROL_ROOT
+    protected_root = protected_root if protected_root is not None else supervisor.default_control_root()
     probe_dir = protected_root / SUPERVISOR_PROBE_RUN_DIR_NAME
     probe_socket = probe_dir / supervisor._SOCKET_NAME
     listener_dir = protected_root / SUPERVISOR_PROBE_LISTENER_DIR_NAME
@@ -943,7 +1000,7 @@ def supervisor_root_negative_fixture(worker_cwd: Path, protected_root: Path | No
     """Architect-owned LIVE AF_UNIX listener under the protected root.
 
     Builds a real, connectable listener socket under ``protected_root`` (default
-    ``supervisor._DEFAULT_CONTROL_ROOT``) BEFORE the bounded worker probes it, so
+    ``supervisor.default_control_root()``) BEFORE the bounded worker probes it, so
     the worker's CONNECT probe targets an EXISTING live socket. From the
     architect (unsandboxed) context the connect succeeds; the OS sandbox denies
     it for a bounded runtime worker -- that denial is the capability boundary.

@@ -30,7 +30,13 @@ from agent_comms.reviewing.contracts import (
 from agent_comms.reviewing.briefs import brief_sha256, dod_drift
 
 
-REVIEW_ROOT = paths.review_root()
+# None means ``paths.review_root()``, resolved at call time so
+# AGENT_COMMS_HOME applies; tests patch in a directory.
+REVIEW_ROOT: Path | None = None
+
+
+def current_review_root() -> Path:
+    return REVIEW_ROOT or paths.review_root()
 
 
 def utc_now() -> str:
@@ -40,7 +46,7 @@ def utc_now() -> str:
 def review_paths(dispatch_id: str) -> Paths:
     if not dispatch_id or "/" in dispatch_id or dispatch_id in {".", ".."}:
         raise ReviewError("invalid dispatch_id")
-    root = REVIEW_ROOT
+    root = current_review_root()
     return Paths(
         root / f"{dispatch_id}.json",
         root / f"{dispatch_id}.lock",

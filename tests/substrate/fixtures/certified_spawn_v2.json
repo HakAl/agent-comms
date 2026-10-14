@@ -7,7 +7,7 @@
       "stream-json",
       "--strict-mcp-config",
       "--mcp-config",
-      "{{\"mcpServers\":{{\"agent-comms\":{{\"alwaysLoad\":true,\"args\":[\"--db\",\"{db_path}\",\"--actor-id\",\"{actor_id}\"],\"command\":\"{mcp_command}\",\"env\":{{\"AGENT_COMMS_ACTOR_ID\":\"{actor_id}\",\"AGENT_COMMS_PROJECT_ROOT\":\"{project_root}\",\"WAKE_POLICY\":\"worker_dispatch_readwrite_bounded\",\"WAKE_POLICY_VERSION\":\"v2\"}}}}}}}}",
+      "{{\"mcpServers\":{{\"agent-comms\":{{\"alwaysLoad\":true,\"args\":[\"--db\",\"{db_path}\",\"--actor-id\",\"{actor_id}\"],\"command\":\"{mcp_command}\",\"env\":{{\"AGENT_COMMS_ACTOR_ID\":\"{actor_id}\",\"AGENT_COMMS_HOME\":\"{agent_comms_home}\",\"AGENT_COMMS_PROJECT_ROOT\":\"{project_root}\",\"WAKE_POLICY\":\"worker_dispatch_readwrite_bounded\",\"WAKE_POLICY_VERSION\":\"v2\"}}}}}}}}",
       "--settings",
       "{claude_settings}",
       "--permission-mode",
@@ -29,7 +29,7 @@
       "workspace-write",
       "{worker_prompt}"
     ],
-    "command": "codex",
+    "command": "{codex_binary}",
     "env": {
       "CODEX_HOME": "{codex_home}"
     }

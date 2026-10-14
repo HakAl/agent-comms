@@ -115,7 +115,7 @@ class ResultSchemaTest(unittest.TestCase):
         # binding and the reply-snapshot table are additive, and prior readers
         # refuse a payload-capable ledger; it stays at 3 under contract 21
         # because no on-disk ledger change is involved.
-        self.assertEqual(code_identity.CONTRACT_VERSION, 23)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 29)
         self.assertEqual(policies.WORKER_DISPATCH_POLICY_VERSION, "v2")
         self.assertEqual(review.SCHEMA_VERSION, 2)
         self.assertEqual(mailbox.CLOSEOUT_PROTOCOL_VERSION, 1)
@@ -428,6 +428,7 @@ class ResultSchemaTest(unittest.TestCase):
                 db_path="/tmp/db",
                 actor_id="worker",
                 mcp_command="/tmp/mcp",
+                agent_comms_home="/home/.agent-comms",
                 project_root="/tmp/project",
             )
         )
@@ -436,24 +437,24 @@ class ResultSchemaTest(unittest.TestCase):
             policies.WORKER_DISPATCH_POLICY_VERSION,
         )
 
-        from agent_comms import provisioning
-        import tomllib
+        # A Codex worker gets the version through its per-run -c binding
+        # (slice 3b): its home's config holds no server.
+        from agent_comms.adapters import DispatchContext
+        from agent_comms.adapters.codex import CodexAdapter
         from tests import dispatch_cell_harness
 
-        provisioned = tomllib.loads(
-            provisioning.render_codex_base_config("worker", "/tmp/project")
+        binding = CodexAdapter().mcp_binding(
+            DispatchContext(
+                dispatch={"dispatch_id": "d", "policy_name": policies.WORKER_DISPATCH_POLICY},
+                recipient={"id": "worker", "runtime": "codex", "project_root": "/srv/project"},
+                message={"id": "m"}, ttl_seconds=30, expected_close_by="", db_path="/srv/ledger.sqlite",
+            )
         )
-        self.assertEqual(
-            provisioned["mcp_servers"]["agent-comms"]["env"]["WAKE_POLICY_VERSION"],
-            policies.WORKER_DISPATCH_POLICY_VERSION,
-        )
-        self.assertIn(
-            'f\'WAKE_POLICY_VERSION = "{WORKER_DISPATCH_POLICY_VERSION}"\'',
-            Path(dispatch_cell_harness.__file__).read_text(),
-        )
+        self.assertEqual(binding.env["WAKE_POLICY_VERSION"], policies.WORKER_DISPATCH_POLICY_VERSION)
         for path in (
             package_root / "spawn.py",
             package_root / "provisioning.py",
+            package_root / "adapters" / "codex.py",
             Path(dispatch_cell_harness.__file__),
         ):
             self.assertNotIn(

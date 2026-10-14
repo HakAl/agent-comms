@@ -2,10 +2,12 @@
 
 Setup takes a project root, the runtimes the user has and a team name. It
 writes the actor registry (``~/.agent-comms/actors.json``), registers the
-team in the ledger, provisions what the codex workers need, and binds the
-architect seat in the user's own MCP clients by running ``claude mcp add``
-and ``codex mcp add`` (the client CLIs are the supported writers of their
-config files; see ``mcp_clients``). No file is edited by hand.
+team in the ledger, provisions what the codex workers need (their homes and,
+best effort, the custody copy of the pinned Codex they run), and binds the
+architect seat in the user's own MCP clients through ``mcp_clients``: Claude
+through ``claude mcp add``, Codex in the project's ``.codex/config.toml``.
+``agent-comms bind-seat`` binds one seat of an existing team the same way,
+and is the fix setup and doctor print for any seat. No file is edited by hand.
 
 Nothing is written before the read-only preflight passes: a client seat
 already bound to another actor (or to another ledger) is refused with the
@@ -13,8 +15,8 @@ holder and ``--replace-seat``; a team that already exists in the registry is
 refused before the registry is touched. Every step is reported in the JSON
 result, which ends with the doctor checks run in-process so one command says
 what is still missing. ``ok`` reflects setup's own steps: it is false when a
-client command could not be applied (that command is listed under
-``mcp.pending`` with the reason and the exact line to run).
+seat could not be bound (listed under ``mcp.pending`` with the reason and
+the ``bind-seat`` line to run).
 
 Prompts: with an ``ask`` function every omitted argument is asked for with
 its default shown; without one (``--yes``, or no terminal) an omitted
@@ -29,7 +31,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -39,9 +40,10 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import doctor, mcp_clients, paths
+from . import doctor, mcp_clients, paths, supervisor
+from . import runtimes as runtime_registry
 from .cli._helpers import bootstrap_store, load_actor_config
-from .runtime_pins import PlatformNotCertified, claude_versions_dir, current_platform, pin_for
+from .runtime_pins import PlatformNotCertified, current_platform, pin_for
 from .schema import ValidationError, validate_actor_id_for_kind
 from .spawn import ALLOWED_RUNTIMES
 from .store import Store
@@ -50,9 +52,7 @@ from .store import Store
 # config/actors.example.json would have said.
 CAPABILITIES = {
     "architect": ["planning", "review"],
-    "claude": ["implementation"],
-    "codex": ["implementation", "review"],
-    "fake": ["demo"],
+    **{runtime.name: list(runtime.capabilities) for runtime in runtime_registry.registered()},
 }
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 Ask = Callable[[str, str], str]
@@ -90,18 +90,25 @@ def parse_list(value: object) -> list[str] | None:
     return [item for item in items if item]
 
 
+def _platform_pin(runtime) -> tuple[object | None, str | None]:  # type: ignore[no-untyped-def]
+    """``runtime``'s pin on this platform and why there is none. Resolved
+    here, through this module's names, so tests can stand a platform in."""
+    if not runtime.pinned:
+        return None, None
+    try:
+        return pin_for(runtime.name, current_platform()), None
+    except PlatformNotCertified as exc:
+        return None, str(exc)
+
+
 def detect_runtimes(which: Callable[[str], str | None] = shutil.which) -> list[str]:
     """The native runtimes this machine appears to have; ``fake`` when none."""
-    found = []
-    try:
-        pin = pin_for("claude", current_platform())
-        if (claude_versions_dir() / pin.version).is_file():
-            found.append("claude")
-    except PlatformNotCertified:
-        pass
-    if which("codex"):
-        found.append("codex")
-    return found or ["fake"]
+    found = [
+        runtime.name
+        for runtime in runtime_registry.registered()
+        if runtime.detect(which, _platform_pin(runtime)[0])
+    ]
+    return found or [runtime.name for runtime in runtime_registry.registered() if runtime.fallback]
 
 
 def console_ask(prompt: str, default: str) -> str:
@@ -165,10 +172,133 @@ def _dry_run_bootstrap(rendered: str, config_path: Path, db_path: Path) -> None:
             raise ValidationError(f"the registry would not bootstrap: {exc}; fix {config_path} before adding a team") from exc
 
 
-def _read_seat(client: str, project_root: Path) -> mcp_clients.ClientConfig:
-    if client == "claude":
-        return mcp_clients.read_claude_seat(mcp_clients.claude_config_path(), project_root)
-    return mcp_clients.read_codex_seat(mcp_clients.codex_config_path())
+def seat_target(architect: str, project_root: Path, *, db_path: Path, db_explicit: bool) -> mcp_clients.SeatTarget:
+    try:
+        mcp_command = paths.mcp_command()
+    except FileNotFoundError as exc:
+        raise ValidationError(str(exc)) from exc
+    return mcp_clients.SeatTarget(architect, project_root, str(mcp_command), db_path, db_explicit, paths.home_override())
+
+
+def seat_fix(ledger: doctor.LedgerRef, architect: str, client: str, *, replace: bool) -> str:
+    """The one line that binds ``client``'s seat for ``architect``."""
+    return ledger.cli("bind-seat", architect, "--client", client, *(["--replace-seat"] if replace else []))
+
+
+def inspect_seats(target: mcp_clients.SeatTarget, clients: list[str], *, replace_seat: bool, which, run) -> dict[str, mcp_clients.SeatState]:
+    """Each client's seat as found; refuses before anything is written when
+    one cannot be written, or is taken and ``replace_seat`` is not given."""
+    states = {client: mcp_clients.SEATS[client].inspect(target, which=which, run=run) for client in clients}
+    refused = [f"{client} ({state.where}): {'; '.join(state.problems)}" for client, state in states.items() if state.status == "refused"]
+    if refused:
+        raise ValidationError(f"seat cannot be written: {'; '.join(refused)}")
+    taken = [f"{client} ({state.where}): {'; '.join(state.problems)}" for client, state in states.items() if state.status == "taken"]
+    if taken and not replace_seat:
+        raise ValidationError(
+            f"seat already taken: {'; '.join(taken)}; rerun with --replace-seat to hand it over to {target.actor_id}, "
+            "or choose other --clients"
+        )
+    return states
+
+
+def record_seat(document: dict, architect: str, client: str, holder: str | None) -> None:
+    """Note in the registry that ``architect`` holds ``client``'s seat, and
+    that ``holder`` (the previous one) no longer does, so doctor checks
+    exactly the seats that exist."""
+    seats = document.get("seats")
+    if not isinstance(seats, dict):
+        seats = document["seats"] = {}
+    if holder and holder != architect and isinstance(seats.get(holder), list):
+        seats[holder] = [item for item in seats[holder] if item != client]
+    held = seats.get(architect)
+    held = list(held) if isinstance(held, list) else []
+    if client not in held:
+        held.append(client)
+    seats[architect] = held
+
+
+def apply_seats(
+    target: mcp_clients.SeatTarget,
+    states: dict[str, mcp_clients.SeatState],
+    ledger: doctor.LedgerRef,
+    *,
+    which,
+    run,
+) -> tuple[list[dict], list[dict]]:
+    """Bind every seat not already ours: (applied, pending)."""
+    applied: list[dict] = []
+    pending: list[dict] = []
+    for client, state in states.items():
+        seat = mcp_clients.SEATS[client]
+        if state.status == "bound":
+            applied.append({"client": client, "commands": [], "notes": [], "detail": f"already bound to {target.actor_id}"})
+            continue
+        result = seat.apply(target, state, which=which, run=run)
+        if result.failure is None:
+            applied.append({"client": client, "commands": result.commands, "notes": result.notes})
+            continue
+        # What is left to do decides the flag: a remove that already
+        # succeeded leaves an absent seat, and the repair is the add alone.
+        now = seat.inspect(target, which=which, run=run)
+        fix = seat_fix(ledger, target.actor_id, client, replace=now.status == "taken")
+        pending.append({"client": client, "reason": result.failure, "notes": result.notes, "fix": fix})
+    return applied, pending
+
+
+def load_registry(config_path: Path) -> dict:
+    try:
+        document = json.loads(config_path.read_text())
+    except FileNotFoundError as exc:
+        raise ValidationError(f"no registry at {config_path}; run agent-comms setup first") from exc
+    except (OSError, ValueError) as exc:
+        raise ValidationError(f"{config_path} cannot be read as JSON: {exc}") from exc
+    if not isinstance(document, dict) or not isinstance(document.get("actors", {}), dict):
+        raise ValidationError(f"{config_path} has no actors object; fix or remove it")
+    return document
+
+
+def bind_seat(
+    *,
+    db_path: Path,
+    db_explicit: bool,
+    architect: str,
+    client: str,
+    replace_seat: bool = False,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Runner = subprocess.run,
+) -> dict:
+    """``agent-comms bind-seat``: bind one client's seat for a registered
+    architect and record it in the registry, as setup does."""
+    db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
+    if client not in mcp_clients.SEATS:
+        raise ValidationError(f"--client must be one of {', '.join(mcp_clients.CLIENTS)}; got {client!r}")
+    config_path = paths.actors_config_path()
+    document = load_registry(config_path)
+    entry = document.get("actors", {}).get(architect)
+    if not isinstance(entry, dict) or entry.get("role") != "architect":
+        raise ValidationError(f"{architect} is not an architect in {config_path}")
+    root = Path(str(entry.get("project_root") or ""))
+    if not entry.get("project_root") or not root.is_dir():
+        raise ValidationError(f"{architect}'s project_root {entry.get('project_root')!r} is not a directory")
+    seats = document.get("seats", {})
+    if not isinstance(seats, dict) or not isinstance(seats.get(architect, []), list):
+        raise ValidationError(f"seats.{architect} in {config_path} is not a list of client names; fix it first")
+    target = seat_target(architect, root, db_path=db_path, db_explicit=db_explicit)
+    states = inspect_seats(target, [client], replace_seat=replace_seat, which=which, run=run)
+    ledger = doctor.LedgerRef(db_path, db_explicit)
+    applied, pending = apply_seats(target, states, ledger, which=which, run=run)
+    record_seat(document, architect, client, states[client].holder)
+    _write_atomic(config_path, json.dumps(document, indent=2, sort_keys=True) + "\n")
+    return {
+        "ok": not pending,
+        "architect": architect,
+        "client": client,
+        "project_root": str(root),
+        "registry": str(config_path),
+        "runtime_root": str(paths.runtime_root()),
+        "mcp": {"applied": applied, "pending": pending},
+        "next": [item["fix"] for item in pending],
+    }
 
 
 def run_setup(
@@ -193,6 +323,9 @@ def run_setup(
     # The ledger path is persisted in client configs that run from other
     # directories, so it is absolute from here on.
     db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
+    too_long = supervisor.control_root_problem()
+    if too_long:
+        raise ValidationError(too_long)
 
     # --- arguments (asked for when omitted and an ``ask`` is available) ---
     if project_root is None:
@@ -299,42 +432,8 @@ def run_setup(
         human = human_id
         reused = False
 
-    try:
-        mcp_command = paths.mcp_command()
-    except FileNotFoundError as exc:
-        raise ValidationError(str(exc)) from exc
-    argv = mcp_clients.server_argv(mcp_command, architect, db_path if db_explicit else None)
-    wanted = mcp_clients.binding(argv)
-    existing: dict[str, bool | None] = {}  # client -> True (other binding), False (absent), None (already ours)
-    holders: dict[str, str | None] = {}
-    taken = []
-    for client in clients:
-        config = _read_seat(client, root)
-        found = config.server() if config.status == "ok" else None
-        if found is None:
-            existing[client] = False
-            continue
-        bound = mcp_clients.binding(found.args, found.env)
-        problems = []
-        if bound["malformed"]:
-            problems.append(f"malformed arguments (repeated or valueless {', '.join(bound['malformed'])})")
-        if bound["actor_id"] != architect:
-            problems.append(f"bound to actor {bound['actor_id']!r}")
-        elif not mcp_clients.same_ledger(bound["db"], wanted["db"]):
-            problems.append(f"binds {architect} to ledger {bound['db']!r}, expected {wanted['db']!r}")
-        if not mcp_clients.same_command(found.command, mcp_command):
-            problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
-        if not problems:
-            existing[client] = None
-            continue
-        existing[client] = True
-        holders[client] = bound["actor_id"]
-        taken.append(f"{client} ({config.path}): {'; '.join(problems)}")
-    if taken and not replace_seat:
-        raise ValidationError(
-            f"seat already taken: {'; '.join(taken)}; rerun with --replace-seat to hand it over to {architect}, "
-            "or choose other --clients"
-        )
+    target = seat_target(architect, root, db_path=db_path, db_explicit=db_explicit)
+    states = inspect_seats(target, clients, replace_seat=replace_seat, which=which, run=run)
 
     # --- registry ------------------------------------------------------------
     if not reused:
@@ -358,14 +457,11 @@ def run_setup(
             "project_root": str(root),
             "capabilities": list(CAPABILITIES[runtime]),
         }
-    seats = document.get("seats")
-    if not isinstance(seats, dict):
-        seats = document["seats"] = {}
-    for client, holder in holders.items():
-        # The seat changes hands: doctor stops expecting it for the previous architect.
-        if holder in seats and isinstance(seats[holder], list):
-            seats[holder] = [item for item in seats[holder] if item != client]
-    seats[architect] = list(clients)
+    if not isinstance(document.get("seats"), dict):
+        document["seats"] = {}
+    document["seats"][architect] = []
+    for client, state in states.items():
+        record_seat(document, architect, client, state.holder)
     rendered = json.dumps(document, indent=2, sort_keys=True) + "\n"
     _dry_run_bootstrap(rendered, config_path, db_path)
     paths.runtime_root().mkdir(parents=True, exist_ok=True)
@@ -373,70 +469,35 @@ def run_setup(
 
     # --- ledger and worker homes ------------------------------------------
     bootstrap_store(store, config_path, codex_custody=True)
-    codex_homes = [str(paths.provisioned_codex_home(workers["codex"]))] if "codex" in workers else []
-
-    claude_custody = None
-    if "claude" in workers:
-        try:
-            pin = pin_for("claude", current_platform())
-            binary = claude_versions_dir() / pin.version
-            claude_custody = {"version": pin.version, "path": str(binary), "present": binary.is_file()}
-        except PlatformNotCertified as exc:
-            claude_custody = {"version": None, "path": None, "present": False, "detail": str(exc)}
-
-    # --- the seats, through the client CLIs --------------------------------
-    applied: list[dict] = []
-    pending: list[dict] = []
-    for client in clients:
-        state = existing[client]
-        if state is None:
-            applied.append({"client": client, "commands": [], "detail": f"already bound to {architect}"})
-            continue
-        if client == "claude":
-            commands = ([mcp_clients.claude_remove_command()] if state else []) + [mcp_clients.claude_add_command(argv)]
-            cwd: str | None = str(root)
+    provisioned: dict = {}
+    for runtime in runtime_registry.registered():
+        if runtime.name in workers:
+            pin, pin_error = _platform_pin(runtime)
+            provisioned.update(runtime.provision(workers[runtime.name], pin=pin, pin_error=pin_error, which=which, run=run))
         else:
-            commands = [mcp_clients.codex_add_command(argv)]
-            cwd = None
-        fix = mcp_clients.render_fix(client, root, argv, replace=bool(state))
-        if which(client) is None:
-            pending.append({"client": client, "reason": f"{client} is not on PATH", "fix": fix})
-            continue
-        failure = None
-        done: list[list[str]] = []
-        for command in commands:
-            try:
-                result = run(command, cwd=cwd, text=True, capture_output=True, check=False, timeout=60)
-            except (OSError, subprocess.SubprocessError) as exc:
-                failure = f"{shlex.join(command)}: {exc}"
-                break
-            if result.returncode != 0:
-                tail = (result.stderr or result.stdout or "").strip()[-400:]
-                failure = f"{shlex.join(command)} exited {result.returncode}: {tail}"
-                break
-            done.append(list(command))
-        if failure is not None:
-            # A remove that already succeeded is not repeated: the repair is then the add alone.
-            removed = any(command[1:3] == ["mcp", "remove"] for command in done)
-            pending.append({"client": client, "reason": failure, "fix": mcp_clients.render_fix(client, root, argv, replace=bool(state) and not removed)})
-        else:
-            applied.append({"client": client, "commands": [list(command) for command in commands]})
+            provisioned.update(runtime.provision_absent())
+
+    # --- the seats ---------------------------------------------------------
+    ledger = doctor.LedgerRef(db_path, db_explicit)
+    applied, pending = apply_seats(target, states, ledger, which=which, run=run)
 
     # --- what is still missing: the doctor checks, in-process ---------------
     report = doctor.run_doctor(db_path=db_path, db_explicit=db_explicit, executable=executable, which=which, run=run, now=now)
-    ledger = doctor.LedgerRef(db_path, db_explicit)
     steps = [ledger.cli("doctor"), *(item["fix"] for item in pending), *report["fixes"]]
     return {
         "ok": not pending,
         "registry": str(config_path),
         "team": team,
         "project_root": str(root),
+        "runtime_root": str(paths.runtime_root()),
         "runtimes": runtimes,
         "clients": clients,
         "actors": [architect, *workers.values()],
         "human": {"id": human, "display_name": actors[human].get("display_name", human), "reused": reused},
-        "codex_homes": codex_homes,
-        "claude_custody": claude_custody,
+        # Placed by name, so the report keeps its key order.
+        "codex_homes": provisioned["codex_homes"],
+        "claude_custody": provisioned["claude_custody"],
+        "codex_custody": provisioned["codex_custody"],
         "mcp": {"applied": applied, "pending": pending},
         "doctor": {"ok": report["ok"], "fixes": report["fixes"]},
         "next": list(dict.fromkeys(steps)),

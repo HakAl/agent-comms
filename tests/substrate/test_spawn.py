@@ -141,6 +141,10 @@ class RenderSpawnTest(unittest.TestCase):
         # Criterion 1: the frozen rendering gains only --json after exec.
         codex_args = snapshot["alpha-codex-worker"]["args"]
         codex_args.insert(codex_args.index("exec") + 1, "--json")
+        # ac-4ao.10 slice 3b: the worker's home holds no profile, so the
+        # spawn drops --profile {actor_id}.
+        at = codex_args.index("--profile")
+        del codex_args[at:at + 2]
         cases = [
             ("alpha-codex-worker", "codex"),
             ("alpha-claude-worker", "claude"),

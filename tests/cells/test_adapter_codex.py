@@ -3,7 +3,6 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import base64
 import json
 import os
-import sys
 import tempfile
 import types
 import unittest
@@ -15,6 +14,7 @@ from agent_comms import paths, supervisor
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import CodexAdapter
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.codex_custody_support import install_fake_codex_custody, python_shim_script
 
 # Hermetic supervised-seam identity. The real AF_UNIX bind lives in the
 # certification environment (EndToEndSupervisorTest); these runtime-free cells
@@ -23,6 +23,15 @@ from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 RUN_TOKEN = "a" * 32
 CONTROL_SOCKET = "/protected/run/s/" + RUN_TOKEN + "/s"
 RUN_DIR = "/protected/run/s/" + RUN_TOKEN
+
+
+class StubCodexAdapter(CodexAdapter):
+    """The adapter with a Python stand-in for ``codex``: the stand-in is not
+    Codex, so the per-run ``-c`` binding (and its ``codex mcp get`` check),
+    covered in tests/substrate/test_codex_project_seat.py, is left out."""
+
+    def _runtime_prefix_args(self, context):  # type: ignore[no-untyped-def]
+        return []
 
 
 def _ready_spawn(wrapper_pid: int) -> supervisor.SupervisedSpawn:
@@ -57,10 +66,13 @@ def provision_fresh_codex_home(codex_home: Path) -> Path:
 
 
 class CodexAdapterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        install_fake_codex_custody(self, python_shim_script())
+
     def test_spawn_env_codex_home_is_data_driven_per_recipient(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             registry = mock.MagicMock()
 
             spawn_envs = []
@@ -76,7 +88,7 @@ class CodexAdapterTest(unittest.TestCase):
                         "runtime": "codex",
                         "project_root": str(root),
                         "spawn": {
-                            "command": sys.executable,
+                            "command": "{codex_binary}",
                             "args": [
                                 "-c",
                                 "import time; time.sleep(30)",
@@ -112,7 +124,7 @@ class CodexAdapterTest(unittest.TestCase):
             root = Path(temp_dir)
             out_file = root / "child.env"
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000010_00000010",
@@ -123,7 +135,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": [
                             "-c",
                             "import os, pathlib; pathlib.Path(os.environ['OUT_FILE']).write_text(os.environ.get('ANTHROPIC_API_KEY', 'absent'))",
@@ -152,7 +164,7 @@ class CodexAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000020_00000020",
@@ -163,7 +175,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": ["-c", "import time; time.sleep(30)", f"WakePolicy={WORKER_DISPATCH_POLICY}"],
                         "env": {"AGENT_COMMS_ACTOR_ID": "attacker", "CODEX_HOME": str(codex_home)},
                     },
@@ -195,12 +207,12 @@ class CodexAdapterTest(unittest.TestCase):
                 owner="alpha-architect",
                 runtime="codex",
                 spawn={
-                    "command": sys.executable,
+                    "command": "{codex_binary}",
                     "args": ["-c", "import time; time.sleep(30)", f"WakePolicy={WORKER_DISPATCH_POLICY}"],
                     "env": {"AGENT_COMMS_ADMIN_TOKEN": "secret", "CODEX_HOME": str(codex_home)},
                 },
             )
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
 
             dispatch = store.dispatch_agent(
                 "alpha-architect",
@@ -220,7 +232,7 @@ class CodexAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000030_00000030",
@@ -231,7 +243,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": [
                             "-c",
                             "import time; time.sleep(30)",
@@ -306,7 +318,7 @@ class CodexAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             codex_home = provision_fresh_codex_home(root / "codex-home")
-            adapter = CodexAdapter()
+            adapter = StubCodexAdapter()
             context = DispatchContext(
                 dispatch={
                     "dispatch_id": "dispatch_20260101_000040_00000040",
@@ -317,7 +329,7 @@ class CodexAdapterTest(unittest.TestCase):
                     "runtime": "codex",
                     "project_root": str(root),
                     "spawn": {
-                        "command": sys.executable,
+                        "command": "{codex_binary}",
                         "args": ["-c", "import time; time.sleep(30)"],
                         "env": {"CODEX_HOME": str(codex_home)},
                     },

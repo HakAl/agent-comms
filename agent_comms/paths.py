@@ -4,8 +4,9 @@ Two kinds of path live here. Package-relative paths (the hook script, the
 code-identity surface) are derived from the package location so they resolve
 the same from a checkout and from an installed wheel. Runtime paths (the
 ledger, config, logs, review and approval records) live under the runtime
-root ``~/.agent-comms`` and never under the source tree or the package
-directory, so deleting the source tree cannot affect an install. External
+root, ``AGENT_COMMS_HOME`` when set and ``~/.agent-comms`` otherwise, and
+never under the source tree or the package directory, so deleting the source
+tree cannot affect an install and a second install can run beside the first. External
 deployment paths (a worker's ``project_root``) are operator data and are NOT
 derived here: they come from config with ``~``/``${ENV}`` expansion.
 """
@@ -24,8 +25,25 @@ from .schema import ValidationError, identity_to_path_segment
 # consumers (release git info, tests) may treat it as a checkout.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = Path(__file__).resolve().parent
-DEFAULT_DB = Path.home() / ".agent-comms" / "agent-comms.sqlite"
 DISPATCH_ID_RE = re.compile(r"dispatch_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}")
+
+
+HOME_ENV = "AGENT_COMMS_HOME"
+
+
+def home_override() -> Path | None:
+    """The ``AGENT_COMMS_HOME`` runtime root, or None when it is not set.
+
+    ``~`` is expanded; a relative value is refused rather than resolved
+    against whatever directory a client or worker happens to start in.
+    """
+    raw = os.environ.get(HOME_ENV)
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValidationError(f"{HOME_ENV}={raw!r} is not an absolute path; set it to one, for example $HOME/.agent-comms-dev")
+    return Path(os.path.normpath(path))
 
 
 def runtime_root() -> Path:
@@ -33,14 +51,15 @@ def runtime_root() -> Path:
 
     Everything under here survives moving or re-cloning the checkout. The
     canonical ledger and the Codex-home custody root both live beneath it.
+    ``AGENT_COMMS_HOME`` moves the whole root, so a second install shares
+    nothing with the first; the narrower overrides still win for their path.
     """
-    return Path.home() / ".agent-comms"
+    return home_override() or Path.home() / ".agent-comms"
+
 
 
 def db_path() -> Path:
     """Canonical SQLite database path."""
-    import os
-
     override = os.environ.get("AGENT_COMMS_DB")
     if override:
         return Path(override).expanduser()

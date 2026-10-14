@@ -1,0 +1,98 @@
+{
+  "claude": {
+    "args": [
+      "-p",
+      "--no-session-persistence",
+      "--output-format",
+      "stream-json",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "{{\"mcpServers\":{{\"agent-comms\":{{\"alwaysLoad\":true,\"args\":[\"--db\",\"{db_path}\",\"--actor-id\",\"{actor_id}\"],\"command\":\"{mcp_command}\",\"env\":{{\"AGENT_COMMS_ACTOR_ID\":\"{actor_id}\",\"AGENT_COMMS_HOME\":\"{agent_comms_home}\",\"AGENT_COMMS_PROJECT_ROOT\":\"{project_root}\",\"WAKE_POLICY\":\"worker_dispatch_readwrite_bounded\",\"WAKE_POLICY_VERSION\":\"v2\"}}}}}}}}",
+      "--settings",
+      "{claude_settings}",
+      "--permission-mode",
+      "dontAsk",
+      "{worker_prompt}"
+    ],
+    "command": "{claude_binary}"
+  },
+  "claude+codex_home": {
+    "args": [
+      "-p",
+      "--no-session-persistence",
+      "--output-format",
+      "stream-json",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "{{\"mcpServers\":{{\"agent-comms\":{{\"alwaysLoad\":true,\"args\":[\"--db\",\"{db_path}\",\"--actor-id\",\"{actor_id}\"],\"command\":\"{mcp_command}\",\"env\":{{\"AGENT_COMMS_ACTOR_ID\":\"{actor_id}\",\"AGENT_COMMS_HOME\":\"{agent_comms_home}\",\"AGENT_COMMS_PROJECT_ROOT\":\"{project_root}\",\"WAKE_POLICY\":\"worker_dispatch_readwrite_bounded\",\"WAKE_POLICY_VERSION\":\"v2\"}}}}}}}}",
+      "--settings",
+      "{claude_settings}",
+      "--permission-mode",
+      "dontAsk",
+      "{worker_prompt}"
+    ],
+    "command": "{claude_binary}"
+  },
+  "codex": {
+    "args": [
+      "--ask-for-approval",
+      "never",
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--sandbox",
+      "workspace-write",
+      "{worker_prompt}"
+    ],
+    "command": "{codex_binary}",
+    "env": {
+      "CODEX_HOME": "{codex_home}"
+    }
+  },
+  "codex+codex_home": {
+    "args": [
+      "--ask-for-approval",
+      "never",
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--sandbox",
+      "workspace-write",
+      "{worker_prompt}"
+    ],
+    "command": "{codex_binary}",
+    "env": {
+      "CODEX_HOME": "/h/codex-home"
+    }
+  },
+  "fake": {
+    "args": [
+      "-m",
+      "agent_comms.adapters.fake_worker",
+      "--actor-id",
+      "{actor_id}",
+      "--message-id",
+      "{message_id}",
+      "--db",
+      "{db_path}",
+      "WakePolicy=worker_dispatch_readwrite_bounded"
+    ],
+    "command": "{python}"
+  },
+  "fake+codex_home": {
+    "args": [
+      "-m",
+      "agent_comms.adapters.fake_worker",
+      "--actor-id",
+      "{actor_id}",
+      "--message-id",
+      "{message_id}",
+      "--db",
+      "{db_path}",
+      "WakePolicy=worker_dispatch_readwrite_bounded"
+    ],
+    "command": "{python}"
+  }
+}

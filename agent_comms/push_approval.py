@@ -29,7 +29,9 @@ from agent_comms.review import (
 SCHEMA_VERSION = 1
 PUSH_APPROVAL_NAMESPACE = "agent-comms-push-approval"
 PUSH_APPROVAL_VERSION = "agent-comms-push-approval-v1"
-PUSH_APPROVAL_ROOT = paths.push_approval_root()
+# None means ``paths.push_approval_root()``, resolved at call time so
+# AGENT_COMMS_HOME applies; tests patch in a directory.
+PUSH_APPROVAL_ROOT: Path | None = None
 PUSH_APPROVAL_KIND = "push-approval"
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _SIGNED_FIELDS = ("approved_head", "target_ref", "repo_identity", "approver", "approved_at")
@@ -171,7 +173,7 @@ def command_create(args: argparse.Namespace) -> None:
     payload = push_approval_payload(args.head, args.target_ref, repo_identity, args.approver, approved_at)
     signature = sign_approval_payload(payload, approval_key_path(args), namespace=PUSH_APPROVAL_NAMESPACE)
     record = build_record(args, repo_identity, approved_at, signature)
-    path = PUSH_APPROVAL_ROOT / f"{record_id(approved_at, args.head)}.json"
+    path = (PUSH_APPROVAL_ROOT or paths.push_approval_root()) / f"{record_id(approved_at, args.head)}.json"
     if path.exists():
         raise ReviewError(f"push approval record already exists: {path}")
     atomic_write_json(path, record)

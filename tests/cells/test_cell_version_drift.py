@@ -3,7 +3,6 @@ from __future__ import annotations
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import re
-import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -12,6 +11,8 @@ from agent_comms.runtime_pins import (
     PlatformNotCertified,
     RuntimePin,
     claude_binary_path,
+    codex_bundle_digest_matches,
+    codex_bundle_path,
     custody_binary_digest_matches,
     pin_for,
 )
@@ -38,9 +39,12 @@ def runtime_version(runtime: str) -> str:
 
 
 def runtime_command(runtime: str) -> str:
+    """The binary workers run: the runtime custody copy, never PATH."""
     if runtime == "claude":
         return str(claude_binary_path())
-    return runtime
+    if runtime == "codex":
+        return str(codex_bundle_path() / "bin" / "codex")
+    raise AssertionError(f"unknown runtime {runtime!r}")
 
 
 def comparable(version: str, boundary: str) -> str:
@@ -65,8 +69,8 @@ class CellVersionDriftTest(unittest.TestCase):
         if runtime == "claude":
             if not custody_binary_digest_matches(Path(command), pin.sha256):
                 self.skipTest(f"{runtime} pinned CLI is absent or does not match recorded sha256 at {command}")
-        elif shutil.which(command) is None:
-            self.skipTest(f"{runtime} CLI is not installed")
+        elif not codex_bundle_digest_matches(codex_bundle_path()):
+            self.skipTest(f"{runtime} custody copy is absent or does not match the pinned bundle sha256 at {command}")
 
         installed = runtime_version(runtime)
 

@@ -122,6 +122,20 @@ EVIDENCE_REPLY_ID_CAP = 10
 EVIDENCE_SUMMARY_DISPLAY_CAP = 200
 
 
+def _admin_token_prefix() -> str:
+    """The copy/paste credential prefix for an operator command.
+
+    Names the admin token of this install: the literal ``~`` form for the
+    default root; under ``AGENT_COMMS_HOME`` the quoted path, with the home
+    set too so the command pasted into another shell opens this install.
+    """
+    home = paths.home_override()
+    if home is None:
+        return 'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
+    quoted = shlex.quote(str(home))
+    return f'AGENT_COMMS_HOME={quoted} AGENT_COMMS_ADMIN_TOKEN="$(cat {shlex.quote(str(home / "admin-token"))})" '
+
+
 def _past_kill_grace_boundary(expected_close_by: str | None, now: str) -> bool:
     """True once ``now`` is at/after ``expected_close_by + kill_grace``.
 
@@ -1092,6 +1106,32 @@ class DispatchLedger:
             if isinstance(evidence_token, str) and evidence_token and evidence_token == run_token:
                 return evidence
         return None
+
+    def _fresh_exited_on_its_own_before_deadline(self, dispatch_id: str) -> bool:
+        with self._db.connection() as conn:
+            row = conn.execute(
+                "select observed_values_json, expected_close_by from dispatch_ledger where dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        observed = json.loads(row["observed_values_json"] or "{}")
+        return self._exited_on_its_own_before_deadline(observed, row["expected_close_by"])
+
+    @staticmethod
+    def _exited_on_its_own_before_deadline(observed: dict, expected_close_by: object) -> bool:
+        """Same-run ``worker_exit`` the child itself produced (not a TTL kill,
+        HALT, signal or cleanup) at or before ``expected_close_by``."""
+        run_token = observed.get("run_token")
+        if not isinstance(run_token, str) or not run_token:
+            return False
+        evidence = observed.get("worker_exit")
+        if not isinstance(evidence, dict) or evidence.get("run_token") != run_token:
+            return False
+        if evidence.get("source") != "child":
+            return False
+        exited_at = evidence.get("exited_at")
+        return isinstance(exited_at, str) and isinstance(expected_close_by, str) and exited_at <= expected_close_by
 
     @staticmethod
     def _complete_same_run_reap_proof(observed: dict, run_token: object) -> dict | None:
@@ -2578,7 +2618,7 @@ class DispatchLedger:
         never inlined.
         """
         return (
-            'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
+            f"{_admin_token_prefix()}"
             '"$AGENT_COMMS_INSTALL_ROOT/bin/agent-comms" admin '
             "settle-dispatch "
             f"--from-actor-id {shlex.quote(actor_id)} "
@@ -3098,7 +3138,7 @@ class DispatchLedger:
         documented command text is rendered here.
         """
         return (
-            'AGENT_COMMS_ADMIN_TOKEN="$(cat ~/.agent-comms/admin-token)" '
+            f"{_admin_token_prefix()}"
             '"$AGENT_COMMS_INSTALL_ROOT/bin/agent-comms" admin '
             "settle-dispatch --from-actor-id <ADMIN_ACTOR_ID> "
             f"--dispatch-id {dispatch_id} --reason \"<reason>\" --dry-run"
@@ -3424,12 +3464,22 @@ class DispatchLedger:
         kill_grace`` and only then RELEASED to ``dlq`` with the exact phrase
         ``ledger released; termination not confirmed`` -- never a false claim
         that the native child died.
+
+        A row whose worker exited on its own (same-run ``worker_exit`` with
+        ``source == "child"``) before the deadline is not a timeout: the
+        deadline only passed before a reconcile saw it. The wrapper's own TTL
+        kill records ``source == "timeout"`` and stays a timeout. Such a row
+        settles as the pre-TTL liveness pass would (recipient close, confirmed
+        cancellation, or ``worker_exited_before_close``), without a HALT when
+        the exit is already visible. When that pass holds the row instead (a
+        pending cancellation without reap proof, a lost CAS), the backstop
+        below still runs, so the row cannot stay in flight past its TTL.
         """
         actions: list[dict] = []
         with self._db.connection() as conn:
             snapshot = conn.execute(
                 """
-                select d.dispatch_id, d.spawn_handle, d.observed_values_json, a.runtime
+                select d.dispatch_id, d.spawn_handle, d.observed_values_json, d.expected_close_by, a.runtime
                 from dispatch_ledger d
                 join actors a on a.id = d.recipient_actor_id
                 where d.status = 'in_flight'
@@ -3442,10 +3492,25 @@ class DispatchLedger:
 
         for row in snapshot:
             observed = json.loads(row["observed_values_json"] or "{}")
+            dispatch_id = str(row["dispatch_id"])
+            if self._exited_on_its_own_before_deadline(observed, row["expected_close_by"]):
+                action = self._apply_liveness_cas(dispatch_id, None, None, now, None, exited_only=True)
+                if action is not None:
+                    actions.append(action)
+                    continue
             outcome = self._halt_expired_child(
                 adapter_for_runtime, str(row["runtime"]), row["spawn_handle"], observed
             )
-            action = self._apply_ttl_termination_cas(str(row["dispatch_id"]), now, outcome)
+            # An exit that committed after the snapshot still wins over the
+            # timeout. A confirmed HALT acknowledges only after the run's exit is
+            # persisted; an unconfirmed one is usually the wrapper already gone
+            # with its child, whose exit it recorded first.
+            if self._fresh_exited_on_its_own_before_deadline(dispatch_id):
+                action = self._apply_liveness_cas(dispatch_id, None, None, now, None, exited_only=True)
+                if action is not None:
+                    actions.append(action)
+                    continue
+            action = self._apply_ttl_termination_cas(dispatch_id, now, outcome)
             if action is not None:
                 actions.append(action)
         return actions
@@ -3934,7 +3999,12 @@ class DispatchLedger:
         detail: str | None,
         now: str,
         human_actor_id: str | None,
+        *,
+        exited_only: bool = False,
     ) -> dict | None:
+        """``exited_only``: the hard-TTL backstop asks about a row past its
+        deadline whose run recorded its exit. Only the settling branches (a)
+        and (b) apply; anything else returns None and the backstop proceeds."""
         with self._db.connection() as conn:
             conn.execute("begin immediate")
             try:
@@ -3953,7 +4023,7 @@ class DispatchLedger:
                 if row is None or row["status"] != "in_flight":
                     conn.commit()
                     return None
-                if row["expected_close_by"] is not None and row["expected_close_by"] <= now:
+                if not exited_only and row["expected_close_by"] is not None and row["expected_close_by"] <= now:
                     conn.commit()
                     return None
 
@@ -4114,6 +4184,10 @@ class DispatchLedger:
                         "status": "dlq",
                         "reconcile": "worker_exited_before_close",
                     }
+
+                if exited_only:
+                    conn.commit()
+                    return None
 
                 # (c) authenticated running -> no terminal write.
                 if state == "running":

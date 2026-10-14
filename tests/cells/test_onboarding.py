@@ -152,8 +152,8 @@ class OnboardWorkerTest(unittest.TestCase):
                 dispatch = self.store._dispatch_by_idempotency_key_fresh(ARCHITECT_ID, "onboard-fake-dispatch")
         control_socket = Path(dispatch["observed_values"]["control_socket"])
         self.assertEqual(control_socket.parent.parent, self.control_root)
-        self.assertNotEqual(self.control_root, supervisor._DEFAULT_CONTROL_ROOT)
-        self.assertNotIn(supervisor._DEFAULT_CONTROL_ROOT, control_socket.parents)
+        self.assertNotEqual(self.control_root, supervisor.default_control_root())
+        self.assertNotIn(supervisor.default_control_root(), control_socket.parents)
         if dispatch.get("spawn_handle"):
             # Authenticated teardown via the recorded control identity (current
             # API); tolerate an already-gone wrapper for the settled dispatch.

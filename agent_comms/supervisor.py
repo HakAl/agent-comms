@@ -9,7 +9,7 @@ process (the "wrapper") that:
   token cannot leak to the runtime child;
 - owns a bounded process group containing exactly the native runtime child;
 - binds an authenticated Unix-domain control socket under a fixed, protected,
-  ``0700`` control root (``~/.agent-comms/run/s``) with a strict, short name so
+  ``0700`` control root (``<runtime root>/run/s``) with a strict, short name so
   the encoded ``sun_path`` stays within the macOS 103-byte limit;
 - serves read-only ``STATUS`` and authenticated ``HALT`` requests that carry the
   exact same run token;
@@ -63,10 +63,9 @@ MARKER_VERSION = 1
 SUN_PATH_MAX_BYTES = 103
 
 # Test-only override for the protected control root. Production always uses the
-# fixed default so the janitor and negative-cell sandbox boundary have a single
-# known location.
+# default under the runtime root so the janitor and negative-cell sandbox
+# boundary have a single known location per install.
 CONTROL_ROOT_ENV = "AGENT_COMMS_SUPERVISOR_ROOT"
-_DEFAULT_CONTROL_ROOT = Path.home() / ".agent-comms" / "run" / "s"
 
 # A run directory is named by its 32-hex-char run token; the control socket is a
 # single short "s" inside it. Both are strict so the janitor never has to reason
@@ -74,6 +73,10 @@ _DEFAULT_CONTROL_ROOT = Path.home() / ".agent-comms" / "run" / "s"
 _STRICT_RUN_DIR_RE = re.compile(r"^[0-9a-f]{32}$")
 _MARKER_NAME = "owner.json"
 _SOCKET_NAME = "s"
+# What a run directory and its socket add to the control root: "/<32 hex>/s".
+_RUN_SOCKET_SUFFIX_BYTES = 1 + 32 + 1 + len(_SOCKET_NAME)
+# ... and to the runtime root, through "/run/s".
+_CONTROL_SOCKET_SUFFIX_BYTES = len("/run/s") + _RUN_SOCKET_SUFFIX_BYTES
 
 # Same bounded busy-timeout discipline as ``Database`` (10s connect timeout,
 # WAL already enabled on the ledger). Wrapper transactions stay short and never
@@ -104,11 +107,39 @@ def _utc_now() -> str:
 # --------------------------------------------------------------------------- #
 
 
+def default_control_root() -> Path:
+    """The protected control root of this install: ``<runtime root>/run/s``."""
+    from .paths import runtime_root
+
+    return runtime_root() / "run" / "s"
+
+
 def control_root() -> Path:
     override = os.environ.get(CONTROL_ROOT_ENV)
     if override:
         return Path(override)
-    return _DEFAULT_CONTROL_ROOT
+    return default_control_root()
+
+
+def control_root_problem(root: Path | None = None) -> str | None:
+    """Why control sockets under ``root`` cannot bind, with the fix, or None.
+
+    Checked before anything is spawned (setup, doctor, ``spawn_supervised``)
+    so an over-long root is a refusal with the byte count, not a READY
+    timeout from the wrapper.
+    """
+    root = root if root is not None else control_root()
+    length = encoded_path_len(root) + _RUN_SOCKET_SUFFIX_BYTES
+    if length <= SUN_PATH_MAX_BYTES:
+        return None
+    if os.environ.get(CONTROL_ROOT_ENV):
+        fix = f"a shorter {CONTROL_ROOT_ENV}"
+    else:
+        fix = f"a shorter AGENT_COMMS_HOME (at most {SUN_PATH_MAX_BYTES - _CONTROL_SOCKET_SUFFIX_BYTES} bytes)"
+    return (
+        f"control sockets under {root} would be {length} bytes, over the AF_UNIX limit of "
+        f"{SUN_PATH_MAX_BYTES}; recover with: {fix}"
+    )
 
 
 def new_run_token() -> str:
@@ -1572,6 +1603,11 @@ def spawn_supervised(
     root = root if root is not None else control_root()
     run_token = run_token or new_run_token()
     python_executable = python_executable or sys.executable
+    # The wrapper asserts this too, but its refusal reaches the parent only
+    # as a missing READY; check here so the caller sees the byte count.
+    problem = control_root_problem(root)
+    if problem:
+        raise SunPathTooLong(problem)
 
     adapter_peer, wrapper_peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     wrapper_argv = [

@@ -207,7 +207,7 @@ def __getattr__(name: str) -> Any:
     # attribute so external callers (and their monkeypatches of the record root)
     # read the single authoritative value without a stale re-export binding.
     if name == "REVIEW_ROOT":
-        return store.REVIEW_ROOT
+        return store.current_review_root()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -308,7 +308,7 @@ def command_status(args: argparse.Namespace) -> None:
         "actual_repo_root": str(actual),
         "expected_repo_root": str(expected) if expected else None,
         "expected_source": expected_source,
-        "review_root": str(store.REVIEW_ROOT),
+        "review_root": str(store.current_review_root()),
         "record_path": None,
         "cwd": os.getcwd(),
         "interpreter": sys.executable,

@@ -834,5 +834,132 @@ class BoundedPartialEvidenceTest(unittest.TestCase):
             self.assertIn("(+2 more)", lines_legacy)
 
 
+class ExitedBeforeDeadlineBackstopTest(unittest.TestCase):
+    """The hard-TTL backstop on a row whose worker exited on its own before the
+    deadline settles it as the liveness pass would, not as a timeout."""
+
+    def _expired_with_exit(self, store: Store, adapter, exit_obj: dict | None) -> str:
+        store.dispatch_agent("alpha-architect", "alpha-worker", "exit", "S", "B", [])
+        dispatch_id = store.start_queued_dispatches(lambda _runtime: adapter, ttl_seconds=3600)[0]["dispatch_id"]
+        with store._db.connection() as conn:
+            conn.execute(
+                "update dispatch_ledger set expected_close_by = ? where dispatch_id = ?",
+                (_iso_seconds_ago(5), dispatch_id),
+            )
+        if exit_obj is not None:
+            _merge_observed(store, dispatch_id, {"worker_exit": {**exit_obj, "run_token": adapter.run_token}})
+        return dispatch_id
+
+    def test_child_exit_before_deadline_is_not_a_timeout_and_is_not_halted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = Store(root / "agent-comms.sqlite")
+            _seed(store, root)
+            adapter = LivenessStubAdapter(state="running")
+            dispatch_id = self._expired_with_exit(
+                store, adapter, {"returncode": 7, "source": "child", "exited_at": _iso_seconds_ago(10)}
+            )
+
+            store.reconcile_dispatches(lambda _runtime: adapter, human_actor_id=HUMAN_ID)
+
+            row = _ledger(store, dispatch_id)
+            self.assertEqual(row["status"], "dlq")
+            self.assertEqual(row["failure_reason"], "worker_exited_before_close")
+            self.assertEqual(adapter.halt_calls, [])
+
+    def test_exit_that_is_not_the_child_on_its_own_before_deadline_stays_timeout(self) -> None:
+        for label, exit_obj in (
+            ("ttl-kill", {"returncode": -15, "source": "timeout", "exited_at": _iso_seconds_ago(4)}),
+            ("child-after-deadline", {"returncode": 0, "source": "child", "exited_at": _iso_seconds_ago(1)}),
+            ("no-exited-at", {"returncode": 0, "source": "child"}),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                store = Store(root / "agent-comms.sqlite")
+                _seed(store, root)
+                adapter = LivenessStubAdapter(state="running")
+                dispatch_id = self._expired_with_exit(store, adapter, exit_obj)
+
+                store.reconcile_dispatches(lambda _runtime: adapter, human_actor_id=HUMAN_ID)
+
+                row = _ledger(store, dispatch_id)
+                self.assertEqual(row["status"], "dlq")
+                self.assertEqual(row["failure_reason"], "timeout")
+                self.assertTrue(adapter.halt_calls)
+
+    def test_child_exit_committed_after_the_snapshot_is_not_a_timeout(self) -> None:
+        # The child exited before the deadline but its evidence committed only
+        # after the backstop's snapshot. A confirmed HALT acknowledges only after
+        # the run's exit is persisted, so the evidence is visible once it returns.
+        class ExitLandsDuringHaltAdapter(LivenessStubAdapter):
+            def halt(self, spawn_handle: str, observed_values=None) -> None:
+                super().halt(spawn_handle, observed_values)
+                _merge_observed(
+                    store,
+                    dispatch_id,
+                    {
+                        "worker_exit": {
+                            "returncode": 7,
+                            "source": "child",
+                            "exited_at": _iso_seconds_ago(10),
+                            "run_token": self.run_token,
+                        }
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = Store(root / "agent-comms.sqlite")
+            _seed(store, root)
+            adapter = ExitLandsDuringHaltAdapter(state="running")
+            dispatch_id = self._expired_with_exit(store, adapter, None)
+
+            store.reconcile_dispatches(lambda _runtime: adapter, human_actor_id=HUMAN_ID)
+
+            row = _ledger(store, dispatch_id)
+            self.assertTrue(adapter.halt_calls)
+            self.assertEqual(row["status"], "dlq")
+            self.assertEqual(row["failure_reason"], "worker_exited_before_close")
+
+    def test_child_exit_committed_after_the_snapshot_wins_over_an_unconfirmed_halt(self) -> None:
+        # A child that exited on its own takes its wrapper and control socket
+        # with it, so the backstop's HALT is unreachable. Past the kill grace an
+        # unconfirmed HALT would release the row as a timeout; the exit wins.
+        class ExitLandsThenHaltUnreachableAdapter(HaltUnconfirmedAdapter):
+            def halt(self, spawn_handle: str, observed_values=None) -> None:
+                _merge_observed(
+                    store,
+                    dispatch_id,
+                    {
+                        "worker_exit": {
+                            "returncode": 7,
+                            "source": "child",
+                            "exited_at": _iso_seconds_ago(HARD_TTL_KILL_GRACE_SECONDS + 10),
+                            "run_token": self.run_token,
+                        }
+                    },
+                )
+                super().halt(spawn_handle, observed_values)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = Store(root / "agent-comms.sqlite")
+            _seed(store, root)
+            adapter = ExitLandsThenHaltUnreachableAdapter()
+            dispatch_id = self._expired_with_exit(store, adapter, None)
+            with store._db.connection() as conn:
+                conn.execute(
+                    "update dispatch_ledger set expected_close_by = ? where dispatch_id = ?",
+                    (_iso_seconds_ago(HARD_TTL_KILL_GRACE_SECONDS + 5), dispatch_id),
+                )
+
+            store.reconcile_dispatches(lambda _runtime: adapter, human_actor_id=HUMAN_ID)
+
+            row = _ledger(store, dispatch_id)
+            self.assertTrue(adapter.halt_calls)
+            self.assertEqual(row["status"], "dlq")
+            self.assertEqual(row["failure_reason"], "worker_exited_before_close")
+
+
 if __name__ == "__main__":
     unittest.main()

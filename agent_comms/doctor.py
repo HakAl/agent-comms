@@ -8,17 +8,16 @@ check in order, so an agent can branch on the exit code and act on the
 fixes without reading the details. ``warn`` does not fail the report.
 
 Doctor never creates anything. It opens the ledger read-only and only when
-the file exists, never runs the schema, and shells out only to the runtime
-binaries it is checking (``--version``, ``auth status``). Each check takes
+the file exists, never runs the schema, and shells out only to read: the
+runtime binaries it is checking (``--version``, ``auth status``, ``codex mcp
+get``) and ``git rev-parse``/``ls-files`` for a Codex seat. Each check takes
 what it needs as arguments so tests inject paths, a ``which`` and a
 subprocess runner instead of patching the world.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import shlex
 import shutil
 import sqlite3
@@ -29,34 +28,31 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import mcp_clients, paths
+from . import mcp_clients, paths, supervisor
+from . import runtimes as runtime_registry
+from .checks import (  # noqa: F401 - doctor's names for callers and tests
+    FAIL,
+    OK,
+    SEMVER_RE,
+    SKIP,
+    WARN,
+    LedgerRef,
+    Runner,
+    check,
+    home_prefix,
+    sh,
+)
 from .actors import OPERATOR_ACTOR_ENV
 from .cli._helpers import load_actor_config
-from .codex_home import preflight_home_snapshot
 from .db import LEDGER_SCHEMA_VERSION, Database
 from .dispatch_ledger import DISPATCH_TERMINAL_STATUSES
 from .monitor import heartbeat_is_fresh
-from .runtime_pins import (
-    CLAUDE_PINNED_SHA256_ENV,
-    PlatformNotCertified,
-    RuntimePin,
-    claude_versions_dir,
-    current_platform,
-    custody_binary_sha256,
-    pin_for,
-)
+from .runtime_pins import PlatformNotCertified, RuntimePin, current_platform, pin_for
+from .runtimes.claude import check_claude  # noqa: F401 - doctor's names for callers and tests
+from .runtimes.codex import check_codex, check_codex_custody  # noqa: F401
 from .schema import ValidationError
 
-OK, FAIL, WARN, SKIP = "ok", "fail", "warn", "skip"
 CONSOLE_SCRIPTS = ("agent-comms-mcp", "agent-comms-monitor", "agent-comms-seat")
-SEMVER_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
-Runner = Callable[..., "subprocess.CompletedProcess[str]"]
-
-
-def check(check_id: str, status: str, detail: str, fix: str | None = None) -> dict:
-    if status not in (OK, FAIL, WARN, SKIP):
-        raise ValueError(f"unknown check status {status!r}")
-    return {"id": check_id, "status": status, "detail": detail, "fix": fix}
 
 
 def report(platform: str, checks: list[dict]) -> dict:
@@ -66,37 +62,6 @@ def report(platform: str, checks: list[dict]) -> dict:
         "checks": checks,
         "fixes": [item["fix"] for item in checks if item["status"] == FAIL and item["fix"]],
     }
-
-
-_PLACEHOLDER = re.compile(r"^<[^<>]+>$")
-
-
-def sh(*argv: object) -> str:
-    """A shell line from an argv, quoting every word except ``<placeholders>``."""
-    return " ".join(str(arg) if _PLACEHOLDER.match(str(arg)) else shlex.quote(str(arg)) for arg in argv)
-
-
-@dataclass(frozen=True)
-class LedgerRef:
-    """The ledger doctor was pointed at, so every repair targets the same one.
-
-    ``explicit`` mirrors the CLI: ``--db`` or ``AGENT_COMMS_DB`` was given.
-    A repair rendered for an explicit ledger carries ``--db``; one for the
-    default ledger carries nothing, which is what the consumer commands
-    resolve to.
-    """
-
-    path: Path
-    explicit: bool
-
-    def db_args(self) -> list[str]:
-        return ["--db", str(self.path)] if self.explicit else []
-
-    def cli(self, *args: object) -> str:
-        return sh("agent-comms", *self.db_args(), *args)
-
-    def monitor(self, human: str) -> str:
-        return sh("agent-comms-monitor", *self.db_args(), "--human-actor-id", human)
 
 
 def _ledger(db_path: Path, ledger: LedgerRef | None) -> LedgerRef:
@@ -162,12 +127,13 @@ def read_ledger(db_path: Path) -> LedgerSnapshot:
                 # and so does fake work not yet terminal (a queued row only
                 # starts on a reconcile pass).
                 terminal = sorted(DISPATCH_TERMINAL_STATUSES)
+                unmonitored = [runtime.name for runtime in runtime_registry.registered() if not runtime.monitored]
                 monitored += (
                     " d left join actors a on a.id = d.recipient_actor_id"
-                    " where coalesce(a.runtime, '') <> 'fake'"
+                    f" where coalesce(a.runtime, '') not in ({', '.join('?' for _ in unmonitored)})"
                     f" or d.status not in ({', '.join('?' for _ in terminal)})"
                 )
-                params = tuple(terminal)
+                params = (*unmonitored, *terminal)
             snapshot.monitored_dispatch_count = int(conn.execute(monitored, params).fetchone()[0])
         if _table_exists(conn, "codex_refresh_claims"):
             snapshot.dead_credentials = [
@@ -196,7 +162,15 @@ def check_install(executable: str = sys.executable) -> dict:
     return check("install", OK, f"{', '.join(CONSOLE_SCRIPTS)} under {bin_dir}")
 
 
-def check_runtime_root(root: Path) -> dict:
+def check_runtime_root(root: Path, control_root: Path | None = None) -> dict:
+    """``root`` exists and is writable, and control sockets fit under
+    ``control_root`` (default: ``root/run/s``, or wherever
+    ``AGENT_COMMS_SUPERVISOR_ROOT`` moves it)."""
+    if control_root is None:
+        control_root = supervisor.control_root() if os.environ.get(supervisor.CONTROL_ROOT_ENV) else root / "run" / "s"
+    too_long = supervisor.control_root_problem(control_root)
+    if too_long:
+        return check("runtime_root", FAIL, too_long, f"set {paths.HOME_ENV} to a shorter absolute path and rerun setup there")
     if not root.exists() and not root.is_symlink():
         return check("runtime_root", FAIL, f"{root} does not exist", sh("mkdir", "-p", root))
     if not root.is_dir():
@@ -284,7 +258,7 @@ def runtimes_in_use(snapshot: LedgerSnapshot | None, config: dict | None) -> set
 
 def check_platform(platform: str, runtimes: set[str]) -> tuple[dict, dict[str, RuntimePin]]:
     """The platform check and the pins it resolved."""
-    wanted = sorted(runtimes & {"claude", "codex"})
+    wanted = sorted(runtimes & {runtime.name for runtime in runtime_registry.registered() if runtime.pinned})
     if not wanted:
         return check("platform", SKIP, f"{platform}: no claude or codex worker registered"), {}
     pins: dict[str, RuntimePin] = {}
@@ -295,175 +269,6 @@ def check_platform(platform: str, runtimes: set[str]) -> tuple[dict, dict[str, R
             return check("platform", FAIL, str(exc).split("; recover with:")[0], str(exc)), pins
     versions = ", ".join(f"{runtime} {pin.version}" for runtime, pin in pins.items())
     return check("platform", OK, f"{platform} certified: {versions}"), pins
-
-
-def _version_from(result: subprocess.CompletedProcess[str]) -> tuple[str | None, str]:
-    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
-    match = SEMVER_RE.search(output)
-    return (match.group(1) if match else None), output
-
-
-def _version_matches(installed: str, pin: RuntimePin) -> bool:
-    if pin.boundary == "minor":
-        return installed.split(".")[:2] == pin.version.split(".")[:2]
-    return installed == pin.version
-
-
-def _run_quietly(run: Runner, argv: list[str]) -> subprocess.CompletedProcess[str] | Exception:
-    try:
-        return run(argv, text=True, capture_output=True, check=False, timeout=10)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return exc
-
-
-def check_claude(
-    pin: RuntimePin | None,
-    *,
-    run: Runner = subprocess.run,
-    binary: Path | None = None,
-) -> dict:
-    check_id = "runtime:claude"
-    if pin is None:
-        return check(check_id, SKIP, "platform is not certified for claude (see platform)")
-    binary = binary or claude_versions_dir() / pin.version
-    recover = "or re-certify and bump the pin"
-    install = f"install Claude Code {pin.version} at {binary}, {recover}"
-    if not binary.is_file():
-        return check(
-            check_id,
-            FAIL,
-            f"pinned Claude binary is missing; expected claude {pin.version}; path={binary}",
-            f"download Claude Code {pin.version} and place the executable at {binary}, {recover}",
-        )
-    expected = os.environ.get(CLAUDE_PINNED_SHA256_ENV) or pin.sha256 or ""
-    try:
-        actual = custody_binary_sha256(binary)
-    except OSError as exc:
-        return check(check_id, FAIL, f"pinned Claude binary at {binary} cannot be read: {exc}", sh("chmod", "u+rx", binary))
-    if actual != expected:
-        return check(
-            check_id,
-            FAIL,
-            f"pinned Claude digest mismatch: expected sha256 {expected}, got {actual}; path={binary}",
-            f"populate runtime custody at {binary} with the certified Claude {pin.version} binary, {recover}",
-        )
-    result = _run_quietly(run, [str(binary), "--version"])
-    if isinstance(result, Exception):
-        return check(check_id, FAIL, f"could not execute {binary} --version: {result}", install)
-    installed, output = _version_from(result)
-    if result.returncode != 0 or installed is None:
-        return check(check_id, FAIL, f"{binary} --version exited {result.returncode}: {output!r}", install)
-    if not _version_matches(installed, pin):
-        return check(check_id, FAIL, f"pinned Claude version drifted: expected {pin.version}, got {installed}; path={binary}", install)
-    login = sh(binary, "auth", "login")
-    result = _run_quietly(run, [str(binary), "auth", "status"])
-    if isinstance(result, Exception):
-        return check(check_id, FAIL, f"could not execute {binary} auth status: {result}", login)
-    logged_in = False
-    if result.returncode == 0:
-        try:
-            logged_in = bool(json.loads(result.stdout).get("loggedIn"))
-        except (ValueError, AttributeError):
-            logged_in = False
-    if not logged_in:
-        return check(check_id, FAIL, f"claude {installed} at {binary} is not logged in", login)
-    return check(check_id, OK, f"claude {installed} at {binary}, digest certified, logged in")
-
-
-def _codex_home_of(actor: dict) -> tuple[Path | None, str | None]:
-    try:
-        spawn = json.loads(actor.get("spawn_json") or "{}")
-    except (TypeError, ValueError):
-        return None, "malformed spawn_json"
-    env = spawn.get("env") if isinstance(spawn, dict) else None
-    value = env.get("CODEX_HOME") if isinstance(env, dict) else None
-    if not value:
-        return None, "no spawn.env.CODEX_HOME"
-    try:
-        return paths.resolve_codex_home(actor["id"], str(value)), None
-    except ValidationError as exc:
-        return None, str(exc)
-
-
-def check_codex(
-    pin: RuntimePin | None,
-    workers: list[dict],
-    dead_credentials: list[dict],
-    *,
-    which: Callable[[str], str | None] = shutil.which,
-    run: Runner = subprocess.run,
-    auth_source: Path | None = None,
-    now: datetime | None = None,
-    ledger: LedgerRef | None = None,
-) -> list[dict]:
-    """``runtime:codex`` plus one entry per worker home and per dead login."""
-    check_id = "runtime:codex"
-    ledger = ledger or LedgerRef(paths.db_path(), False)
-    if pin is None:
-        return [check(check_id, SKIP, "platform is not certified for codex (see platform)")]
-    codex = which("codex")
-    if codex is None:
-        return [check(check_id, FAIL, "codex is not on PATH", "install the Codex CLI so that `codex` is on PATH, then rerun doctor")]
-    install = f"install codex {pin.version} (certified for {pin.platform}), or re-certify and bump the pin"
-    result = _run_quietly(run, [codex, "--version"])
-    if isinstance(result, Exception):
-        return [check(check_id, FAIL, f"could not execute {codex} --version: {result}", install)]
-    installed, output = _version_from(result)
-    if result.returncode != 0 or installed is None:
-        return [check(check_id, FAIL, f"{codex} --version exited {result.returncode}: {output!r}", install)]
-    if not _version_matches(installed, pin):
-        return [check(check_id, FAIL, f"codex version drifted: expected {pin.version} ({pin.boundary}), got {installed}; path={codex}", install)]
-    checks: list[dict] = []
-    source = (auth_source or paths.runtime_codex_auth_source()).expanduser()
-    if not source.is_file():
-        checks.append(check(check_id, FAIL, f"codex {installed} at {codex}; shared auth {source} is missing", _codex_login(source.parent)))
-    else:
-        checks.append(check(check_id, OK, f"codex {installed} at {codex}; shared auth {source} present"))
-    for worker in workers:
-        worker_id = worker["id"]
-        home_id = f"runtime:codex:home:{worker_id}"
-        home, why = _codex_home_of(worker)
-        if home is None:
-            checks.append(check(home_id, FAIL, f"{worker_id}: {why}", f"re-register {worker_id} so its spawn carries CODEX_HOME: {ledger.cli('bootstrap')}"))
-            continue
-        ok, reason, _snapshot = preflight_home_snapshot(home, actor_id=worker_id, now=now)
-        if ok:
-            checks.append(check(home_id, OK, f"{worker_id}: {home} provisioned, auth fresh"))
-            continue
-        if reason and reason.startswith("auth.json"):
-            checks.append(check(home_id, FAIL, f"{worker_id}: {home}: {reason}", _codex_login(home)))
-            continue
-        # The repair names the inspected home and the inspected ledger, so it
-        # cannot land on the default home or the default ledger by accident.
-        checks.append(
-            check(
-                home_id,
-                FAIL,
-                f"{worker_id}: {home}: {reason}; the worker is protected, so the repair needs an override reason",
-                ledger.cli(
-                    "provision-codex-home",
-                    "--actor-id", worker_id,
-                    "--project-root", worker.get("project_root") or "<project-root>",
-                    "--codex-home", home,
-                    "--override-protected", "doctor: restore the missing codex home",
-                ),
-            )
-        )
-    for row in dead_credentials:
-        lineage = str(row["lineage_key"])
-        checks.append(
-            check(
-                f"runtime:codex:login:{lineage}",
-                FAIL,
-                f"expired login (refresh failed: {row['dead_reason']} since {row['dead_at']}); lineage {lineage}",
-                _codex_login(Path(lineage).parent),
-            )
-        )
-    return checks
-
-
-def _codex_login(home: Path | str) -> str:
-    return f"CODEX_HOME={shlex.quote(str(home))} codex login"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -517,16 +322,17 @@ def check_mcp(
     db_explicit: bool,
     clients: list[str] | None = None,
     executable: str = sys.executable,
-    claude_config: Path | None = None,
-    codex_config: Path | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Runner = subprocess.run,
 ) -> list[dict]:
-    """One ``mcp:<architect>:<client>`` entry per recorded (or requested) seat."""
+    """One ``mcp:<architect>:<client>`` entry per recorded (or requested)
+    seat, plus whatever the client's own check adds (Codex: the binding
+    Codex resolves, as ``mcp:<architect>:codex:effective``). Every seat fix
+    is the ``bind-seat`` line."""
     checks: list[dict] = []
     if not architects:
         return [check("mcp", SKIP, "no architect registered (see ledger)")]
-    mcp_command = Path(executable).parent / "agent-comms-mcp"
-    claude_config = claude_config or mcp_clients.claude_config_path()
-    codex_config = codex_config or mcp_clients.codex_config_path()
+    mcp_command = str(Path(executable).parent / "agent-comms-mcp")
     ledger = LedgerRef(db_path, db_explicit)
     for architect in architects:
         actor_id = architect["id"]
@@ -552,40 +358,18 @@ def check_mcp(
         if not project_root:
             checks.append(check(f"mcp:{actor_id}", FAIL, f"{actor_id} has no project_root, so its seat cannot be located", f"re-register {actor_id} with a project_root: {ledger.cli('bootstrap')}"))
             continue
-        expected = mcp_clients.server_argv(mcp_command, actor_id, db_path if db_explicit else None)
-        wanted_binding = mcp_clients.binding(expected)
+        target = mcp_clients.SeatTarget(actor_id, Path(project_root), mcp_command, db_path, db_explicit, paths.home_override())
         for client in wanted:
             check_id = f"mcp:{actor_id}:{client}"
-            if client not in mcp_clients.CLIENTS:
+            seat = mcp_clients.SEATS.get(client)
+            if seat is None:
                 checks.append(check(check_id, FAIL, f"unknown MCP client {client!r}", f"use one of: {', '.join(mcp_clients.CLIENTS)}"))
                 continue
-            if client == "claude":
-                config = mcp_clients.read_claude_seat(claude_config, project_root)
-            else:
-                config = mcp_clients.read_codex_seat(codex_config)
-            found = config.server() if config.status == "ok" else None
-            if found is None:
-                why = {
-                    "missing": f"no {client} config at {config.path}",
-                    "unparseable": f"{config.path}: {config.error}",
-                    "no_project": f"{config.path} has no entry for {project_root}",
-                }.get(config.status, f"{config.path} has no {mcp_clients.SERVER_NAME} server")
-                checks.append(check(check_id, FAIL, f"{actor_id} has no {client} seat: {why}", mcp_clients.render_fix(client, project_root, expected, replace=False)))
-                continue
-            bound = mcp_clients.binding(found.args, found.env)
-            problems = []
-            if bound["malformed"]:
-                problems.append(f"malformed arguments (repeated or valueless {', '.join(bound['malformed'])})")
-            if bound["actor_id"] != actor_id:
-                problems.append(f"bound to actor {bound['actor_id']!r}")
-            if not mcp_clients.same_ledger(bound["db"], wanted_binding["db"]):
-                problems.append(f"bound to ledger {bound['db']!r}, expected {wanted_binding['db']!r}")
-            if not mcp_clients.same_command(found.command, mcp_command):
-                problems.append(f"runs {found.command!r}, expected {str(mcp_command)!r}")
-            if problems:
-                checks.append(check(check_id, FAIL, f"{actor_id} {client} seat in {config.path}: {'; '.join(problems)}", mcp_clients.render_fix(client, project_root, expected, replace=True)))
-                continue
-            checks.append(check(check_id, OK, f"{actor_id} {client} seat in {config.path} binds {actor_id}"))
+            for finding in seat.diagnose(target, which=which, run=run):
+                fix = finding.fix
+                if fix in ("rebind", "replace"):
+                    fix = ledger.cli("bind-seat", actor_id, "--client", client, *(["--replace-seat"] if fix == "replace" else []))
+                checks.append(check(check_id + finding.suffix, finding.status, finding.detail, fix))
     return checks
 
 
@@ -618,7 +402,8 @@ def run_doctor(
     db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
     platform = current_platform()
     ledger = LedgerRef(db_path, db_explicit)
-    checks: list[dict] = [check_install(executable), check_runtime_root(paths.runtime_root())]
+    runtime_root = paths.runtime_root()
+    checks: list[dict] = [check_install(executable), check_runtime_root(runtime_root)]
     registry_check, config = check_registry(paths.actors_config_path(), ledger)
     checks.append(registry_check)
     ledger_check, snapshot = check_ledger(db_path, ledger)
@@ -626,24 +411,11 @@ def run_doctor(
     runtimes = runtimes_in_use(snapshot, config)
     platform_check, pins = check_platform(platform, runtimes)
     checks.append(platform_check)
-    if "claude" in runtimes:
-        checks.append(check_claude(pins.get("claude"), run=run))
-    else:
-        checks.append(check("runtime:claude", SKIP, "no claude worker registered"))
-    if "codex" in runtimes:
-        checks.extend(
-            check_codex(
-                pins.get("codex"),
-                snapshot.workers("codex") if snapshot else [],
-                snapshot.dead_credentials if snapshot else [],
-                which=which,
-                run=run,
-                now=now,
-                ledger=ledger,
-            )
-        )
-    else:
-        checks.append(check("runtime:codex", SKIP, "no codex worker registered"))
+    for runtime in runtime_registry.registered():
+        if runtime.name in runtimes:
+            checks.extend(runtime.doctor_checks(pins.get(runtime.name), snapshot, run=run, now=now, ledger=ledger))
+        elif (skip := runtime.doctor_skip()) is not None:
+            checks.append(skip)
     if snapshot is not None and snapshot.schema_version <= LEDGER_SCHEMA_VERSION:
         # A roster problem (several humans, no architect) fails the ledger
         # check but the ledger itself was read, so the checks that only need
@@ -658,10 +430,12 @@ def run_doctor(
                 db_explicit=db_explicit,
                 clients=clients,
                 executable=executable,
+                which=which,
+                run=run,
             )
         )
     else:
         checks.append(check("monitor", SKIP, "ledger unavailable (see ledger)"))
         checks.append(check("mcp", SKIP, "ledger unavailable (see ledger)"))
-    checks.append(check_admin_token(paths.runtime_root() / "admin-token"))
-    return report(platform, checks)
+    checks.append(check_admin_token(runtime_root / "admin-token"))
+    return {**report(platform, checks), "runtime_root": str(runtime_root)}

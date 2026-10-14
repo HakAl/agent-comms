@@ -41,11 +41,11 @@ PROBE = textwrap.dedent(
             if name.startswith("AGENT_COMMS_") or name in watched
         },
         "paths": {
-            "DEFAULT_DB": str(paths.DEFAULT_DB),
+            "canonical_db_path": str(paths.canonical_db_path()),
             "db_path": str(paths.db_path()),
             "runtime_root": str(paths.runtime_root()),
             "codex_custody_root": str(paths.codex_custody_root()),
-            "_DEFAULT_CONTROL_ROOT": str(supervisor._DEFAULT_CONTROL_ROOT),
+            "default_control_root": str(supervisor.default_control_root()),
             "control_root": str(supervisor.control_root()),
         },
     }))
@@ -113,11 +113,11 @@ class IsolationTests(unittest.TestCase):
         self.assertTrue(protected)
         candidates = {
             "Path.home()": Path.home(),
-            "paths.DEFAULT_DB": paths.DEFAULT_DB,
+            "paths.canonical_db_path()": paths.canonical_db_path(),
             "paths.runtime_root()": paths.runtime_root(),
             "paths.db_path()": paths.db_path(),
             "paths.codex_custody_root()": paths.codex_custody_root(),
-            "supervisor._DEFAULT_CONTROL_ROOT": supervisor._DEFAULT_CONTROL_ROOT,
+            "supervisor.default_control_root()": supervisor.default_control_root(),
             "supervisor.control_root()": supervisor.control_root(),
         }
         for name, candidate in candidates.items():
@@ -150,7 +150,7 @@ class IsolationTests(unittest.TestCase):
             self.assertNotIn(name, env)
         self.assertEqual(env[isolation.SCRATCH_HOME_ENV], report["home"])
         self.assertEqual(report["paths"]["control_root"], env[isolation.SUPERVISOR_ROOT_ENV])
-        self.assertNotEqual(report["paths"]["control_root"], report["paths"]["_DEFAULT_CONTROL_ROOT"])
+        self.assertNotEqual(report["paths"]["control_root"], report["paths"]["default_control_root"])
         # The scratch directories are removed when the process exits.
         self.assertFalse(Path(report["home"]).exists())
         self.assertFalse(Path(env[isolation.SUPERVISOR_ROOT_ENV]).exists())
@@ -287,7 +287,7 @@ class IsolationTests(unittest.TestCase):
             import test_store
             from agent_comms import paths
             print(os.environ["HOME"])
-            print(paths.DEFAULT_DB)
+            print(paths.canonical_db_path())
             """
         )
         result = self.run_probe(code)
@@ -327,20 +327,19 @@ class IsolationTests(unittest.TestCase):
         import importlib
         import re
 
-        pattern = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=.*Path\.home\(\)", re.M)
+        pattern = re.compile(
+            r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=.*"
+            r"(?:Path\.home\(\)|paths\.[a-z_]+\(\)|runtime_root\(\))",
+            re.M,
+        )
         found = {}
         for path in sorted((REPO_ROOT / "agent_comms").rglob("*.py")):
             for match in pattern.finditer(path.read_text()):
                 module = ".".join(path.relative_to(REPO_ROOT).with_suffix("").parts)
                 found[f"{module}:{match.group('name')}"] = (module, match.group("name"))
-        self.assertEqual(
-            sorted(found),
-            [
-                "agent_comms.cli._helpers:ADMIN_TOKEN_PATH",
-                "agent_comms.paths:DEFAULT_DB",
-                "agent_comms.supervisor:_DEFAULT_CONTROL_ROOT",
-            ],
-        )
+        # None left: every runtime path resolves through paths.runtime_root()
+        # at call time, so AGENT_COMMS_HOME can move it.
+        self.assertEqual(sorted(found), [])
         protected = isolation.protected_roots()
         for key, (module, name) in found.items():
             value = getattr(importlib.import_module(module), name)

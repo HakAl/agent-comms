@@ -53,7 +53,7 @@ CLAUDE_T8_TEST = "test_claude_cannot_touch_protected_supervisor_root"
 # dead-worker-terminalization T8 protected-supervisor-root negative cell is
 # also model-driven (the worker runs one probe, replies, and closes), so it
 # uses the same positive-cell budgets and is counted here (codex +1, claude +1).
-EXPECTED_POSITIVE_DISPATCHES = {"codex": 6, "claude": 10}
+EXPECTED_POSITIVE_DISPATCHES = {"codex": 7, "claude": 10}
 
 DISPATCH_CALL_NAMES = {"dispatch_and_wait", "dispatch_agent"}
 

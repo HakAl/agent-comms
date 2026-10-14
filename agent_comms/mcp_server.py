@@ -309,7 +309,19 @@ def main() -> None:
     parser = ActionableArgumentParser(prog="agent-comms-mcp")
     parser.add_argument("--db", default=None, help="SQLite database path")
     parser.add_argument("--actor-id", required=True, help="Bound actor identity for this MCP server")
+    parser.add_argument(
+        "--home",
+        default=None,
+        help="Runtime root of the install this server belongs to (absolute); wins over AGENT_COMMS_HOME",
+    )
     args = parser.parse_args()
+    if args.home is not None:
+        # Clients merge a server's env across config layers but take argv
+        # whole, so the install travels here; everything below resolves
+        # paths through AGENT_COMMS_HOME.
+        if not os.path.isabs(args.home):
+            parser.error(f"--home {args.home!r} is not an absolute path")
+        os.environ[paths.HOME_ENV] = args.home
     print_startup_report()
     try:
         server = create_server(

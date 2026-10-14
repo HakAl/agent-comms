@@ -274,13 +274,13 @@ class ActorConfigTest(unittest.TestCase):
                 actors = {actor["id"]: actor for actor in explicit.list_actors()}
                 self.assertEqual(actors["alpha-codex-worker"]["spawn"]["env"]["CODEX_HOME"], str(home))
                 self.assertTrue((home / "config.toml").is_file())
-                self.assertTrue((home / "alpha-codex-worker.config.toml").is_file())
+                self.assertFalse((home / "alpha-codex-worker.config.toml").exists())
                 self.assertTrue((home / "auth.json").is_symlink())
                 self.assertFalse((home / "auth.json").exists())
                 self.assertEqual(os.readlink(home / "auth.json"), str(source.resolve()))
-                # SETUP-002 F1: the worker's only ledger binding is its config.toml.
-                args = tomllib.loads((home / "config.toml").read_text())["mcp_servers"]["agent-comms"]["args"]
-                self.assertEqual(args, ["--actor-id", "alpha-codex-worker", "--db", os.path.abspath(str(root / "explicit.sqlite"))])
+                # The worker's ledger is bound per run with -c (slice 3b); its
+                # home holds trust only, so no ledger is baked in.
+                self.assertNotIn("mcp_servers", tomllib.loads((home / "config.toml").read_text()))
                 # An explicit ledger keeps the legacy placeholder unless told otherwise.
                 legacy = Store(root / "legacy.sqlite")
                 bootstrap_store(legacy, config)
@@ -291,8 +291,7 @@ class ActorConfigTest(unittest.TestCase):
                 bootstrap_store(default, config)
                 actors = {actor["id"]: actor for actor in default.list_actors()}
                 self.assertEqual(actors["alpha-codex-worker"]["spawn"]["env"]["CODEX_HOME"], str(home))
-                args = tomllib.loads((home / "config.toml").read_text())["mcp_servers"]["agent-comms"]["args"]
-                self.assertEqual(args, ["--actor-id", "alpha-codex-worker"])
+                self.assertNotIn("mcp_servers", tomllib.loads((home / "config.toml").read_text()))
                 with contextlib.redirect_stderr(io.StringIO()):
                     bootstrap_store(default, config, codex_custody=False, override_protected="test: legacy form")
                 actors = {actor["id"]: actor for actor in default.list_actors()}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -12,10 +13,9 @@ from pathlib import Path
 from . import DispatchContext, DispatchStart
 from .. import paths, supervisor
 from ..policies import compile_policy, scoped_env
-from ..runtime_pins import claude_binary_path
+from ..runtime_pins import claude_binary_path, codex_binary_path
 from ..spawn import DEFAULT_WORKER_PROMPT, claude_settings_for_policy
 
-SPAWN_GRACE_SECONDS = 2.0
 # SIGTERM -> grace -> SIGKILL window the per-dispatch supervisor enforces on the
 # native runtime child at the hard TTL.
 KILL_AFTER_SECONDS = 30.0
@@ -96,11 +96,9 @@ def _same_run_exit_evidence(observed: dict) -> dict | None:
     return None
 
 
-def _configured_spawn_grace_seconds() -> float:
-    try:
-        return float(os.environ.get("AGENT_COMMS_SPAWN_GRACE_SECONDS", str(SPAWN_GRACE_SECONDS)))
-    except ValueError:
-        return SPAWN_GRACE_SECONDS
+def _json_string_body(value: str) -> str:
+    """``value`` escaped for the inside of a JSON string literal."""
+    return json.dumps(value)[1:-1]
 
 
 class _PlaceholderValues(dict):
@@ -135,7 +133,9 @@ class ProcessSpawnAdapter:
         "mcp_command",
         "hooks_path",
         "codex_home",
+        "agent_comms_home",
         "claude_binary",
+        "codex_binary",
         "python",
         "worker_prompt",
     )
@@ -167,6 +167,17 @@ class ProcessSpawnAdapter:
             if self._uses_live_worker_prompt(context)
             else None
         )
+        # Per-run arguments the runtime adds ahead of the stored template
+        # (Codex: the worker's MCP binding); the template stays as stored.
+        prefix = self._runtime_prefix_args(context)
+        if prefix:
+            args = [*prefix, *args]
+            if prompt_index is not None:
+                prompt_index += len(prefix)
+        preflight_observed = {
+            **preflight_observed,
+            **(self._binding_preflight(context, command, prefix, args[len(prefix):], self._preflight_env(context, spawn, policy)) or {}),
+        }
         separate_stdout = self._separate_stdout(context, args, prompt_index)
         if policy.bootstrap_marker not in " ".join(args):
             raise RuntimeError(f"spawn args must include bootstrap marker {policy.bootstrap_marker}")
@@ -292,6 +303,26 @@ class ProcessSpawnAdapter:
     def _preflight(self, context: DispatchContext) -> dict | None:
         return None
 
+    def _runtime_prefix_args(self, context: DispatchContext) -> list[str]:
+        """Arguments placed before the template's for this run. Default: none."""
+        return []
+
+    def _binding_preflight(
+        self, context: DispatchContext, command: str, prefix: list[str], stored: list[str], env: dict[str, str]
+    ) -> dict | None:
+        """Refuse the dispatch, before any process starts, when the runtime
+        launched with ``prefix`` then the ``stored`` template arguments would
+        not bind the worker as intended. Default: nothing to check."""
+        return None
+
+    def _preflight_env(self, context: DispatchContext, spawn: dict, policy) -> dict[str, str]:  # type: ignore[no-untyped-def]
+        """The base allowlist plus the spawn env: enough to run the runtime
+        binary as the worker will, without the per-run worker variables."""
+        base = {key: os.environ[key] for key in ALLOWED_BASE_ENV_NAMES if key in os.environ}
+        env = scoped_env(base, policy)
+        env.update(self._spawn_env(spawn, context, policy))
+        return env
+
     def _validate_rendered_command(self, command: str, context: DispatchContext) -> None:
         return None
 
@@ -310,6 +341,12 @@ class ProcessSpawnAdapter:
                 "AGENT_COMMS_PROJECT_ROOT": str(context.recipient["project_root"]),
             }
         )
+        # The worker belongs to the dispatching install. Added from the
+        # resolved home, not copied from the ambient env: the allowlist
+        # above stays closed.
+        home = paths.home_override()
+        if home is not None:
+            env[paths.HOME_ENV] = str(home)
         # Test-only extra child environment (e.g. a child-pid capture file). The
         # supervisor's ``launch_child`` inherits this env, so the native child
         # sees it. Production returns {}.
@@ -377,7 +414,8 @@ class ProcessSpawnAdapter:
                 resolved.append(arg)
                 skip_next_settings_value = is_claude and arg == "--settings"
                 continue
-            resolved.append(self._format_arg(arg, context))
+            after_mcp_config = index > 0 and str(raw_args[index - 1]) == "--mcp-config"
+            resolved.append(self._format_arg(arg, context, json_string=after_mcp_config))
             skip_next_settings_value = is_claude and arg == "--settings"
 
         if uses_live_worker_prompt and worker_prompt_index is None:
@@ -543,7 +581,10 @@ class ProcessSpawnAdapter:
         if zdotdir is not None:
             self._cleanup_zdotdir(zdotdir)
 
-    def _format_arg(self, arg: str, context: DispatchContext) -> str:
+    def _format_arg(self, arg: str, context: DispatchContext, *, json_string: bool = False) -> str:
+        """Fill ``arg``'s placeholders. ``json_string`` escapes each value for
+        a JSON string, for a template that is already serialized JSON (the
+        Claude ``--mcp-config``), so a quote or backslash in a path stays data."""
         values = _PlaceholderValues(
             {
                 "actor_id": str(context.recipient["id"]),
@@ -554,15 +595,24 @@ class ProcessSpawnAdapter:
                 "mcp_command": str(paths.mcp_command()),
                 "hooks_path": str(paths.hooks_path()),
                 "codex_home": str(paths.codex_home(str(context.recipient["id"]))),
+                "agent_comms_home": str(paths.runtime_root()),
                 # The dispatching process's own interpreter: whatever can run this
                 # adapter can import the package, on PATH or not.
                 "python": sys.executable,
             },
-            # Resolved only by a spawn that names it: the Claude pin is
-            # per platform and fails closed where none is certified, which
-            # must not touch a fake or codex dispatch.
-            lazy={"claude_binary": lambda: str(claude_binary_path())},
+            # Resolved only by a spawn that names it: a runtime pin is per
+            # platform and fails closed where none is certified, which must
+            # not touch a dispatch of another runtime.
+            lazy={
+                "claude_binary": lambda: str(claude_binary_path()),
+                "codex_binary": lambda: str(codex_binary_path()),
+            },
         )
+        if json_string:
+            values = _PlaceholderValues(
+                {key: _json_string_body(value) for key, value in values.items()},
+                {key: (lambda make=make: _json_string_body(make())) for key, make in values._lazy.items()},
+            )
         try:
             return arg.format_map(values)
         except KeyError as exc:

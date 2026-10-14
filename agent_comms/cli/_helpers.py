@@ -12,9 +12,9 @@ from .. import paths
 from ..schema import ValidationError
 from ..spawn import render_spawn
 
-DEFAULT_CONFIG = paths.actors_config_path()
-ADMIN_TOKEN_PATH = Path.home() / ".agent-comms" / "admin-token"
-_ADMIN_TOKEN_PATH_DEFAULT = ADMIN_TOKEN_PATH
+# None means the runtime root's admin-token, resolved at call time; tests
+# patch in a path.
+ADMIN_TOKEN_PATH: Path | None = None
 ADMIN_CREDENTIAL_ERROR = "admin write paths require an operator credential; not available to workers."
 
 
@@ -87,9 +87,7 @@ def require_admin_credential() -> str:
     exactly as the settlement engine treats it.
     """
     provided = os.environ.get("AGENT_COMMS_ADMIN_TOKEN", "")
-    token_path = ADMIN_TOKEN_PATH
-    if token_path == _ADMIN_TOKEN_PATH_DEFAULT:
-        token_path = Path.home() / ".agent-comms" / "admin-token"
+    token_path = ADMIN_TOKEN_PATH or paths.runtime_root() / "admin-token"
     try:
         expected = token_path.read_text().strip()
         mode = os.stat(token_path).st_mode
@@ -312,11 +310,8 @@ def bootstrap_store(
 
     if codex_custody is None:
         codex_custody = bool(store._db.is_default_db_open)
-    # The worker's MCP server binds the ledger through its codex config, so a
-    # store other than the default ledger writes its absolute path there.
-    worker_db = None if store._db.is_default_db_open else os.path.abspath(os.path.expanduser(str(store._db.db_path)))
     config = load_actor_config(config_path)
-    canonical = Path(config_path).expanduser().resolve() == DEFAULT_CONFIG.resolve()
+    canonical = Path(config_path).expanduser().resolve() == paths.actors_config_path().resolve()
     registered = []
     # A worker's owner must already be registered, so workers go last: the
     # file's order (a sorted one, say) does not decide whether it bootstraps.
@@ -353,7 +348,6 @@ def bootstrap_store(
                     auth_source=paths.runtime_codex_auth_source(),
                     enforce_custody_root=True,
                     link_absent_source=True,
-                    db_path=worker_db,
                 )
                 codex_home = str(home)
             spawn = render_spawn(runtime, actor_id, codex_home=codex_home) if runtime else None

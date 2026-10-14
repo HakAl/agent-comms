@@ -12,14 +12,14 @@ from . import paths
 logger = logging.getLogger(__name__)
 
 SURFACE_ROOT = paths.REPO_ROOT.resolve()
-CONTRACT_VERSION: int = 23
+CONTRACT_VERSION: int = 29
 # Version of the consumer-visible dispatch contract. A loaded MCP process
 # refuses dispatch when its version differs from this checkout's, so advance it
 # for any change a stale process could misapply. A contract-compatible change to
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "296b49d9733f9057b8b0f0478ddd41300d3f471d688f1294e604f90cbd361581"
+    "2f8202790410b1caf1449f19f3ca1c261f4ce5dea6589a0cdf0dbec836c35df4"
 )
 
 
@@ -30,11 +30,14 @@ class StaleModuleError(RuntimeError):
 INCLUDED_EXPLICIT = frozenset(
     {
         "agent_comms/actors.py",
+        "agent_comms/checks.py",
         "agent_comms/clock.py",
         "agent_comms/code_identity.py",
         "agent_comms/codex_home.py",
         "agent_comms/codex_auth_refresh.py",
         "agent_comms/codex_auth_constants.py",
+        "agent_comms/codex_binding.py",
+        "agent_comms/codex_hook.py",
         "agent_comms/db.py",
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
@@ -61,6 +64,7 @@ INCLUDED_GLOBS = (
     "agent_comms/adapters/*.py",
     "agent_comms/policies/*.py",
     "agent_comms/hooks/*.py",
+    "agent_comms/runtimes/*.py",
 )
 CONTRACT_GOVERNING = frozenset(
     {
@@ -73,6 +77,8 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/codex_home.py",
         "agent_comms/codex_auth_refresh.py",
         "agent_comms/codex_auth_constants.py",
+        "agent_comms/codex_binding.py",
+        "agent_comms/codex_hook.py",
         "agent_comms/db.py",
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
@@ -90,6 +96,9 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/reviewing/reply_snapshots.py",
         "agent_comms/runtime_pins.json",
         "agent_comms/runtime_pins.py",
+        "agent_comms/runtimes/__init__.py",
+        "agent_comms/runtimes/claude.py",
+        "agent_comms/runtimes/codex.py",
         "agent_comms/schema.py",
         "agent_comms/spawn.py",
         "agent_comms/store.py",
@@ -99,6 +108,8 @@ CONTRACT_GOVERNING = frozenset(
 CONTRACT_NEUTRAL_REASONS = {
     "agent_comms/adapters/fake.py": "test-only fake adapter; not part of the production consumer contract",
     "agent_comms/adapters/fake_worker.py": "test-only fake worker; not part of the production consumer contract",
+    "agent_comms/checks.py": "doctor check-row helpers shared with the runtimes; reports only, decides no dispatch",
+    "agent_comms/runtimes/fake.py": "test-only fake runtime; not part of the production consumer contract",
     "agent_comms/clock.py": "internal clock helper; cannot alter the consumer-visible dispatch contract",
     "agent_comms/code_identity.py": "holds contract version/digest metadata; does not define dispatch behavior",
     "agent_comms/hooks/session_start.py": "session orientation is not dispatch-correctness surface",
@@ -107,6 +118,7 @@ CONTRACT_NEUTRAL_REASONS = {
 }
 EXCLUDED_WITH_REASON = {
     "agent_comms/cli/**": "admin and operator CLI surface; after DEFAULT_DB decoupling it is not server-imported",
+    "agent_comms/custody.py": "operator CLI helper that fills runtime custody; dispatch verifies through governed runtime_pins, off the dispatch spawn path",
     "agent_comms/codex_refresh_driver.py": "post-expiry auth refresh pass started by the monitor, off the dispatch spawn path",
     "agent_comms/monitor.py": "separate cron/operator reconciliation process, off the dispatch spawn path",
     "agent_comms/onboarding.py": "separate onboarding CLI helper, off the dispatch spawn path",

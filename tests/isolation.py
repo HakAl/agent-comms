@@ -30,6 +30,14 @@ Switches (environment variables):
     that need real runtime logins and probe the real protected root. The
     guard refuses it unless every test target on the command line is under
     ``tests/cells``, so the substrate suite can never run against a real home.
+``AGENT_COMMS_TEST_CERT=1``
+    Certification mode, run by ``scripts/certify.py``. Isolation stays on;
+    the guard refuses it unless every test target is under ``tests/cells``
+    and creates both scratch directories under a base short enough for a
+    control socket under ``<scratch home>/.agent-comms/run/s``. The cert
+    inputs reach the cells as ``AGENT_COMMS_TEST_*`` names, which the strip
+    keeps (``AGENT_COMMS_TEST_CODEX_CERT_HOME``,
+    ``AGENT_COMMS_TEST_CODEX_VERSIONS_DIR``).
 ``AGENT_COMMS_TEST_KEEP_SCRATCH=1``
     Keep the scratch directories and print their paths to stderr, so a run
     can be audited for what it would have written under a real home.
@@ -51,6 +59,7 @@ import tempfile
 from pathlib import Path
 
 LIVE_HOME_ENV = "AGENT_COMMS_TEST_LIVE_HOME"
+CERT_ENV = "AGENT_COMMS_TEST_CERT"
 KEEP_SCRATCH_ENV = "AGENT_COMMS_TEST_KEEP_SCRATCH"
 SCRATCH_HOME_ENV = "AGENT_COMMS_TEST_SCRATCH_HOME"
 SUPERVISOR_ROOT_ENV = "AGENT_COMMS_SUPERVISOR_ROOT"
@@ -77,6 +86,12 @@ SUPPORTED_INVOCATIONS = (
 
 # Run token (32 hex chars) + "/" + socket name "s", plus the joining "/".
 _CONTROL_SOCKET_SUFFIX_BYTES = 1 + 32 + 1 + 1
+# "/" + mkdtemp("ach") name (prefix + 8 random chars) + the default control
+# root below a home, "/.agent-comms/run/s".
+# agent_comms.supervisor.SUN_PATH_MAX_BYTES, repeated so the guard can size a
+# path before agent_comms is imported (a substrate test keeps them equal).
+SUN_PATH_MAX_BYTES = 103
+_SCRATCH_HOME_TO_CONTROL_ROOT_BYTES = 1 + len("ach") + 8 + len("/.agent-comms/run/s")
 
 _real_homes: tuple[Path, ...] = ()
 _scratch: tuple[Path, Path] | None = None
@@ -187,16 +202,53 @@ def _cleanup(home: Path, supervisor_root: Path) -> None:
     shutil.rmtree(supervisor_root, ignore_errors=True)
 
 
+def cert_base_candidates() -> tuple[str, ...]:
+    """Directories cert mode may create its scratch home under, in order.
+
+    The per-user temp directory comes first; macOS puts it under
+    ``/var/folders`` and the socket path then no longer fits, so the POSIX
+    ``/tmp`` (on macOS a link to ``/private/tmp``) follows.
+    """
+    return (tempfile.gettempdir(), "/tmp")
+
+
+def _cert_socket_budget(base: str) -> int:
+    return (
+        len(os.fsencode(base.rstrip("/")))
+        + _SCRATCH_HOME_TO_CONTROL_ROOT_BYTES
+        + _CONTROL_SOCKET_SUFFIX_BYTES
+    )
+
+
+def cert_scratch_base(candidates: tuple[str, ...] | None = None) -> str:
+    """The first existing candidate whose scratch control socket fits sun_path.
+
+    Cert mode runs cells that bind a listener under the scratch home's default
+    control root, so the home itself must sit under a short directory. Runs
+    before ``agent_comms`` may be imported, hence the local byte limit.
+    """
+    budgets = []
+    for base in candidates if candidates is not None else cert_base_candidates():
+        budget = _cert_socket_budget(base)
+        budgets.append(f"{base} ({budget} bytes)")
+        if os.path.isdir(base) and budget <= SUN_PATH_MAX_BYTES:
+            return base
+    raise RuntimeError(
+        f"{CERT_ENV}=1 needs a scratch home whose control socket fits "
+        f"{SUN_PATH_MAX_BYTES} bytes; no candidate base fits: " + ", ".join(budgets)
+    )
+
+
 def _verify(home: Path, supervisor_root: Path) -> None:
     from agent_comms import paths, supervisor
 
     candidates = {
         "Path.home()": Path.home(),
-        "agent_comms.paths.DEFAULT_DB": paths.DEFAULT_DB,
+        "agent_comms.paths.canonical_db_path()": paths.canonical_db_path(),
         "agent_comms.paths.runtime_root()": paths.runtime_root(),
         "agent_comms.paths.db_path()": paths.db_path(),
         "agent_comms.paths.codex_custody_root()": paths.codex_custody_root(),
-        "agent_comms.supervisor._DEFAULT_CONTROL_ROOT": supervisor._DEFAULT_CONTROL_ROOT,
+        "agent_comms.supervisor.default_control_root()": supervisor.default_control_root(),
         "agent_comms.supervisor.control_root()": supervisor.control_root(),
     }
     leaks = [
@@ -233,6 +285,12 @@ def activate() -> None:
                 "as the only target, from your own shell."
             )
         return
+    cert = os.environ.get(CERT_ENV) == "1"
+    if cert and not _argv_targets_cells():
+        raise RuntimeError(
+            f"{CERT_ENV}=1 is certification mode for the login-backed cell suite; invoke it "
+            "with tests/cells (or tests.cells modules or test ids) as the only targets."
+        )
     if _inherited_isolation():
         # A child of an isolated process: keep whatever environment the test
         # built for it and never strip or re-create scratch directories.
@@ -255,9 +313,10 @@ def activate() -> None:
     _real_homes = tuple(homes)
 
     keep = os.environ.get(KEEP_SCRATCH_ENV) == "1"
-    home = Path(tempfile.mkdtemp(prefix="ach"))
+    base = cert_scratch_base() if cert else None
+    home = Path(tempfile.mkdtemp(prefix="ach", dir=base))
     # Shortest possible name: this root plus "/<32 hex>/s" must fit a socket path.
-    supervisor_root = Path(tempfile.mkdtemp(prefix="s"))
+    supervisor_root = Path(tempfile.mkdtemp(prefix="s", dir=base))
     _scratch = (home, supervisor_root)
     if keep:
         print(

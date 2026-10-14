@@ -58,7 +58,6 @@ class LauncherProvenanceTest(unittest.TestCase):
     def _assert_written(self, result):
         expected = [
             self.home / "config.toml",
-            self.home / f"{self.args.actor_id}.config.toml",
             self.home / "auth.json",
         ]
         self.assertEqual(result["written"], [str(path) for path in expected])
