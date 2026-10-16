@@ -26,8 +26,8 @@ What it does, once per process tree:
 Switches (environment variables):
 
 ``AGENT_COMMS_TEST_LIVE_HOME=1``
-    Skip isolation. Only for operator certification runs of ``tests/cells``
-    that need real runtime logins and probe the real protected root. The
+    Skip isolation. Only for operator runs of ``tests/cells`` that need
+    real runtime logins and probe the real protected root. The
     guard refuses it unless every test target on the command line is under
     ``tests/cells``, so the substrate suite can never run against a real home.
 ``AGENT_COMMS_TEST_CERT=1``
@@ -37,7 +37,9 @@ Switches (environment variables):
     control socket under ``<scratch home>/.agent-comms/run/s``. The cert
     inputs reach the cells as ``AGENT_COMMS_TEST_*`` names, which the strip
     keeps (``AGENT_COMMS_TEST_CODEX_CERT_HOME``,
-    ``AGENT_COMMS_TEST_CODEX_VERSIONS_DIR``).
+    ``AGENT_COMMS_TEST_CODEX_VERSIONS_DIR``,
+    ``AGENT_COMMS_TEST_CLAUDE_CERT_HOME``,
+    ``AGENT_COMMS_TEST_CLAUDE_VERSIONS_DIR``).
 ``AGENT_COMMS_TEST_KEEP_SCRATCH=1``
     Keep the scratch directories and print their paths to stderr, so a run
     can be audited for what it would have written under a real home.

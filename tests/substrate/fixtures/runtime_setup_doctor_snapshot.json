@@ -8,9 +8,9 @@
       "my-project-fake-worker"
     ],
     "claude_custody": {
-      "path": "<ROOT>/custody/2.1.195",
+      "path": "<ROOT>/custody/2.1.300",
       "present": false,
-      "version": "2.1.195"
+      "version": "2.1.300"
     },
     "clients": [
       "claude",
@@ -25,7 +25,7 @@
     ],
     "doctor": {
       "fixes": [
-        "download Claude Code 2.1.195 and place the executable at <ROOT>/custody/2.1.195, or re-certify and bump the pin",
+        "download Claude Code 2.1.300 and place the executable at <ROOT>/custody/2.1.300, or re-certify and bump the pin",
         "agent-comms custody codex",
         "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login",
         "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"
@@ -73,7 +73,7 @@
     },
     "next": [
       "agent-comms --db '<ROOT>/ledger dir/ledger.sqlite' doctor",
-      "download Claude Code 2.1.195 and place the executable at <ROOT>/custody/2.1.195, or re-certify and bump the pin",
+      "download Claude Code 2.1.300 and place the executable at <ROOT>/custody/2.1.300, or re-certify and bump the pin",
       "agent-comms custody codex",
       "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login",
       "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"
@@ -120,14 +120,14 @@
       {
         "id": "platform",
         "status": "ok",
-        "detail": "darwin-arm64 certified: claude 2.1.195, codex 0.160.0",
+        "detail": "darwin-arm64 certified: claude 2.1.300, codex 0.160.0",
         "fix": null
       },
       {
         "id": "runtime:claude",
         "status": "fail",
-        "detail": "pinned Claude binary is missing; expected claude 2.1.195; path=<ROOT>/custody/2.1.195",
-        "fix": "download Claude Code 2.1.195 and place the executable at <ROOT>/custody/2.1.195, or re-certify and bump the pin"
+        "detail": "pinned Claude binary is missing; expected claude 2.1.300; path=<ROOT>/custody/2.1.300",
+        "fix": "download Claude Code 2.1.300 and place the executable at <ROOT>/custody/2.1.300, or re-certify and bump the pin"
       },
       {
         "id": "runtime:codex",
@@ -179,7 +179,7 @@
       }
     ],
     "fixes": [
-      "download Claude Code 2.1.195 and place the executable at <ROOT>/custody/2.1.195, or re-certify and bump the pin",
+      "download Claude Code 2.1.300 and place the executable at <ROOT>/custody/2.1.300, or re-certify and bump the pin",
       "agent-comms custody codex",
       "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login",
       "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"

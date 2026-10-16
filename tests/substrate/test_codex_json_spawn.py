@@ -557,6 +557,54 @@ class RerenderTest(ScratchTest):
             )["spawn"]["args"],
         )
 
+    def claude_spawn_without_verbose(self, name):
+        spawn = render_spawn("claude", name)
+        spawn["args"].remove("--verbose")
+        spawn["args"][-1] = f"WakePolicy={WORKER_DISPATCH_POLICY}. stored prompt stays verbatim"
+        spawn["env"] = {"KEEP": "1"}
+        return spawn
+
+    def test_claude_spawn_without_verbose_gains_it(self):
+        # Claude 2.1.300 refuses -p with stream-json unless --verbose is set.
+        actor = self.actor("claude-worker", spawn=self.claude_spawn_without_verbose("claude-worker"), runtime="claude")
+        result = self.run_rerender(actor_id="claude-worker", apply=True)["actors"][0]
+        self.assertEqual(result["status"], "update", result.get("reason"))
+        self.assertTrue(result["verified"])
+        args = result["spawn"]["args"]
+        self.assertEqual(args[args.index("stream-json") + 1], "--verbose")
+        self.assertEqual(args[-1], actor["spawn"]["args"][-1])
+        self.assertEqual(result["spawn"]["env"], {"KEEP": "1"})
+        self.assertEqual(result["spawn"]["command"], actor["spawn"]["command"])
+        again = self.run_rerender(actor_id="claude-worker")["actors"][0]
+        self.assertEqual((again["status"], again["diff"]), ("no-op", ""))
+
+    def test_claude_spawn_without_env_stays_without_env(self):
+        # The Claude template has no env key; rerender must not add one.
+        spawn = self.claude_spawn_without_verbose("claude-worker")
+        del spawn["env"]
+        self.actor("claude-worker", spawn=spawn, runtime="claude")
+        result = self.run_rerender(actor_id="claude-worker", apply=True)["actors"][0]
+        self.assertEqual(result["status"], "update", result.get("reason"))
+        self.assertNotIn("env", result["spawn"])
+        changed = [line for line in result["diff"].splitlines() if line[:1] in "+-" and line[:3] not in ("+++", "---")]
+        self.assertEqual(changed, ['+    "--verbose",'])
+
+    def test_claude_spawn_differing_beyond_verbose_is_refused(self):
+        spawn = self.claude_spawn_without_verbose("claude-worker")
+        spawn["args"].insert(0, "--custom")
+        self.actor("claude-worker", spawn=spawn, runtime="claude")
+        with mock.patch.object(self.store, "update_actor_spawn") as write:
+            result = self.run_rerender(actor_id="claude-worker", apply=True)["actors"][0]
+        self.assertEqual(result["status"], "refused")
+        self.assertIn("prefix", result["reason"])
+        write.assert_not_called()
+
+    def test_claude_runtime_selects_only_claude_workers(self):
+        self.actor()
+        self.actor("claude-worker", spawn=self.claude_spawn_without_verbose("claude-worker"), runtime="claude")
+        results = self.run_rerender(runtime="claude", apply=True, yes=True)["actors"]
+        self.assertEqual([(entry["actor_id"], entry["status"]) for entry in results], [("claude-worker", "update")])
+
 
 class EventUsageTest(usage_fixture.WorkerUsageTest):
     def test_criteria_18_19_events_selection_and_last_completed_turn(self):

@@ -485,6 +485,12 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },
+        # 30 adds none; Claude workers gain --verbose, which Claude 2.1.300
+        # requires with stream-json, and a v29 server would launch without it.
+        30: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
     }
 
     def test_spawn_placeholders_are_recorded_for_this_contract(self) -> None:

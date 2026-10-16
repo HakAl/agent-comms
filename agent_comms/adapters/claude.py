@@ -34,6 +34,10 @@ class ClaudeSpawnRowNotPinnedError(RuntimeError):
     """A Claude actor spawn row rendered a command outside runtime custody."""
 
 
+class ClaudeSpawnArgsStaleError(RuntimeError):
+    """A Claude actor spawn row asks for stream-json output without --verbose."""
+
+
 class ClaudeAdapter(ProcessSpawnAdapter):
     """Claude-runtime command-template adapter.
 
@@ -103,6 +107,25 @@ class ClaudeAdapter(ProcessSpawnAdapter):
                 f"{detail + '; ' if detail else ''}"
                 "recover with: re-register the actor using render_spawn('claude', actor_id)"
             )
+
+    def _binding_preflight(
+        self, context: DispatchContext, command: str, prefix: list[str], stored: list[str], env: dict[str, str]
+    ) -> dict | None:
+        # Claude 2.1.300 exits at once on -p with stream-json output unless
+        # --verbose is set; refusing here keeps the dispatch retryable.
+        if context.recipient.get("runtime") not in self.supported_runtimes:
+            return None
+        args = [*prefix, *stored]
+        stream_json = "--output-format=stream-json" in args or any(
+            arg == "--output-format" and value == "stream-json" for arg, value in zip(args, args[1:])
+        )
+        if stream_json and "--verbose" not in args:
+            actor_id = context.recipient.get("id")
+            raise ClaudeSpawnArgsStaleError(
+                "Claude spawn asks for stream-json output without --verbose; "
+                f"actor_id={actor_id!r}; recover with: agent-comms rerender-spawn {actor_id} --apply"
+            )
+        return None
 
     @staticmethod
     def _run_version(binary: Path) -> subprocess.CompletedProcess[str]:
