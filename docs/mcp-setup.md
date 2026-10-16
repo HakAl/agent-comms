@@ -178,6 +178,12 @@ dispatch is refused. The worker runs the custody copy of the pinned Codex
 (`agent-comms custody codex` fills it), never the `codex` on `PATH`; the
 architect's seat above keeps using the `codex` you run yourself.
 
+A Claude worker runs `claude -p --output-format stream-json --verbose`;
+Claude 2.1.300 refuses stream-json output in print mode without
+`--verbose`. A dispatch to a stored Claude spawn from before that flag
+is refused before the worker starts, and the spawn is updated by
+`agent-comms rerender-spawn --runtime claude --apply`.
+
 A Codex worker runs the same PreToolUse policy hook as a Claude worker. The
 hook is declared with `-c hooks.PreToolUse=...` on every run, and
 `-c hooks.state=...` trusts exactly that hook by the hash Codex computes for
@@ -219,7 +225,6 @@ have different file tools.
 | Calls the hook sees | every tool call | every tool call except input to a running command (`write_stdin`) | Codex limit (0.160.0). |
 | File tools the hook confines | `Read`, `Edit`, `MultiEdit`, `Write` paths | `apply_patch` headers, relative to the turn's directory | Neither: each runtime has its own file tools, and the hook confines those. |
 | Reads outside the project | the sandbox denies named credential paths (`Glob` and `Grep` are not confined) | not confined: the `workspace-write` sandbox reads outside the workspace | Codex limit, observed with 0.160.0 on macOS. |
-| Pinned binary certification | by hand (see `CONTRIBUTING.md`) | automated | Our choice: not automated for Claude yet. |
 
 Shared by both: a PreToolUse hook that cannot start, crashes or times out
 lets the tool run. Our hook denies on any error it catches itself, and a

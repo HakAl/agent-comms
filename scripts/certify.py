@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Certify the installed runtime and update its pin: ``make certify RUNTIME=codex``.
+"""Certify the installed runtime and update its pin: ``make certify RUNTIME=codex|claude``.
 
 Anyone may run it, an agent or a dispatch included; it needs no live-home
 switch. Steps:
 
-1. find the native Codex bundle behind the ``codex`` on PATH (``--bundle``
-   names one directly) and read its version; when it already matches this
-   platform's pin, digest included, there is nothing to do (``--force``
-   certifies anyway);
+1. find what workers would run: for Codex the native bundle behind the
+   ``codex`` on PATH (``--bundle`` names one), for Claude the file behind the
+   ``claude`` on PATH (``--binary`` names one); read its version; when it
+   already matches this platform's pin, digest included, there is nothing to
+   do (``--force`` certifies anyway);
 2. check the cert login directory (``--cert-home``, default
-   ``~/.agent-comms/codex-cert-home``): it must hold ``auth.json`` and must not
-   be the home itself, ``~/.codex``, ``~/.claude`` or any other part of
-   ``~/.agent-comms``;
-3. copy the bundle into a cert custody directory under
+   ``<runtime root>/<runtime>-cert-home``, so it follows ``AGENT_COMMS_HOME``):
+   it must not be the home itself, ``~/.codex``, ``~/.claude``, any other
+   part of the runtime root, or ``~/.agent-comms`` when that is another install's. For
+   Codex it holds ``auth.json``. For Claude it holds ``oauth-token`` (mode
+   600, from ``claude setup-token``), and the candidate binary must report a
+   login with that token and none without it, both under a scratch HOME and
+   config dir, so the cells cannot fall back on the operator's own login;
+3. copy the bundle or binary into a cert custody directory under
    ``local/certifications/`` and take its digest: workers run only a custody
    copy whose digest matches the pin, so the cells run that copy;
 4. journal both files (``local/certifications/pending-restore.json``), then
@@ -34,9 +39,9 @@ stable storage before the pin changes, and the kept or restored files before
 the journal goes (F_FULLFSYNC on macOS, fsync elsewhere; a run refuses when
 it cannot flush), so recovery also holds across a power loss.
 
-Only Codex is automated. Claude certification still uses the live-home
-procedure in CONTRIBUTING.md, because its login under a scratch HOME is not
-verified yet.
+Claude cells never see the cert home itself: each cell gets a fresh
+``CLAUDE_CONFIG_DIR`` under its own temp root and the token as
+``CLAUDE_CODE_OAUTH_TOKEN`` (``tests/dispatch_cell_harness.claude_cert_env``).
 """
 
 from __future__ import annotations
@@ -70,19 +75,25 @@ LIVE_HOME_ENV = "AGENT_COMMS_TEST_LIVE_HOME"
 RESULT_ENV = "AGENT_COMMS_TEST_CERT_RESULT"
 CODEX_CERT_HOME_ENV = "AGENT_COMMS_TEST_CODEX_CERT_HOME"
 CODEX_VERSIONS_TEST_ENV = "AGENT_COMMS_TEST_CODEX_VERSIONS_DIR"
+CLAUDE_CERT_HOME_ENV = "AGENT_COMMS_TEST_CLAUDE_CERT_HOME"
+CLAUDE_VERSIONS_TEST_ENV = "AGENT_COMMS_TEST_CLAUDE_VERSIONS_DIR"
+CLAUDE_TOKEN_NAME = "oauth-token"
+CLAUDE_PROBE_RELPATH = "local/certifications/claude-probe"
 
 CELL_MODULES = {
     "codex": ("tests.cells.test_cell_codex", "tests.cells.test_adapter_codex"),
+    "claude": ("tests.cells.test_cell_claude", "tests.cells.test_adapter_claude"),
 }
 DRIFT_TEST = {
     "codex": "tests.cells.test_cell_version_drift.CellVersionDriftTest.test_codex_version_has_not_drifted",
+    "claude": "tests.cells.test_cell_version_drift.CellVersionDriftTest.test_claude_version_has_not_drifted",
 }
-UNSUPPORTED = {
-    "claude": (
-        "claude certification is not automated yet: its login under a scratch HOME is "
-        "unverified; use the live-home procedure in CONTRIBUTING.md (Runtime pins)"
-    ),
+# The cert inputs each runtime's cells read, as names the isolation strip keeps.
+RUNNER_ENV = {
+    "codex": (CODEX_CERT_HOME_ENV, CODEX_VERSIONS_TEST_ENV),
+    "claude": (CLAUDE_CERT_HOME_ENV, CLAUDE_VERSIONS_TEST_ENV),
 }
+SEMVER_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
 
 DIGEST_RE = re.compile(r'(CONTRACT_SURFACE_DIGEST = \(\n\s*")([0-9a-f]{64})("\n\))')
 
@@ -134,15 +145,108 @@ def prepare_cert_custody(repo: Path, bundle: Path, version: str) -> tuple[Path, 
     return versions, custody.copy_bundle(bundle, versions / version)
 
 
-def check_cert_home(cert_home: Path, home: Path) -> Path:
+def installed_claude(binary: Path | None, *, probe: Path) -> tuple[Path, str]:
+    """The Claude binary to certify (the file behind the link) and its version.
+
+    ``probe`` is a scratch directory, made and removed here.
+    """
+    if binary is None:
+        found = shutil.which("claude")
+        if found is None:
+            raise Refused("no claude on PATH; install Claude Code or name the binary with --binary FILE")
+        binary = Path(found)
+    resolved = Path(os.path.realpath(binary))
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise Refused(f"{resolved} is not an executable file")
+    # Even --version runs under the scratch HOME and config dir, so the
+    # candidate never sees the caller's Claude configuration.
+    shutil.rmtree(probe, ignore_errors=True)
+    (probe / ".claude").mkdir(parents=True)
+    try:
+        result = subprocess.run(
+            [str(resolved), "--version"], env=claude_probe_env(probe, None), text=True, capture_output=True, check=False, timeout=30
+        )
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+    match = SEMVER_RE.search("\n".join([result.stdout, result.stderr]))
+    if result.returncode != 0 or match is None:
+        raise Refused(f"could not read a version from {resolved} --version: {(result.stdout + result.stderr).strip()!r}")
+    return resolved, match.group(1)
+
+
+def prepare_claude_cert_custody(repo: Path, binary: Path, version: str) -> tuple[Path, str]:
+    """Copy the Claude binary into a fresh cert custody directory; return it and the digest."""
+    _agent_comms()
+    from agent_comms.runtime_pins import custody_binary_sha256
+
+    versions = repo / CERT_CUSTODY_RELPATH
+    shutil.rmtree(versions, ignore_errors=True)
+    versions.mkdir(parents=True)
+    print(f"certify: copying {binary} into {versions}", file=sys.stderr, flush=True)
+    copied = versions / version
+    shutil.copyfile(binary, copied)
+    copied.chmod(0o755)
+    return versions, custody_binary_sha256(copied)
+
+
+def check_source_options(runtime: str, *, bundle: Path | None, binary: Path | None) -> None:
+    if bundle is not None and runtime != "codex":
+        raise Refused("--bundle is for codex; name a Claude binary with --binary FILE")
+    if binary is not None and runtime != "claude":
+        raise Refused("--binary is for claude; name a Codex bundle with --bundle DIR")
+
+
+def default_cert_home(runtime: str, runtime_root: Path) -> Path:
+    """``<runtime root>/<runtime>-cert-home``: the cert login follows ``AGENT_COMMS_HOME``."""
+    return runtime_root / f"{runtime}-cert-home"
+
+
+def install_runtime_root() -> Path:
+    """This install's runtime root (``AGENT_COMMS_HOME``, else ``~/.agent-comms``)."""
+    _agent_comms()
+    from agent_comms.paths import runtime_root
+    from agent_comms.schema import ValidationError
+
+    try:
+        return runtime_root()
+    except ValidationError as exc:
+        raise Refused(str(exc)) from exc
+
+
+def read_claude_token(cert_home: Path) -> str:
+    """The cert token in ``cert_home``, or :class:`Refused` naming how to make one."""
+    path = cert_home / CLAUDE_TOKEN_NAME
+    how = (
+        f"run claude setup-token and save the token it prints: "
+        f"mkdir -p {cert_home} && (umask 077; pbpaste > {path})"
+    )
+    if not path.is_file():
+        raise Refused(f"cert home {cert_home} has no {CLAUDE_TOKEN_NAME}; {how}")
+    if path.stat().st_mode & 0o077:
+        raise Refused(f"{path} is readable by others; chmod 600 {path}")
+    token = path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise Refused(f"{path} is empty; {how}")
+    return token
+
+
+def check_cert_home(cert_home: Path, home: Path, runtime: str = "codex", runtime_root: Path | None = None) -> Path:
     """The resolved cert login directory, or :class:`Refused`.
 
-    Cells copy ``auth.json`` back into it, so it must be a dedicated login and
-    never a live one.
+    Codex cells copy ``auth.json`` back into it, so it must be a dedicated
+    login and never a live one; Claude cells read only its token. Inside this
+    install's runtime root only ``<runtime>-cert-home`` is allowed. When this
+    install has its own root (``AGENT_COMMS_HOME``), the default
+    ``~/.agent-comms`` belongs to another install and is refused entirely.
+    The login file itself may be a link the operator made to an existing login.
     """
     resolved = cert_home.expanduser().resolve()
     home = home.resolve()
-    dedicated = home / ".agent-comms" / "codex-cert-home"
+    # Every boundary is compared by where it really is, so a linked default
+    # root or live runtime directory protects its target too.
+    default_root = (home / ".agent-comms").resolve()
+    root = (runtime_root or default_root).expanduser().resolve()
+    dedicated = default_cert_home(runtime, root)
 
     def within(path: Path, root: Path) -> bool:
         return path == root or path.is_relative_to(root)
@@ -150,16 +254,119 @@ def check_cert_home(cert_home: Path, home: Path) -> Path:
     if resolved == home:
         raise Refused(f"cert home {resolved} is the home directory itself")
     for name in (".codex", ".claude"):
-        if within(resolved, home / name):
+        if within(resolved, (home / name).resolve()):
             raise Refused(f"cert home {resolved} is inside the live {home / name}")
-    if within(resolved, home / ".agent-comms") and not within(resolved, dedicated):
+    if root != default_root and within(resolved, default_root):
         raise Refused(
-            f"cert home {resolved} is inside the live runtime root {home / '.agent-comms'}; "
+            f"cert home {resolved} is inside {default_root}, another install's runtime root; "
+            f"this install's root is {root} (AGENT_COMMS_HOME); use {dedicated}"
+        )
+    if within(resolved, root) and not within(resolved, dedicated):
+        raise Refused(
+            f"cert home {resolved} is inside the live runtime root {root}; "
             f"only {dedicated} is a dedicated cert login there"
         )
-    if not (resolved / "auth.json").is_file():
+    # The login file may be a link; where it finally lands is what the cells
+    # read and write, so that must stay out of the other install and out of
+    # the rest of this one.
+    login = resolved / (CLAUDE_TOKEN_NAME if runtime == "claude" else "auth.json")
+    landed = Path(os.path.realpath(login))
+    if root != default_root and within(landed, default_root):
+        raise Refused(
+            f"{login} resolves to {landed}, inside {default_root}, another install's runtime root; "
+            "link to a login outside it"
+        )
+    if within(landed, root) and not within(landed, dedicated):
+        raise Refused(
+            f"{login} resolves to {landed}, inside the live runtime root {root}; "
+            f"only {dedicated} is a dedicated cert login there"
+        )
+    if runtime == "claude":
+        read_claude_token(resolved)
+    elif not (resolved / "auth.json").is_file():
         raise Refused(f"cert home {resolved} has no auth.json; log in with: CODEX_HOME={resolved} codex login")
     return resolved
+
+
+def claude_probe_env(probe: Path, token: str | None) -> dict[str, str]:
+    """A scratch-only environment for ``claude auth status``: nothing ambient but PATH."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(probe), "CLAUDE_CONFIG_DIR": str(probe / ".claude")}
+    for name in ("TMPDIR", "LANG"):
+        if name in os.environ:
+            env[name] = os.environ[name]
+    if token is not None:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    return env
+
+
+# What claude 2.1.300 ``auth status`` reports: logged out exits 1 with
+# authMethod "none"; the cert token exits 0 with authMethod "oauth_token".
+CLAUDE_LOGGED_OUT = (1, False, "none")
+CLAUDE_TOKEN_LOGIN = (0, True, "oauth_token")
+
+
+def _claude_auth_status(binary: Path, env: dict[str, str]) -> tuple[int, object, object] | None:
+    """(exit code, loggedIn, authMethod) from ``auth status``, or None when the
+    reply is not a JSON object."""
+    result = subprocess.run(
+        [str(binary), "auth", "status"], env=env, text=True, capture_output=True, check=False, timeout=30
+    )
+    try:
+        reply = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(reply, dict):
+        return None
+    return result.returncode, reply.get("loggedIn"), reply.get("authMethod")
+
+
+def _status_is(status: tuple[int, object, object] | None, expected: tuple[int, bool, str]) -> bool:
+    """Exactly ``expected``: loggedIn must be a real boolean, since 0 == False
+    and 1 == True in Python."""
+    return status is not None and type(status[1]) is bool and status == expected
+
+
+def _status_text(status: tuple[int, object, object] | None) -> str:
+    if status is None:
+        return "no JSON object"
+    code, logged_in, method = status
+    return f"exit {code}, loggedIn {logged_in!r}, authMethod {method!r}"
+
+
+def check_claude_login(binary: Path, cert_home: Path, probe: Path) -> None:
+    """The cert token logs ``binary`` in, and nothing else does, under a scratch HOME.
+
+    The run without the token is the control: only the exact logged-out
+    status shows that the runtime looked and found no login. A login there
+    (a Keychain entry, say) means the cells could use the operator's own
+    login; any other reply is no evidence either way. Both refuse. The run
+    with the token must report a token login, not some other one.
+    """
+    token = read_claude_token(cert_home)
+    shutil.rmtree(probe, ignore_errors=True)
+    try:
+        for with_token in (None, token):
+            (probe / ".claude").mkdir(parents=True, exist_ok=True)
+            status = _claude_auth_status(binary, claude_probe_env(probe, with_token))
+            shutil.rmtree(probe, ignore_errors=True)
+            if with_token is None and not _status_is(status, CLAUDE_LOGGED_OUT):
+                if status is not None and status[1] is True:
+                    raise Refused(
+                        f"{binary} reports a login under a scratch HOME without the cert token "
+                        f"({_status_text(status)}); the cells could reach a live login, so certification is refused"
+                    )
+                raise Refused(
+                    f"{binary} auth status without the token gave {_status_text(status)}, not the logged-out status "
+                    f"{_status_text(CLAUDE_LOGGED_OUT)}; that does not show the cells cannot reach a live login"
+                )
+            if with_token is not None and not _status_is(status, CLAUDE_TOKEN_LOGIN):
+                raise Refused(
+                    f"{binary} auth status with the token in {cert_home / CLAUDE_TOKEN_NAME} gave "
+                    f"{_status_text(status)}, not a token login {_status_text(CLAUDE_TOKEN_LOGIN)}; "
+                    "make a new token with claude setup-token"
+                )
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
 
 
 def failures(report: dict, modules: tuple[str, ...] | list[str]) -> list[str]:
@@ -296,8 +503,6 @@ def certify(
     digest_in_sync: Callable[[], bool],
 ) -> Outcome:
     """Pin the candidate, run the cells against it, keep it only on a full pass."""
-    if runtime in UNSUPPORTED:
-        raise Refused(UNSUPPORTED[runtime])
     if runtime not in CELL_MODULES:
         raise Refused(f"unknown runtime {runtime!r} (automated: {', '.join(sorted(CELL_MODULES))})")
     restore_pending(repo)
@@ -346,17 +551,27 @@ def certify(
     return outcome
 
 
-def subprocess_cell_runner(repo: Path, cert_home: Path, record_dir: Path, cert_custody: Path) -> CellRunner:
+def runner_env(runtime: str, base: dict[str, str], cert_home: Path, cert_custody: Path, result_path: Path) -> dict[str, str]:
+    """The cell runner's environment: cert mode on, live-home switch off, this runtime's inputs."""
+    env = dict(base)
+    env.pop(LIVE_HOME_ENV, None)
+    for names in RUNNER_ENV.values():
+        for name in names:
+            env.pop(name, None)
+    env[CERT_ENV] = "1"
+    home_name, custody_name = RUNNER_ENV[runtime]
+    env[home_name] = str(cert_home)
+    env[custody_name] = str(cert_custody)
+    env[RESULT_ENV] = str(result_path)
+    return env
+
+
+def subprocess_cell_runner(runtime: str, repo: Path, cert_home: Path, record_dir: Path, cert_custody: Path) -> CellRunner:
     def run(targets: list[str]) -> dict:
         record_dir.mkdir(parents=True, exist_ok=True)
         result_path = record_dir / "last-run.json"
         result_path.unlink(missing_ok=True)
-        env = dict(os.environ)
-        env.pop(LIVE_HOME_ENV, None)
-        env[CERT_ENV] = "1"
-        env[CODEX_CERT_HOME_ENV] = str(cert_home)
-        env[CODEX_VERSIONS_TEST_ENV] = str(cert_custody)
-        env[RESULT_ENV] = str(result_path)
+        env = runner_env(runtime, dict(os.environ), cert_home, cert_custody, result_path)
         print(f"certify: running {' '.join(targets)}", file=sys.stderr, flush=True)
         completed = subprocess.run(
             [sys.executable, "-m", "tests.cells.certify_run", *targets], cwd=repo, env=env, check=False
@@ -427,8 +642,9 @@ def write_record(repo: Path, outcome: Outcome, cert_home: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runtime", required=True)
-    parser.add_argument("--cert-home", type=Path, default=Path("~/.agent-comms/codex-cert-home"))
+    parser.add_argument("--cert-home", type=Path, default=None, help="cert login directory; default: <runtime root>/<runtime>-cert-home")
     parser.add_argument("--bundle", type=Path, default=None, help="native Codex bundle (holding bin/codex); default: the one behind codex on PATH")
+    parser.add_argument("--binary", type=Path, default=None, help="Claude binary; default: the file behind claude on PATH")
     parser.add_argument("--force", action="store_true", help="certify even when the pin already matches")
     args = parser.parse_args(argv)
 
@@ -448,12 +664,21 @@ def run(args: argparse.Namespace, repo: Path) -> int:
     platform = current_platform()
     cert_custody = repo / CERT_CUSTODY_RELPATH
     try:
-        if args.runtime in UNSUPPORTED:
-            raise Refused(UNSUPPORTED[args.runtime])
+        if args.runtime not in CELL_MODULES:
+            raise Refused(f"unknown runtime {args.runtime!r} (automated: {', '.join(sorted(CELL_MODULES))})")
+        check_source_options(args.runtime, bundle=args.bundle, binary=args.binary)
         restore_pending(repo)
-        bundle, installed = installed_bundle(args.bundle)
-        cert_home = check_cert_home(args.cert_home, Path.home())
-        cert_custody, sha256 = prepare_cert_custody(repo, bundle, installed)
+        root = install_runtime_root()
+        cert_home = check_cert_home(
+            args.cert_home or default_cert_home(args.runtime, root), Path.home(), args.runtime, runtime_root=root
+        )
+        if args.runtime == "claude":
+            source, installed = installed_claude(args.binary, probe=repo / CLAUDE_PROBE_RELPATH)
+            check_claude_login(source, cert_home, repo / CLAUDE_PROBE_RELPATH)
+            cert_custody, sha256 = prepare_claude_cert_custody(repo, source, installed)
+        else:
+            source, installed = installed_bundle(args.bundle)
+            cert_custody, sha256 = prepare_cert_custody(repo, source, installed)
         outcome = certify(
             args.runtime,
             repo=repo,
@@ -462,7 +687,7 @@ def run(args: argparse.Namespace, repo: Path) -> int:
             sha256=sha256,
             today=_dt.date.today().isoformat(),
             force=args.force,
-            run_cells=subprocess_cell_runner(repo, cert_home, repo / RECORD_DIR_RELPATH, cert_custody),
+            run_cells=subprocess_cell_runner(args.runtime, repo, cert_home, repo / RECORD_DIR_RELPATH, cert_custody),
             compute_digest=fresh_digest(repo),
             digest_in_sync=fresh_digest_check(repo),
         )
@@ -477,9 +702,13 @@ def run(args: argparse.Namespace, repo: Path) -> int:
     record = write_record(repo, outcome, cert_home)
     print(
         f"certify: {args.runtime} {installed} certified on {platform} "
-        f"(was {outcome.previous or 'unpinned'}; bundle sha256 {outcome.sha256}); record {record.relative_to(repo)}"
+        f"(was {outcome.previous or 'unpinned'}; sha256 {outcome.sha256}); record {record.relative_to(repo)}"
     )
-    print("certify: review and commit, then fill the live custody copy with: agent-comms custody codex")
+    if args.runtime == "claude":
+        live = install_runtime_root() / "runtime-custody" / installed
+        print(f"certify: review and commit, then fill the live custody copy with: mkdir -p {live.parent} && install -m 0755 {source} {live}")
+    else:
+        print("certify: review and commit, then fill the live custody copy with: agent-comms custody codex")
     sys.stdout.flush()
     subprocess.run(["git", "--no-pager", "diff", "--", PINS_RELPATH, IDENTITY_RELPATH], cwd=repo, check=False)
     return 0

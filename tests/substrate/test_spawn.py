@@ -18,6 +18,7 @@ from agent_comms import paths, runtime_pins, supervisor
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.claude import (
     ClaudeAdapter,
+    ClaudeSpawnArgsStaleError,
     ClaudeSpawnRowNotPinnedError,
     RuntimePinDigestMismatch,
     RuntimePinDrift,
@@ -145,6 +146,9 @@ class RenderSpawnTest(unittest.TestCase):
         # spawn drops --profile {actor_id}.
         at = codex_args.index("--profile")
         del codex_args[at:at + 2]
+        # Claude 2.1.300 refuses -p with stream-json unless --verbose is set.
+        claude_args = snapshot["alpha-claude-worker"]["args"]
+        claude_args.insert(claude_args.index("stream-json") + 1, "--verbose")
         cases = [
             ("alpha-codex-worker", "codex"),
             ("alpha-claude-worker", "claude"),
@@ -439,6 +443,47 @@ class RenderSpawnTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ClaudeSpawnRowNotPinnedError, "render_spawn\\('claude', actor_id\\)"):
                 adapter.dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
+
+    def test_claude_dispatch_refuses_stream_json_without_verbose_before_spawn(self) -> None:
+        # Claude 2.1.300 exits at once on -p stream-json without --verbose; a
+        # refusal before launch keeps the dispatch retryable after rerender.
+        versions_dir = self.tmp / "claude-versions"
+        pinned_binary = _write_claude_pin_stub(versions_dir)
+        current = render_spawn("claude", "alpha-claude-worker")
+        without = [arg for arg in current["args"] if arg != "--verbose"]
+        at = without.index("--output-format")
+        equals_form = [*without[:at], "--output-format=stream-json", *without[at + 2:]]
+        for args in (without, equals_form):
+            with self.subTest(args=args[:6]):
+                recipient = dict(self.actors["alpha-claude-worker"])
+                recipient["spawn"] = dict(current, args=args)
+                captured = {}
+                with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
+                    with mock.patch.object(paths, "REPO_ROOT", self.tmp), _supervised_capture(captured):
+                        with self.assertRaisesRegex(
+                            ClaudeSpawnArgsStaleError, "recover with: agent-comms rerender-spawn alpha-claude-worker --apply"
+                        ):
+                            ClaudeAdapter(
+                                version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
+                                expected_sha256=_sha256(pinned_binary),
+                            ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
+                self.assertNotIn("child_command", captured)
+
+    def test_claude_dispatch_accepts_args_without_stream_json(self) -> None:
+        # The verbose check applies only to stream-json output; a minimal
+        # spawn (the TTL cells' long-running worker) still launches.
+        versions_dir = self.tmp / "claude-versions"
+        pinned_binary = _write_claude_pin_stub(versions_dir)
+        recipient = dict(self.actors["alpha-claude-worker"])
+        recipient["spawn"] = {"command": "{claude_binary}", "args": [f"WakePolicy={WORKER_DISPATCH_POLICY}. {{worker_prompt}}"]}
+        captured = {}
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
+            with mock.patch.object(paths, "REPO_ROOT", self.tmp), _supervised_capture(captured):
+                ClaudeAdapter(
+                    version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
+                    expected_sha256=_sha256(pinned_binary),
+                ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
+        self.assertEqual(captured["child_command"][0], str(pinned_binary))
 
     def test_claude_dispatch_rejects_truthy_non_string_commands_with_pinning_error(self) -> None:
         versions_dir = self.tmp / "claude-versions"

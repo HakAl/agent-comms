@@ -111,14 +111,25 @@ class ClaudeCellTest(unittest.TestCase):
             )
             self.assertEqual(other_replies, [])
             events = claude_tool_events(output_file)
-            inline_index, inline = next(
-                (index, event)
-                for index, event in enumerate(events)
-                if event.get("type") == "tool_use"
-                and str(event.get("name", "")).endswith("send_message")
-                and isinstance(event.get("input", {}).get("body"), str)
-                and "</subject>" in event["input"]["body"]
+            found = next(
+                (
+                    (index, event)
+                    for index, event in enumerate(events)
+                    if event.get("type") == "tool_use"
+                    and str(event.get("name", "")).endswith("send_message")
+                    and isinstance(event.get("input", {}).get("body"), str)
+                    and "</subject>" in event["input"]["body"]
+                ),
+                None,
             )
+            if found is None:
+                calls = [
+                    {"name": event.get("name"), "input": str(event.get("input"))[:300]}
+                    for event in events
+                    if event.get("type") == "tool_use"
+                ]
+                self.fail(f"worker made no inline send_message with the fixture body; tool calls: {calls!r}")
+            inline_index, inline = found
             inline_result = next(
                 event
                 for event in events[inline_index + 1 :]

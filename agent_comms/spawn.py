@@ -86,7 +86,9 @@ def rerender_spawn_block(actor: dict) -> tuple[str, dict]:
             f"stored prefix differs beyond introduced and retired elements: stored={args[:slot]!r}; rendered={prefix!r}"
         )
     rendered["args"][rendered_slot] = args[slot]
-    rendered["env"] = env
+    # Keep the stored env; a template and row without one (Claude) stay without.
+    if "env" in stored or "env" in rendered:
+        rendered["env"] = env
     return "update", rendered
 
 

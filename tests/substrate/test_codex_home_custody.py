@@ -820,9 +820,10 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 26 runs Codex workers from the custody copy ({codex_binary}) only;
         # 27 drops the per-actor profile and --profile from Codex workers.
         # 28 declares and trusts the Codex worker's policy hook per run.
+        # 30 adds --verbose to the Claude worker's stream-json spawn.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 29)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 30)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

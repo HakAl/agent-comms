@@ -9,7 +9,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from agent_comms import paths
 from tests.dispatch_cell_harness import (
     ROOT,
     codex_cert_auth_copy_back,
@@ -139,7 +141,7 @@ class CertHarnessAuthTest(unittest.TestCase):
     def test_t5_codex_cert_home_source_is_dedicated_not_production_auth(self) -> None:
         production_auth = ROOT / "config" / "codex-home" / "auth.json"
         with patched_cert_home(None):
-            default_home = Path("~/.agent-comms/codex-cert-home").expanduser()
+            default_home = paths.runtime_root() / "codex-cert-home"
             self.assertEqual(codex_cert_home(), default_home)
             self.assertNotEqual(codex_cert_home() / "auth.json", production_auth)
 
@@ -148,6 +150,33 @@ class CertHarnessAuthTest(unittest.TestCase):
             with patched_cert_home(override):
                 self.assertEqual(codex_cert_home(), override)
                 self.assertNotEqual(codex_cert_home() / "auth.json", production_auth)
+
+    def test_t6_codex_cert_home_default_follows_agent_comms_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir).resolve() / "second-install"
+            with patched_cert_home(None), mock.patch.dict(os.environ, {paths.HOME_ENV: str(home)}):
+                self.assertEqual(codex_cert_home(), home / "codex-cert-home")
+
+    def test_t7_copy_back_writes_through_a_linked_login_and_keeps_the_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "existing-login" / "auth.json"
+            snapshot = write_auth(target, token="original", last_refresh=T0)
+            cert_home = root / "cert"
+            cert_home.mkdir()
+            (cert_home / "auth.json").symlink_to(target)
+            temp_home = root / "temp-home"
+            temp_home.mkdir()
+            self.assertEqual(codex_cert_auth_copy_in(cert_home, temp_home), snapshot)
+            self.assertFalse((temp_home / "auth.json").is_symlink())
+            write_auth(temp_home / "auth.json", token="rotated", last_refresh=T1)
+
+            codex_cert_auth_copy_back(cert_home, temp_home, snapshot)
+
+            self.assertTrue((cert_home / "auth.json").is_symlink())
+            self.assertEqual((cert_home / "auth.json").resolve(), target.resolve())
+            self.assertEqual(json.loads(target.read_text())["access_token"], "rotated")
+            self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["auth.json"])
 
 
 if __name__ == "__main__":

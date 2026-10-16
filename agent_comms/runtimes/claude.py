@@ -1,4 +1,4 @@
-"""The Claude runtime: template, setup and doctor."""
+"""The Claude runtime: template, rerender migration, setup and doctor."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ from ..policies import WORKER_DISPATCH_POLICY_VERSION
 from ..runtime_pins import CLAUDE_PINNED_SHA256_ENV, RuntimePin, claude_versions_dir, custody_binary_sha256
 from ..spawn import _escaped_json
 from ..store import WORKER_DISPATCH_POLICY
+from . import Rerender
+
+# Args the template gained after rows were stored, which rerender adds:
+# Claude 2.1.300 refuses -p with stream-json unless --verbose is set.
+ARGS_INTRODUCED = ("--verbose",)
 
 
 def render_spawn() -> dict:
@@ -23,6 +28,7 @@ def render_spawn() -> dict:
             "--no-session-persistence",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--strict-mcp-config",
             "--mcp-config",
             _claude_mcp_config(),
@@ -116,7 +122,7 @@ class ClaudeRuntime:
     pinned = True
     fallback = False
     monitored = True
-    rerender = None
+    rerender = Rerender(ARGS_INTRODUCED)
 
     @property
     def adapter_class(self) -> type:

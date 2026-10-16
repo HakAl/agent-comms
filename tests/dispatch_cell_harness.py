@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tests.isolation
+
 import contextlib
 import json
 import hashlib
@@ -110,10 +112,15 @@ def codex_cert_home() -> Path:
 
     ``AGENT_COMMS_TEST_CODEX_CERT_HOME`` comes first because it survives the
     isolation strip (cert mode); the older ``AGENT_COMMS_CODEX_CERT_HOME``
-    only reaches a live-home run.
+    only reaches a live-home run. The default is ``<runtime root>/codex-cert-home``,
+    so it follows ``AGENT_COMMS_HOME``.
     """
     configured = os.environ.get(CODEX_CERT_HOME_TEST_ENV) or os.environ.get("AGENT_COMMS_CODEX_CERT_HOME")
-    return Path(configured or "~/.agent-comms/codex-cert-home").expanduser()
+    if configured:
+        return Path(configured).expanduser()
+    from agent_comms.paths import runtime_root
+
+    return runtime_root() / "codex-cert-home"
 
 
 def codex_cert_auth_copy_in(cert_home: Path, temp_home: Path) -> str:
@@ -124,6 +131,13 @@ def codex_cert_auth_copy_in(cert_home: Path, temp_home: Path) -> str:
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace ``path`` atomically; a link is kept and the file it points to replaced.
+
+    A cert login may be a link the operator made to an existing login, and a
+    refreshed token belongs in that login, not in a new file over the link.
+    """
+    if path.is_symlink():
+        path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
@@ -327,10 +341,18 @@ class TempClaudeAdapter(ClaudeAdapter):
     authenticated supervisor that production uses.
     """
 
-    def __init__(self, child_pid_file: Path | None = None, output_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        child_pid_file: Path | None = None,
+        output_file: Path | None = None,
+        cert_env: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
         self.child_pid_file = child_pid_file
         self.output_file = output_file
+        # Certification login (see claude_cert_env); the adapter's base env
+        # allowlist would drop it, so it rides the test-only child env.
+        self.cert_env = dict(cert_env or {})
 
     def _worker_log_path(self, context):  # type: ignore[no-untyped-def]
         if self.output_file is not None:
@@ -342,6 +364,7 @@ class TempClaudeAdapter(ClaudeAdapter):
         env = dict(super()._extra_child_env(context))
         if self.child_pid_file is not None:
             env["AGENT_COMMS_TIMEOUT_CHILD_PID_FILE"] = str(self.child_pid_file)
+        env.update(self.cert_env)
         return env
 
 
@@ -761,6 +784,34 @@ def make_fake_harness(
 
 
 CLAUDE_NOT_LOGGED_IN_REASON = "claude CLI is not installed and authenticated"
+CLAUDE_CERT_HOME_TEST_ENV = "AGENT_COMMS_TEST_CLAUDE_CERT_HOME"
+CLAUDE_CERT_TOKEN_NAME = "oauth-token"
+
+
+def claude_cert_env(root: Path) -> dict[str, str]:
+    """The certification login for a Claude worker under ``root``, or ``{}``.
+
+    Only in cert mode (``scripts/certify.py``): the cert home's token as
+    ``CLAUDE_CODE_OAUTH_TOKEN`` and a fresh ``CLAUDE_CONFIG_DIR`` under
+    ``root``, so the worker never writes into the cert home or reads a live
+    login. Outside cert mode, or without a token, the worker keeps the
+    ambient login (a live-home run) or none (the cells skip).
+    """
+    if os.environ.get(tests.isolation.CERT_ENV) != "1":
+        return {}
+    cert_home = os.environ.get(CLAUDE_CERT_HOME_TEST_ENV)
+    if not cert_home:
+        return {}
+    token_path = Path(cert_home).expanduser() / CLAUDE_CERT_TOKEN_NAME
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    if not token:
+        return {}
+    config_dir = root / "claude-config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return {"CLAUDE_CODE_OAUTH_TOKEN": token, "CLAUDE_CONFIG_DIR": str(config_dir)}
 
 
 def claude_cell_skip_reason() -> str | None:
@@ -777,13 +828,24 @@ def claude_cell_skip_reason() -> str | None:
         return str(exc)
     if not custody_binary_digest_matches(claude_binary):
         return CLAUDE_NOT_LOGGED_IN_REASON
-    result = subprocess.run(
-        [str(claude_binary), "auth", "status"],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
+    with tempfile.TemporaryDirectory(prefix="claude-skip-") as probe:
+        env = None
+        if os.environ.get(tests.isolation.CERT_ENV) == "1":
+            cert_env = claude_cert_env(Path(probe))
+            if not cert_env:
+                return f"{CLAUDE_NOT_LOGGED_IN_REASON}: no cert token in ${CLAUDE_CERT_HOME_TEST_ENV}/{CLAUDE_CERT_TOKEN_NAME}"
+            env = {**os.environ, **cert_env}
+        try:
+            result = subprocess.run(
+                [str(claude_binary), "auth", "status"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return CLAUDE_NOT_LOGGED_IN_REASON
     if result.returncode != 0:
         return CLAUDE_NOT_LOGGED_IN_REASON
     try:
@@ -804,7 +866,7 @@ def make_claude_harness(
         CLAUDE_WORKER_ID,
         "claude",
         spawn or render_spawn("claude", CLAUDE_WORKER_ID),
-        TempClaudeAdapter(child_pid_file, output_file),
+        TempClaudeAdapter(child_pid_file, output_file, cert_env=claude_cert_env(root)),
     )
 
 

@@ -10,6 +10,7 @@ import base64
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -327,10 +328,43 @@ class CertifyScriptTest(unittest.TestCase):
         outcome = self.certify(self.runner(CELLS_PASS, DRIFT_PASS), installed=self.current, sha256="d" * 64)
         self.assertTrue(outcome.certified)
 
-    def test_claude_is_refused_with_the_reason(self) -> None:
-        with self.assertRaisesRegex(certify.Refused, "not automated yet"):
+    def test_claude_runs_its_own_cells_and_drift_cell_and_pins_claude(self) -> None:
+        cells = report(
+            ("tests.cells.test_cell_claude.ClaudeCellTest.test_a", "passed"),
+            ("tests.cells.test_adapter_claude.ClaudeAdapterTest.test_b", "passed"),
+        )
+        drift = report((certify.DRIFT_TEST["claude"], "passed"))
+        outcome = certify.certify(
+            "claude", repo=self.repo, platform=self.platform, installed="9.9.9", sha256="c" * 64, today="2026-10-15",
+            force=False, run_cells=self.runner(cells, drift), compute_digest=lambda: "a" * 64, digest_in_sync=lambda: True,
+        )
+        self.assertTrue(outcome.certified)
+        self.assertEqual(self.calls, [list(certify.CELL_MODULES["claude"]), [certify.DRIFT_TEST["claude"]]])
+        pins = json.loads(self.pins.read_text())["runtimes"]
+        self.assertEqual(
+            pins["claude"]["platforms"][self.platform],
+            {"version": "9.9.9", "certified_on": "2026-10-15", "sha256": "c" * 64},
+        )
+        before = json.loads(self.before[0])["runtimes"]
+        self.assertEqual(pins["codex"], before["codex"])
+
+    def test_claude_cells_that_skip_restore_the_pin(self) -> None:
+        cells = report(
+            ("tests.cells.test_cell_claude.ClaudeCellTest.test_a", "skipped"),
+            ("tests.cells.test_adapter_claude.ClaudeAdapterTest.test_b", "passed"),
+        )
+        with self.assertRaisesRegex(certify.Refused, "skipped"):
             certify.certify(
-                "claude", repo=self.repo, platform=self.platform, installed="1.0.0", sha256="", today="2026-10-10",
+                "claude", repo=self.repo, platform=self.platform, installed="9.9.9", sha256="c" * 64,
+                today="2026-10-15", force=False, run_cells=self.runner(cells), compute_digest=lambda: "a" * 64,
+                digest_in_sync=lambda: True,
+            )
+        self.assert_untouched()
+
+    def test_an_unknown_runtime_is_refused(self) -> None:
+        with self.assertRaisesRegex(certify.Refused, "unknown runtime"):
+            certify.certify(
+                "agy", repo=self.repo, platform=self.platform, installed="1.0.0", sha256="", today="2026-10-10",
                 force=False, run_cells=self.runner(), compute_digest=lambda: "a" * 64, digest_in_sync=lambda: True,
             )
         self.assert_untouched()
@@ -485,7 +519,7 @@ class NoPendingCertificationTest(unittest.TestCase):
         self.assertFalse(
             journal.exists(),
             f"{journal} exists: a certification is running or was interrupted; wait for it, "
-            "or run make certify RUNTIME=codex to restore the pin",
+            "or run make certify RUNTIME=codex (or claude) to restore the pin",
         )
 
 
@@ -516,6 +550,457 @@ class CertHomeTest(unittest.TestCase):
         link.symlink_to(self.home / ".codex")
         with self.assertRaises(certify.Refused):
             certify.check_cert_home(link, self.home)
+
+
+def fake_claude(
+    path: Path,
+    version: str = "9.9.9",
+    logged_in: str = "token",
+    *,
+    without: tuple[int, str] | None = None,
+    with_token: tuple[int, str] | None = None,
+    env_log: Path | None = None,
+) -> Path:
+    """A stand-in ``claude``: ``--version`` and ``auth status``.
+
+    ``logged_in`` is ``token`` (logged in only with CLAUDE_CODE_OAUTH_TOKEN
+    set), ``always`` (a login reachable without it) or ``never``. The replies
+    match claude 2.1.300: logged out exits 1 with authMethod "none", the token
+    exits 0 with authMethod "oauth_token". ``without`` and ``with_token``
+    replace the reply (exit code, stdout) for the run without or with the
+    token. ``env_log`` records HOME and CLAUDE_CONFIG_DIR of ``--version``.
+    """
+    out = '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}'
+    token_in = '{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}'
+    ambient = '{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty"}'
+    replies = {
+        "token": ((1, out), (0, token_in)),
+        "always": ((0, ambient), (0, token_in)),
+        "never": ((1, out), (1, out)),
+    }[logged_in]
+    (no_code, no_out), (yes_code, yes_out) = without or replies[0], with_token or replies[1]
+    log = f'echo "HOME=$HOME CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR" >> {shlex.quote(str(env_log))}; ' if env_log else ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "--version" ]; then {log}echo "{version} (Claude Code)"; exit 0; fi\n'
+        'if [ "$1 $2" = "auth status" ]; then\n'
+        f'  if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then printf "%s\\n" {shlex.quote(yes_out)}; exit {yes_code}; fi\n'
+        f'  printf "%s\\n" {shlex.quote(no_out)}; exit {no_code}\n'
+        "fi\n"
+        "exit 2\n"
+    )
+    path.chmod(0o755)
+    return path
+
+
+class ClaudeCertCustodyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="claudecustody-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+
+    def test_the_binary_behind_a_link_is_versioned_and_copied_into_cert_custody(self) -> None:
+        from agent_comms.runtime_pins import custody_binary_sha256
+
+        real = fake_claude(self.root / "share" / "versions" / "9.9.9")
+        link = self.root / "bin" / "claude"
+        link.parent.mkdir()
+        link.symlink_to(real)
+        binary, version = certify.installed_claude(link, probe=self.root / "probe")
+        self.assertEqual((binary, version), (real, "9.9.9"))
+        versions, digest = certify.prepare_claude_cert_custody(self.root, binary, version)
+        self.assertEqual(versions, self.root / certify.CERT_CUSTODY_RELPATH)
+        copied = versions / version
+        self.assertTrue(copied.is_file())
+        self.assertTrue(os.access(copied, os.X_OK))
+        self.assertEqual(digest, custody_binary_sha256(real))
+        self.assertEqual(custody_binary_sha256(copied), digest)
+
+    def test_claude_on_path_is_found_when_no_binary_is_named(self) -> None:
+        real = fake_claude(self.root / "versions" / "9.9.9")
+        with mock.patch.object(certify.shutil, "which", return_value=str(real)):
+            self.assertEqual(certify.installed_claude(None, probe=self.root / "probe"), (real, "9.9.9"))
+        with mock.patch.object(certify.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(certify.Refused, "no claude on PATH"):
+                certify.installed_claude(None, probe=self.root / "probe")
+
+    def test_a_missing_or_unversioned_binary_is_refused(self) -> None:
+        with self.assertRaisesRegex(certify.Refused, "not an executable file"):
+            certify.installed_claude(self.root / "missing", probe=self.root / "probe")
+        silent = self.root / "silent"
+        silent.write_text("#!/bin/sh\necho hello\n")
+        silent.chmod(0o755)
+        with self.assertRaisesRegex(certify.Refused, "could not read a version"):
+            certify.installed_claude(silent, probe=self.root / "probe")
+
+
+    def test_the_version_probe_runs_under_the_scratch_home(self) -> None:
+        # The first native call must not see the caller's HOME or Claude config.
+        log = self.root / "env.log"
+        real = fake_claude(self.root / "versions" / "9.9.9", env_log=log)
+        probe = self.root / "probe"
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/live/claude", "HOME": "/live/home"}):
+            certify.installed_claude(real, probe=probe)
+        self.assertEqual(log.read_text().strip(), f"HOME={probe} CLAUDE_CONFIG_DIR={probe / '.claude'}")
+        self.assertFalse(probe.exists())
+
+
+class ClaudeLoginCheckTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="claudelogin-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.cert_home = self.root / "cert"
+        self.cert_home.mkdir()
+        token = self.cert_home / certify.CLAUDE_TOKEN_NAME
+        token.write_text("tok\n")
+        token.chmod(0o600)
+
+    def test_the_token_logs_in_and_nothing_else_does(self) -> None:
+        binary = fake_claude(self.root / "claude", logged_in="token")
+        certify.check_claude_login(binary, self.cert_home, self.root / "probe")
+        self.assertFalse((self.root / "probe").exists())
+
+    def test_a_login_reachable_without_the_token_is_refused(self) -> None:
+        binary = fake_claude(self.root / "claude", logged_in="always")
+        with self.assertRaisesRegex(certify.Refused, "reports a login .*without the cert token"):
+            certify.check_claude_login(binary, self.cert_home, self.root / "probe")
+
+    def test_a_token_that_does_not_log_in_is_refused(self) -> None:
+        binary = fake_claude(self.root / "claude", logged_in="never")
+        with self.assertRaisesRegex(certify.Refused, "setup-token"):
+            certify.check_claude_login(binary, self.cert_home, self.root / "probe")
+
+    def test_unusable_negative_evidence_is_refused(self) -> None:
+        # A startup error or a reply that is not the logged-out status does not
+        # show that the token-free runtime found no login.
+        cases = {
+            "startup error": (2, "Error: unknown option"),
+            "empty object": (1, "{}"),
+            "string false": (1, '{"loggedIn": "false", "authMethod": "none"}'),
+            "numeric zero": (1, '{"loggedIn": 0, "authMethod": "none"}'),
+            "float zero": (1, '{"loggedIn": 0.0, "authMethod": "none"}'),
+            "not an object": (1, "[]"),
+            "exit 0": (0, '{"loggedIn": false, "authMethod": "none"}'),
+        }
+        for name, reply in cases.items():
+            with self.subTest(name):
+                binary = fake_claude(self.root / name.replace(" ", "-"), without=reply)
+                with self.assertRaisesRegex(certify.Refused, "without the token .*not the logged-out status"):
+                    certify.check_claude_login(binary, self.cert_home, self.root / "probe")
+
+    def test_unusable_positive_evidence_is_refused(self) -> None:
+        cases = {
+            "string true": (0, '{"loggedIn": "true", "authMethod": "oauth_token"}'),
+            "numeric one": (0, '{"loggedIn": 1, "authMethod": "oauth_token"}'),
+            "float one": (0, '{"loggedIn": 1.0, "authMethod": "oauth_token"}'),
+            "exit 2": (2, '{"loggedIn": true, "authMethod": "oauth_token"}'),
+            "keychain login": (0, '{"loggedIn": true, "authMethod": "claude.ai"}'),
+            "malformed": (0, "not json"),
+        }
+        for name, reply in cases.items():
+            with self.subTest(name):
+                binary = fake_claude(self.root / name.replace(" ", "-"), with_token=reply)
+                with self.assertRaisesRegex(certify.Refused, "with the token .*not a token login"):
+                    certify.check_claude_login(binary, self.cert_home, self.root / "probe")
+
+    def test_the_probe_env_is_scratch_only(self) -> None:
+        env = certify.claude_probe_env(self.root / "probe", "tok")
+        self.assertEqual(env["HOME"], str(self.root / "probe"))
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], str(self.root / "probe" / ".claude"))
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "tok")
+        self.assertLessEqual(set(env), {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "TMPDIR", "LANG"})
+
+
+class ClaudeCertHomeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="claudecerthome-")
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve() / "home"
+        for relpath in (".agent-comms/claude-cert-home", ".agent-comms/codex-cert-home", ".claude", "elsewhere", "loose", "blank"):
+            (self.home / relpath).mkdir(parents=True)
+            token = self.home / relpath / certify.CLAUDE_TOKEN_NAME
+            token.write_text("" if relpath == "blank" else "tok\n")
+            token.chmod(0o644 if relpath == "loose" else 0o600)
+        (self.home / "empty").mkdir()
+
+    def check(self, relpath: str) -> Path:
+        return certify.check_cert_home(self.home / relpath, self.home, "claude")
+
+    def test_the_default_is_per_runtime_under_this_install_root(self) -> None:
+        root = self.home / ".agent-comms-public"
+        self.assertEqual(certify.default_cert_home("claude", root), root / "claude-cert-home")
+        self.assertEqual(certify.default_cert_home("codex", root), root / "codex-cert-home")
+
+    def test_dedicated_and_outside_dirs_with_a_private_token_are_accepted(self) -> None:
+        for relpath in (".agent-comms/claude-cert-home", "elsewhere"):
+            with self.subTest(relpath=relpath):
+                self.assertEqual(self.check(relpath), self.home / relpath)
+
+    def test_live_roots_other_cert_homes_and_bad_tokens_are_refused(self) -> None:
+        for relpath in ("", ".claude", ".agent-comms", ".agent-comms/codex-cert-home", "empty", "blank", "loose"):
+            with self.subTest(relpath=relpath):
+                with self.assertRaises(certify.Refused):
+                    self.check(relpath)
+
+    def test_codex_does_not_accept_the_claude_cert_home(self) -> None:
+        (self.home / ".agent-comms/claude-cert-home/auth.json").write_text("{}")
+        with self.assertRaises(certify.Refused):
+            certify.check_cert_home(self.home / ".agent-comms/claude-cert-home", self.home, "codex")
+
+
+class CertRunnerEnvTest(unittest.TestCase):
+    def test_each_runtime_gets_its_own_test_names(self) -> None:
+        cert, custody, result = Path("/c/cert"), Path("/c/custody"), Path("/c/r.json")
+        base = {"PATH": "/bin", certify.LIVE_HOME_ENV: "1"}
+        claude = certify.runner_env("claude", base, cert, custody, result)
+        self.assertEqual(claude[certify.CERT_ENV], "1")
+        self.assertNotIn(certify.LIVE_HOME_ENV, claude)
+        self.assertEqual(claude["AGENT_COMMS_TEST_CLAUDE_CERT_HOME"], str(cert))
+        self.assertEqual(claude["AGENT_COMMS_TEST_CLAUDE_VERSIONS_DIR"], str(custody))
+        self.assertNotIn("AGENT_COMMS_TEST_CODEX_CERT_HOME", claude)
+        codex = certify.runner_env("codex", base, cert, custody, result)
+        self.assertEqual(codex["AGENT_COMMS_TEST_CODEX_CERT_HOME"], str(cert))
+        self.assertEqual(codex["AGENT_COMMS_TEST_CODEX_VERSIONS_DIR"], str(custody))
+        self.assertNotIn("AGENT_COMMS_TEST_CLAUDE_CERT_HOME", codex)
+
+    def test_the_cell_runner_maps_each_cert_custody_dir(self) -> None:
+        from agent_comms.runtime_pins import CLAUDE_VERSIONS_DIR_ENV, CODEX_VERSIONS_DIR_ENV
+
+        with mock.patch.dict(
+            os.environ,
+            {"AGENT_COMMS_TEST_CLAUDE_VERSIONS_DIR": "/c/claude", "AGENT_COMMS_TEST_CODEX_VERSIONS_DIR": "/c/codex"},
+        ):
+            certify_run.apply_cert_custody()
+            self.assertEqual(os.environ[CLAUDE_VERSIONS_DIR_ENV], "/c/claude")
+            self.assertEqual(os.environ[CODEX_VERSIONS_DIR_ENV], "/c/codex")
+
+    def test_source_options_belong_to_their_runtime(self) -> None:
+        with self.assertRaisesRegex(certify.Refused, "--bundle is for codex"):
+            certify.check_source_options("claude", bundle=Path("/x"), binary=None)
+        with self.assertRaisesRegex(certify.Refused, "--binary is for claude"):
+            certify.check_source_options("codex", bundle=None, binary=Path("/x"))
+        certify.check_source_options("claude", bundle=None, binary=Path("/x"))
+        certify.check_source_options("codex", bundle=Path("/x"), binary=None)
+
+
+class ClaudeCellCertEnvTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="claudecellenv-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.cert = self.root / "cert"
+        self.cert.mkdir()
+        (self.cert / certify.CLAUDE_TOKEN_NAME).write_text("tok\n")
+
+    def test_outside_cert_mode_nothing_is_added(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(isolation.CERT_ENV, None)
+            os.environ.pop("AGENT_COMMS_TEST_CLAUDE_CERT_HOME", None)
+            self.assertEqual(harness.claude_cert_env(self.root), {})
+
+    def test_cert_mode_gives_each_cell_a_fresh_config_dir_and_the_token(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        with mock.patch.dict(
+            os.environ,
+            {isolation.CERT_ENV: "1", "AGENT_COMMS_TEST_CLAUDE_CERT_HOME": str(self.cert), "CLAUDE_CONFIG_DIR": "/live"},
+        ):
+            env = harness.claude_cert_env(self.root)
+            self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "tok")
+            config = Path(env["CLAUDE_CONFIG_DIR"])
+            self.assertTrue(config.is_dir())
+            self.assertTrue(config.is_relative_to(self.root))
+            self.assertNotEqual(config, self.cert)
+            adapter = harness.make_claude_harness(self.root).adapter
+            child = adapter._extra_child_env(None)
+            self.assertEqual(child["CLAUDE_CODE_OAUTH_TOKEN"], "tok")
+            self.assertTrue(Path(child["CLAUDE_CONFIG_DIR"]).is_relative_to(self.root))
+
+    def test_a_cert_home_with_a_tilde_is_expanded(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        home = self.root / "home"
+        (home / "cert").mkdir(parents=True)
+        (home / "cert" / certify.CLAUDE_TOKEN_NAME).write_text("tok\n")
+        with mock.patch.dict(
+            os.environ, {isolation.CERT_ENV: "1", "AGENT_COMMS_TEST_CLAUDE_CERT_HOME": "~/cert", "HOME": str(home)}
+        ):
+            self.assertEqual(harness.claude_cert_env(self.root)["CLAUDE_CODE_OAUTH_TOKEN"], "tok")
+
+    def test_cert_mode_without_a_token_adds_nothing(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        (self.cert / certify.CLAUDE_TOKEN_NAME).unlink()
+        with mock.patch.dict(os.environ, {isolation.CERT_ENV: "1", "AGENT_COMMS_TEST_CLAUDE_CERT_HOME": str(self.cert)}):
+            self.assertEqual(harness.claude_cert_env(self.root), {})
+
+
+class ClaudeCellSkipReasonTest(unittest.TestCase):
+    """The import-time skip check: never raises, and in cert mode asks with the cert token."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="claudeskip-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.cert = self.root / "cert"
+        self.cert.mkdir()
+        (self.cert / certify.CLAUDE_TOKEN_NAME).write_text("tok\n")
+
+    def reason(self, binary: Path, env: dict[str, str]):
+        from tests import dispatch_cell_harness as harness
+
+        with mock.patch.object(harness, "claude_binary_path", return_value=binary), \
+             mock.patch.object(harness, "custody_binary_digest_matches", return_value=True), \
+             mock.patch.dict(os.environ, env):
+            for name in (isolation.CERT_ENV, "AGENT_COMMS_TEST_CLAUDE_CERT_HOME", "CLAUDE_CODE_OAUTH_TOKEN"):
+                if name not in env:
+                    os.environ.pop(name, None)
+            return harness.claude_cell_skip_reason()
+
+    def cert_env(self) -> dict[str, str]:
+        return {isolation.CERT_ENV: "1", "AGENT_COMMS_TEST_CLAUDE_CERT_HOME": str(self.cert)}
+
+    def test_cert_mode_runs_when_the_token_logs_in(self) -> None:
+        binary = fake_claude(self.root / "claude", logged_in="token")
+        self.assertIsNone(self.reason(binary, self.cert_env()))
+
+    def test_cert_mode_without_a_token_skips_with_the_reason(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        (self.cert / certify.CLAUDE_TOKEN_NAME).unlink()
+        binary = fake_claude(self.root / "claude", logged_in="always")
+        reason = self.reason(binary, self.cert_env())
+        self.assertIn(harness.CLAUDE_NOT_LOGGED_IN_REASON, reason)
+        self.assertIn("no cert token", reason)
+
+    def test_a_logged_out_binary_skips(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        binary = fake_claude(self.root / "claude", logged_in="never")
+        self.assertEqual(self.reason(binary, self.cert_env()), harness.CLAUDE_NOT_LOGGED_IN_REASON)
+
+    def test_a_hanging_or_unrunnable_binary_skips_instead_of_raising(self) -> None:
+        from tests import dispatch_cell_harness as harness
+
+        binary = fake_claude(self.root / "claude")
+        for error in (subprocess.TimeoutExpired(["claude"], 10), OSError("exec format error")):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(harness.subprocess, "run", side_effect=error):
+                    self.assertEqual(self.reason(binary, self.cert_env()), harness.CLAUDE_NOT_LOGGED_IN_REASON)
+
+
+class SecondInstallCertHomeTest(unittest.TestCase):
+    """A checkout with its own AGENT_COMMS_HOME never certifies from the default home."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="secondinstall-")
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve() / "home"
+        self.root = self.home / ".agent-comms-public"
+        for relpath in (".agent-comms/codex-cert-home", ".agent-comms-public/codex-cert-home", ".agent-comms-public/other", ".codex"):
+            (self.home / relpath).mkdir(parents=True)
+        (self.home / ".codex" / "auth.json").write_text("{}")
+        (self.home / ".agent-comms/codex-cert-home/auth.json").write_text("{}")
+        (self.home / ".agent-comms-public/other/auth.json").write_text("{}")
+        # The operator links the install's cert login to an existing login.
+        (self.root / "codex-cert-home" / "auth.json").symlink_to(self.home / ".codex" / "auth.json")
+
+    def check(self, path: Path) -> Path:
+        return certify.check_cert_home(path, self.home, "codex", runtime_root=self.root)
+
+    def test_the_dedicated_dir_in_this_install_with_a_linked_login_is_accepted(self) -> None:
+        self.assertEqual(self.check(self.root / "codex-cert-home"), self.root / "codex-cert-home")
+
+    def test_the_other_install_is_refused_entirely(self) -> None:
+        with self.assertRaisesRegex(certify.Refused, "another install"):
+            self.check(self.home / ".agent-comms" / "codex-cert-home")
+        with self.assertRaisesRegex(certify.Refused, "another install"):
+            self.check(self.home / ".agent-comms")
+
+    def test_only_the_dedicated_dir_inside_this_install(self) -> None:
+        with self.assertRaisesRegex(certify.Refused, "only .*codex-cert-home"):
+            self.check(self.root / "other")
+        with self.assertRaises(certify.Refused):
+            self.check(self.root)
+
+    def test_a_login_linked_through_the_other_install_to_an_outside_login_is_accepted(self) -> None:
+        # The operator's design: link to the other install's cert login, which
+        # itself links to a login outside both installs.
+        (self.home / ".agent-comms/codex-cert-home/auth.json").unlink()
+        (self.home / ".agent-comms/codex-cert-home/auth.json").symlink_to(self.home / ".codex" / "auth.json")
+        cert = self.root / "codex-cert-home"
+        (cert / "auth.json").unlink()
+        (cert / "auth.json").symlink_to(self.home / ".agent-comms/codex-cert-home/auth.json")
+        self.assertEqual(self.check(cert), cert)
+
+    def test_a_login_that_ends_inside_the_other_install_is_refused(self) -> None:
+        cert = self.root / "codex-cert-home"
+        (cert / "auth.json").unlink()
+        (cert / "auth.json").symlink_to(self.home / ".agent-comms/codex-cert-home/auth.json")
+        with self.assertRaisesRegex(certify.Refused, "another install"):
+            self.check(cert)
+
+    def test_a_login_that_ends_elsewhere_in_this_install_is_refused(self) -> None:
+        cert = self.root / "codex-cert-home"
+        (cert / "auth.json").unlink()
+        (cert / "auth.json").symlink_to(self.root / "other" / "auth.json")
+        with self.assertRaisesRegex(certify.Refused, "live runtime root"):
+            self.check(cert)
+
+    def alias_private_root(self) -> Path:
+        # The other install's root is a link to a directory outside home.
+        vault = self.home.parent / "private-vault"
+        (self.home / ".agent-comms").rename(vault)
+        (self.home / ".agent-comms").symlink_to(vault)
+        return vault
+
+    def test_a_cert_home_under_a_linked_other_install_is_refused(self) -> None:
+        self.alias_private_root()
+        with self.assertRaisesRegex(certify.Refused, "another install"):
+            self.check(self.home / ".agent-comms" / "codex-cert-home")
+
+    def test_a_login_that_ends_inside_a_linked_other_install_is_refused(self) -> None:
+        vault = self.alias_private_root()
+        cert = self.root / "codex-cert-home"
+        (cert / "auth.json").unlink()
+        (cert / "auth.json").symlink_to(vault / "codex-cert-home" / "auth.json")
+        with self.assertRaisesRegex(certify.Refused, "another install"):
+            self.check(cert)
+
+    def test_a_cert_home_inside_a_linked_live_runtime_dir_is_refused(self) -> None:
+        live = self.home.parent / "live-claude"
+        live.mkdir()
+        (self.home / ".claude").symlink_to(live)
+        with self.assertRaisesRegex(certify.Refused, "inside the live"):
+            self.check(self.home / ".claude")
+
+    def test_a_claude_token_that_ends_inside_the_other_install_is_refused(self) -> None:
+        private_token = self.home / ".agent-comms" / "oauth-token"
+        private_token.write_text("tok\n")
+        private_token.chmod(0o600)
+        cert = self.root / "claude-cert-home"
+        cert.mkdir()
+        (cert / certify.CLAUDE_TOKEN_NAME).symlink_to(private_token)
+        with self.assertRaisesRegex(certify.Refused, "another install"):
+            certify.check_cert_home(cert, self.home, "claude", runtime_root=self.root)
+
+    def test_a_relative_agent_comms_home_is_refused_cleanly(self) -> None:
+        from agent_comms import paths
+
+        with mock.patch.dict(os.environ, {paths.HOME_ENV: "relative/home"}):
+            with self.assertRaises(certify.Refused):
+                certify.install_runtime_root()
+
+    def test_the_default_install_keeps_its_own_dedicated_dir(self) -> None:
+        default_root = self.home / ".agent-comms"
+        self.assertEqual(
+            certify.check_cert_home(default_root / "codex-cert-home", self.home, "codex", runtime_root=default_root),
+            default_root / "codex-cert-home",
+        )
 
 
 if __name__ == "__main__":

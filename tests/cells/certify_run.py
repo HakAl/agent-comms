@@ -23,6 +23,7 @@ RESULT_ENV = "AGENT_COMMS_TEST_CERT_RESULT"
 # AGENT_COMMS_TEST_* names, so it arrives under this one and becomes the
 # production override the adapter reads.
 CODEX_VERSIONS_TEST_ENV = "AGENT_COMMS_TEST_CODEX_VERSIONS_DIR"
+CLAUDE_VERSIONS_TEST_ENV = "AGENT_COMMS_TEST_CLAUDE_VERSIONS_DIR"
 PASSED = "passed"
 DETAIL_LIMIT = 4000
 
@@ -75,6 +76,24 @@ class RecordingResult(unittest.TextTestResult):
             }
 
 
+def apply_cert_custody() -> None:
+    """Point the runtime custody overrides at certify.py's cert custody copies.
+
+    The isolation strip keeps only ``AGENT_COMMS_TEST_*`` names, so certify.py
+    passes the directories under those and they are mapped here, before any
+    cell resolves a custody path.
+    """
+    from agent_comms.runtime_pins import CLAUDE_VERSIONS_DIR_ENV, CODEX_VERSIONS_DIR_ENV
+
+    for test_name, name in (
+        (CODEX_VERSIONS_TEST_ENV, CODEX_VERSIONS_DIR_ENV),
+        (CLAUDE_VERSIONS_TEST_ENV, CLAUDE_VERSIONS_DIR_ENV),
+    ):
+        custody = os.environ.get(test_name)
+        if custody:
+            os.environ[name] = custody
+
+
 def main(argv: list[str]) -> int:
     result_path = os.environ.get(RESULT_ENV)
     if not argv or not result_path:
@@ -83,11 +102,7 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
-    custody = os.environ.get(CODEX_VERSIONS_TEST_ENV)
-    if custody:
-        from agent_comms.runtime_pins import CODEX_VERSIONS_DIR_ENV
-
-        os.environ[CODEX_VERSIONS_DIR_ENV] = custody
+    apply_cert_custody()
     suite = unittest.defaultTestLoader.loadTestsFromNames(argv)
     runner = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=RecordingResult)
     result = runner.run(suite)

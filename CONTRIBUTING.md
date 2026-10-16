@@ -43,11 +43,11 @@ directories and prints their paths, which shows what a run would have written
 under a real home. `AGENT_COMMS_TEST_CERT=1` is certification mode, set by
 `make certify` (see "Runtime pins"): isolation stays on, the scratch home
 sits under a directory short enough for a control socket, and the cert login
-and cert custody copy reach the cells as `AGENT_COMMS_TEST_CODEX_CERT_HOME`
-and `AGENT_COMMS_TEST_CODEX_VERSIONS_DIR`.
+and cert custody copy reach the cells as `AGENT_COMMS_TEST_<RUNTIME>_CERT_HOME`
+and `AGENT_COMMS_TEST_<RUNTIME>_VERSIONS_DIR` (`CODEX` or `CLAUDE`).
 `AGENT_COMMS_TEST_LIVE_HOME=1` disables isolation. It is for cell runs that
-must use the real home: Claude certification and the probe of the real
-protected supervisor root. Set it from your own shell, never from an agent.
+must use the real home, such as the probe of the real protected supervisor
+root. Set it from your own shell, never from an agent.
 The guard refuses either of the last two unless every target on the command
 line is under `tests/cells`, so the substrate suite never runs against a
 real home. Without a login the cell tests skip, and a skip is reported as a
@@ -147,60 +147,66 @@ directory), refusing a version or build that is not the pinned one, and
 team has a Codex worker; doctor's `runtime:codex` names it when the copy is
 missing.
 
-To certify Codex on a platform that is not listed yet, or to re-certify it
-after an upgrade, run in a checkout on that machine:
+To certify a runtime on a platform that is not listed yet, or to re-certify
+it after an upgrade, run in a checkout on that machine:
 
 ```sh
 make certify RUNTIME=codex
+make certify RUNTIME=claude
 ```
 
 An agent or a dispatch may run it; it needs no live-home switch. It needs a
-dedicated Codex login at `~/.agent-comms/codex-cert-home` (create it with
-`CODEX_HOME=~/.agent-comms/codex-cert-home codex login`;
-`CERTIFY_ARGS="--cert-home DIR"` names another, never `~/.codex` or the rest
-of `~/.agent-comms`). It copies the native bundle behind `codex` on PATH
-(`CERTIFY_ARGS="--bundle DIR"` names one) into a cert custody directory
-under `local/certifications/`, and because dispatch checks the pin, writes
-the candidate platform entry (version, date, bundle `sha256`) and refreshed
-`CONTRACT_SURFACE_DIGEST` before the cells run, after saving both files to
-`local/certifications/pending-restore.json`. It then runs
-`tests/cells/test_cell_codex.py` and `tests/cells/test_adapter_codex.py` in
-certification mode against that copy, then the Codex drift cell and the
-digest check. Unless every one of those tests ran and passed, both files are
-restored byte for byte. The journal is deleted last; a run that was killed
+dedicated cert login at `<runtime root>/<runtime>-cert-home`, where the
+runtime root is `AGENT_COMMS_HOME` or else `~/.agent-comms`
+(`CERTIFY_ARGS="--cert-home DIR"` names another, never `~/.codex`,
+`~/.claude` or the rest of the runtime root). If you also run another
+agent-comms install from `~/.agent-comms`, set `AGENT_COMMS_HOME` for this
+checkout to a home of its own; certify then refuses any cert home under
+`~/.agent-comms`. The login file may be a link you make to an existing
+login; Codex writes refreshed tokens through such a link.
+
+- Codex: a login made with
+  `CODEX_HOME=<runtime root>/codex-cert-home codex login`, or a link
+  `<runtime root>/codex-cert-home/auth.json` to an existing one.
+- Claude: a token file. Run `claude setup-token`, then save the token it
+  prints with
+  `mkdir -p <runtime root>/claude-cert-home && (umask 077; pbpaste > <runtime root>/claude-cert-home/oauth-token)`.
+  Before anything is pinned, certify runs the candidate binary's
+  `auth status` under a scratch HOME and config dir, once without the token
+  and once with it, and refuses unless only the token logs it in, so the
+  cells cannot fall back on your own login. Each Claude cell then gets a
+  fresh `CLAUDE_CONFIG_DIR` under its temp directory and the token as
+  `CLAUDE_CODE_OAUTH_TOKEN`; nothing is written into the cert home or
+  `~/.claude`. A worker's shell can read that variable, and the worker
+  sandbox denies it the network; use the token only for certification.
+
+It copies what workers would run into a cert custody directory under
+`local/certifications/`: the native Codex bundle behind `codex` on PATH
+(`CERTIFY_ARGS="--bundle DIR"` names one), or the Claude binary behind
+`claude` on PATH (`CERTIFY_ARGS="--binary FILE"` names one). Because
+dispatch checks the pin, it writes the candidate platform entry (version,
+date, `sha256`) and refreshed `CONTRACT_SURFACE_DIGEST` before the cells
+run, after saving both files to `local/certifications/pending-restore.json`.
+It then runs the runtime's cells (`tests/cells/test_cell_<runtime>.py` and
+`tests/cells/test_adapter_<runtime>.py`) in certification mode against that
+copy, then the runtime's drift cell and the digest check. Unless every one
+of those tests ran and passed, both files are restored byte for byte; a
+skip is not a pass. The journal is deleted last; a run that was killed
 leaves it, the next `make certify` restores from it first, and `make test`
 fails while it exists. The journal is flushed to stable storage before the
 pin changes, and the kept or restored files before it is removed
 (`F_FULLFSYNC` on macOS, `fsync` elsewhere; a run that cannot flush is
-refused), so this holds across a power loss too. One run at a time: `local/certifications/certify.lock` is held
-throughout, and a second run is refused rather than restoring the first
-run's live journal. It writes a record under `local/certifications/` and
-prints the diff to commit; after committing, `agent-comms custody codex`
-fills the live custody copy. When the installed version and bundle already
-are the pin it does nothing (`CERTIFY_ARGS=--force` re-runs it). In
-certification mode the protected
-supervisor root probe targets the scratch home's control root, with the
-system temp directories removed from the worker's writable roots; a
-live-home run of `tests/cells/test_cell_codex.py` probes the real root.
-
-Claude is not automated yet. To certify or re-certify it:
-
-1. Add or update the entry for your platform key under
-   `runtimes.<runtime>.platforms`: the runtime's `--version` as `version`,
-   today's date as `certified_on` and, for Claude, the sha256 of the custody
-   binary at `~/.agent-comms/runtime-custody/<version>`. This working-tree
-   edit is the provisional pin; nothing outside the checkout is needed.
-2. Refresh `CONTRACT_SURFACE_DIGEST` in `agent_comms/code_identity.py`
-   (the manifest is on the contract surface);
-   `tests/substrate/test_code_identity.py` prints the computed digest when
-   it differs.
-3. Run the gated cells under `tests/cells` with real logins and the
-   live-home switch described under "Development setup and tests", from
-   your own shell, never from an agent. Then run `make test`.
-4. Commit only if the cells for that runtime ran and passed rather than
-   skipped: the unittest summary must not count them under `skipped=N`. A
-   run that skipped is not evidence, and the entry must not be published
-   on it.
+refused), so this holds across a power loss too. One run at a time:
+`local/certifications/certify.lock` is held throughout, and a second run is
+refused rather than restoring the first run's live journal. It writes a
+record under `local/certifications/` and prints the diff to commit. After
+committing, fill the live custody copy: `agent-comms custody codex`, or for
+Claude the `install` command it prints. When the installed version and
+digest already are the pin it does nothing (`CERTIFY_ARGS=--force` re-runs
+it). In certification mode the protected supervisor root probe targets the
+scratch home's control root, with the system temp directories removed from
+a Codex worker's writable roots; a live-home run of the cell probes the
+real root.
 
 ## Scope and review
 
