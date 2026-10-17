@@ -119,7 +119,9 @@ class DemoEndToEndTest(_Scratch):
         self.setup_team("team-a")
         first = self.cli("demo")
         second = self.cli("demo")
-        self.assertEqual((first[0], second[0]), (0, 0))
+        # The reports and progress lines say whether a failed run timed out
+        # or ended without a reply (ac-twj).
+        self.assertEqual((first[0], second[0]), (0, 0), (first, second))
         self.assertNotEqual(first[1]["dispatch"]["dispatch_id"], second[1]["dispatch"]["dispatch_id"])
         self.assertEqual(len(self.rows("dispatch_ledger")), 2)
 
