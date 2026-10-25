@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agent_comms import push_approval
+from agent_comms import paths, push_approval
 from agent_comms.review import ReviewError, run_git
 
 
@@ -37,7 +37,7 @@ def record_mtime(record: Path) -> float:
 
 
 def scan_records(*, head: str, target_ref: str, repo_identity: str) -> tuple[Path | None, str]:
-    root = push_approval.PUSH_APPROVAL_ROOT
+    root = push_approval.PUSH_APPROVAL_ROOT or paths.push_approval_root()
     candidates = sorted(root.glob("push_*.json"), key=record_mtime, reverse=True) if root.exists() else []
     reasons: list[str] = []
     for candidate in candidates:
