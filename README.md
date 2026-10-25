@@ -34,7 +34,6 @@ process. Humans and scripts use the `agent-comms` CLI.
 Milestone 1 of [the roadmap](docs/ROADMAP.md) is in progress. The pieces
 that still need to land before a new user can run this without a checkout:
 
-- Upgrades from the original 0.1.0 mailbox.
 - A proper quickstart, concepts page, and runbook. This README is the
   interim version.
 
@@ -155,6 +154,42 @@ applicable (no codex worker registered, say). An expired Codex login that
 refresh could not recover is its own check, `runtime:codex:login:<lineage>`,
 whose fix is the login command for that home. `doctor --clients claude,codex`
 checks those seats whether or not setup recorded them.
+
+## Upgrading from 0.1.0, and schema backups
+
+The original 0.1.0 release kept its mailbox at `data/agent-comms.sqlite`
+inside the checkout, with five tables and no actors. Current code refuses to
+open such a file in place (migrating it there would drop its workers) and
+tells you to import it:
+
+```sh
+agent-comms import-mailbox /path/to/old-checkout/data/agent-comms.sqlite
+```
+
+The target is the ledger of the invocation (`~/.agent-comms/agent-comms.sqlite`,
+or `AGENT_COMMS_HOME` / `--db`), which must not exist yet. The import reads
+the old file, never writes it, resolves every worker's owner (the only
+architect in its team; when a team has none or several, pass
+`--owner WORKER=ARCHITECT` for each such worker), migrates a copy in memory,
+checks row counts and foreign keys, and only then writes the target, through a
+staging file in the same directory that is linked into place without ever
+replacing an existing entry. Only an unmodified 0.1.0 mailbox is imported:
+extra tables, columns, triggers, views or changed keys and constraints are
+refused with a message naming them. Run `agent-comms setup` next: it adds your
+human actor and the MCP seats, which 0.1.0 did not have.
+
+Every later schema migration takes a backup first. When a release opens an
+existing ledger whose schema it will change, it copies the ledger with the
+SQLite backup API to `backups/<ledger name>.<UTC stamp>.v<old user_version>.bak`
+next to the ledger, reports the path on stderr, and runs the whole migration
+in one transaction, so an interrupted migration leaves the ledger as it was
+and the next open completes it. Opens that change nothing take no backup. To
+restore: stop the monitor and any seats, copy the backup over the ledger,
+delete the `-wal` and `-shm` files beside it, and reopen with the release
+that wrote the backup (a newer release migrates it again, after another
+backup). An older release refuses to open its default ledger when a newer
+release wrote it, and `doctor` reports the same; an explicit `--db` path is
+the escape hatch.
 
 ## Try a dispatch without any login
 

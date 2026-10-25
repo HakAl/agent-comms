@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 30
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "2239a1036ac5b539da88655faaa6dfbea6a58eaba3ac1fb7748cf5ffb168dda3"
+    "2709d6a65a6d55f33913a5e88a107b307e664cefb0c204effdc15754c6bc5ffd"
 )
 
 
@@ -42,6 +42,7 @@ INCLUDED_EXPLICIT = frozenset(
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
         "agent_comms/handoff.py",
+        "agent_comms/ledger_shape.py",
         "agent_comms/mailbox.py",
         "agent_comms/mcp_server.py",
         "agent_comms/param_leak.py",
@@ -80,6 +81,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/codex_binding.py",
         "agent_comms/codex_hook.py",
         "agent_comms/db.py",
+        "agent_comms/ledger_shape.py",
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
         "agent_comms/handoff.py",
@@ -128,6 +130,7 @@ EXCLUDED_WITH_REASON = {
     "agent_comms/seat.py": "interactive architect seat launcher, off the dispatch spawn path",
     "agent_comms/mcp_clients.py": "architect seat readers and client commands for setup, doctor and the seat launcher, off the dispatch spawn path",
     "agent_comms/doctor.py": "read-only install diagnosis for the operator CLI, off the dispatch spawn path",
+    "agent_comms/mailbox_import.py": "0.1.0 mailbox import for the operator CLI; migrates a copy in memory through governed db.py, off the dispatch spawn path",
     "agent_comms/setup.py": "first-run setup for the operator CLI (registry, ledger, seats), off the dispatch spawn path",
     "agent_comms/demo.py": "first-run fake-worker demo for the operator CLI; dispatches through the existing dispatch_agent entry point, off the dispatch spawn path",
     "agent_comms/push_approval.py": "separate guarded-push approval workflow, off the dispatch spawn path",

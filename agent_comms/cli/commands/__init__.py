@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from . import (
     init,
+    import_mailbox,
     bootstrap,
     provision_codex_home,
     refresh_codex_auth,
@@ -34,6 +35,7 @@ from . import (
 
 COMMAND_MODULES = [
     init,
+    import_mailbox,
     bootstrap,
     provision_codex_home,
     refresh_codex_auth,
