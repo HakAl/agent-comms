@@ -19,11 +19,10 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .db import (
+from .db import LEDGER_SCHEMA_VERSION, Database
+from .ledger_shape import (
     IMPORT_COMMAND,
-    LEDGER_SCHEMA_VERSION,
     V010_TABLES,
-    Database,
     application_tables,
     quote_identifier,
     table_names,
@@ -173,63 +172,88 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def describe_0_1_0_mismatch(conn: sqlite3.Connection) -> str | None:
-    """Why this database is not a 0.1.0 mailbox, or None when it is one."""
+def _version_mismatch(conn: sqlite3.Connection) -> str | None:
     user_version = int(conn.execute("pragma user_version").fetchone()[0])
     if user_version != 0:
         return f"user_version is {user_version}; a 0.1.0 mailbox has none (0)"
+    return None
+
+
+def _table_set_mismatch(conn: sqlite3.Connection) -> str | None:
     tables = application_tables(conn)
     expected = set(V010_TABLES)
     missing = sorted(expected - tables)
     extra = sorted(tables - expected)
-    if missing or extra:
-        parts = []
-        if missing:
-            parts.append(f"missing tables: {', '.join(missing)}")
-        if extra:
-            parts.append(f"unexpected tables: {', '.join(extra)}")
-        return "; ".join(parts) + f" (0.1.0 has exactly: {', '.join(sorted(expected))})"
     # Only SQLite's own bookkeeping tables may sit beside the five.
-    foreign = sorted(name for name in table_names(conn) - tables if not name.startswith("sqlite_stat") and name != "sqlite_sequence")
-    if foreign:
-        return f"unexpected tables: {', '.join(foreign)}"
+    extra += sorted(
+        name for name in table_names(conn) - tables
+        if not name.startswith("sqlite_stat") and name != "sqlite_sequence"
+    )
+    parts = []
+    if missing:
+        parts.append(f"missing tables: {', '.join(missing)}")
+    if extra:
+        parts.append(f"unexpected tables: {', '.join(extra)}")
+    if not parts:
+        return None
+    return "; ".join(parts) + f" (0.1.0 has exactly: {', '.join(sorted(expected))})"
+
+
+def _column_mismatch(conn: sqlite3.Connection) -> str | None:
     for table, columns in V010_TABLES.items():
         actual = [row[1] for row in conn.execute(f"pragma table_info({quote_identifier(table)})").fetchall()]
         lacking = [column for column in columns if column not in actual]
         if lacking:
             return f"table {table} lacks 0.1.0 columns: {', '.join(lacking)}"
+        # The rebuild migrations copy only the known columns; anything else
+        # would be dropped silently, so it is refused instead.
         surplus = [column for column in actual if column not in columns]
         if surplus:
-            # The rebuild migrations copy only the known columns; anything
-            # else would be dropped silently, so it is refused instead.
             return f"table {table} has columns 0.1.0 did not: {', '.join(surplus)}"
+    return None
+
+
+def _constraint_mismatch(conn: sqlite3.Connection) -> str | None:
+    # Same column names, different keys or constraints (a dropped primary
+    # key, a missing foreign key, an added unique or CHECK): the table would
+    # survive migration as it is, and init cannot repair it.
     for table, expected in v010_constraints().items():
         actual = table_constraints(conn, table)
         differing = [aspect for aspect, value in expected.items() if actual[aspect] != value]
         if differing:
-            # Same column names, different keys or constraints (a dropped
-            # primary key, a missing foreign key, an added unique or CHECK):
-            # the table would survive migration as it is, and init cannot
-            # repair it.
             return f"table {table} does not have the 0.1.0 {', '.join(differing)}"
-    executable = conn.execute(
-        "select type, name from sqlite_master where type in ('trigger', 'view') order by type, name"
-    ).fetchall()
-    if executable:
-        names = ", ".join(f"{row[0]} {row[1]}" for row in executable)
-        return f"0.1.0 wrote no triggers or views, found: {names}"
     return None
 
 
-def resolve_owners(conn: sqlite3.Connection, declarations: dict[str, str]) -> dict[str, str]:
-    """Owner for every 0.1.0 worker: the team's sole architect, else a declaration.
+def _executable_objects(conn: sqlite3.Connection) -> str | None:
+    rows = conn.execute(
+        "select type, name from sqlite_master where type in ('trigger', 'view') order by type, name"
+    ).fetchall()
+    if rows:
+        return "0.1.0 wrote no triggers or views, found: " + ", ".join(f"{row[0]} {row[1]}" for row in rows)
+    return None
 
-    Declarations are checked strictly so a typo is never silently ignored:
-    the worker must exist with role worker and be ambiguous (zero or several
-    team architects), and the architect must exist with role architect.
-    """
-    rows = conn.execute("select id, team, role from agents order by id").fetchall()
-    roles = {row["id"]: row["role"] for row in rows}
+
+_ADMISSION_CHECKS = (
+    _version_mismatch,
+    _table_set_mismatch,
+    _column_mismatch,
+    _constraint_mismatch,
+    _executable_objects,
+)
+
+
+def describe_0_1_0_mismatch(conn: sqlite3.Connection) -> str | None:
+    """Why this database is not a 0.1.0 mailbox, or None when it is one."""
+    for check in _ADMISSION_CHECKS:
+        mismatch = check(conn)
+        if mismatch is not None:
+            return mismatch
+    return None
+
+
+def _default_owners(rows: list[sqlite3.Row]) -> tuple[dict[str, str], list[str]]:
+    """Workers whose team has exactly one architect map to it; the rest are ambiguous."""
     architects_by_team: dict[str, list[str]] = {}
     for row in rows:
         if row["role"] == "architect":
@@ -244,7 +268,12 @@ def resolve_owners(conn: sqlite3.Connection, declarations: dict[str, str]) -> di
             owners[row["id"]] = candidates[0]
         else:
             ambiguous.append(row["id"])
+    return owners, ambiguous
 
+
+def _declaration_problems(
+    roles: dict[str, str], owners: dict[str, str], ambiguous: list[str], declarations: dict[str, str]
+) -> list[str]:
     problems: list[str] = []
     for worker, architect in declarations.items():
         if roles.get(worker) != "worker":
@@ -255,17 +284,30 @@ def resolve_owners(conn: sqlite3.Connection, declarations: dict[str, str]) -> di
             )
         if roles.get(architect) != "architect":
             problems.append(f"{architect} is not an architect in the mailbox")
+    return problems
+
+
+def resolve_owners(conn: sqlite3.Connection, declarations: dict[str, str]) -> dict[str, str]:
+    """Owner for every 0.1.0 worker: the team's sole architect, else a declaration.
+
+    Declarations are checked strictly so a typo is never silently ignored:
+    the worker must exist with role worker and be ambiguous (zero or several
+    team architects), and the architect must exist with role architect.
+    """
+    rows = conn.execute("select id, team, role from agents order by id").fetchall()
+    roles = {row["id"]: row["role"] for row in rows}
+    owners, ambiguous = _default_owners(rows)
+    problems = _declaration_problems(roles, owners, ambiguous, declarations)
     if problems:
         raise ValidationError("; ".join(problems))
-    for worker in ambiguous:
-        owners[worker] = declarations[worker] if worker in declarations else ""
-    unresolved = sorted(worker for worker, owner in owners.items() if not owner)
+    unresolved = sorted(worker for worker in ambiguous if worker not in declarations)
     if unresolved:
         hints = " ".join(f"--owner {worker}=<architect>" for worker in unresolved)
         raise ValidationError(
             f"no single architect in the team of worker(s) {', '.join(unresolved)}; "
             f"declare each owner: {hints}"
         )
+    owners.update({worker: declarations[worker] for worker in ambiguous})
     return owners
 
 
@@ -336,6 +378,14 @@ def _staging_path(target: Path) -> Path:
     return target.with_name(f".{target.name}.import-{os.getpid()}-{secrets.token_hex(4)}.tmp")
 
 
+def _claim_staging(staging: Path) -> None:
+    try:
+        with open(staging, "xb"):
+            pass
+    except FileExistsError as exc:
+        raise ValidationError(f"import staging file {staging} already exists; remove it and rerun") from exc
+
+
 def _write_staging(memory: sqlite3.Connection, staging: Path) -> None:
     destination = sqlite3.connect(staging)
     try:
@@ -344,39 +394,37 @@ def _write_staging(memory: sqlite3.Connection, staging: Path) -> None:
         destination.close()
 
 
+def _link_into_place(staging: Path, target: Path) -> None:
+    """``os.link`` fails on any existing entry, so it never replaces one."""
+    obstacles = _target_obstacles(target)
+    if not obstacles:
+        try:
+            os.link(staging, target)
+            return
+        except FileExistsError:
+            obstacles = [target]
+    raise ValidationError(
+        f"target ledger {', '.join(str(path) for path in obstacles)} appeared while importing; "
+        "nothing was written to it; rerun once it is gone"
+    )
+
+
 def _publish(memory: sqlite3.Connection, target: Path) -> None:
     """Complete the ledger under a staging name this call owns, then link it
     to the target name without ever replacing an existing entry.
 
     The sqlite backup API replaces whatever a connection opens, so it only
     ever runs on the private staging file (unpredictable name, exclusive
-    create, same directory). ``os.link`` publishes atomically and fails if any
-    entry holds the target name, so a ledger another process created there in
-    the meantime is left untouched, and the sidecar check right before it
-    keeps a ``-wal``/``-shm``/``-journal`` that appeared since planning from
-    being paired with the new file. On any failure only the staging file and
-    the journal sqlite may have made for it are removed.
+    create, same directory). The obstacle check right before the link keeps
+    a ``-wal``/``-shm``/``-journal`` that appeared since planning from being
+    paired with the new file. On any failure only the staging file and the
+    journal sqlite may have made for it are removed.
     """
     staging = _staging_path(target)
-    try:
-        with open(staging, "xb"):
-            pass
-    except FileExistsError as exc:
-        raise ValidationError(f"import staging file {staging} already exists; remove it and rerun") from exc
+    _claim_staging(staging)
     try:
         _write_staging(memory, staging)
-        obstacles = _target_obstacles(target)
-        if obstacles:
-            raise ValidationError(
-                f"target ledger {', '.join(str(path) for path in obstacles)} appeared while importing; "
-                "nothing was written to it; rerun once it is gone"
-            )
-        try:
-            os.link(staging, target)
-        except FileExistsError as exc:
-            raise ValidationError(
-                f"target ledger {target} appeared while importing; nothing was written to it; rerun once it is gone"
-            ) from exc
+        _link_into_place(staging, target)
     finally:
         staging.unlink(missing_ok=True)
         Path(f"{staging}-journal").unlink(missing_ok=True)

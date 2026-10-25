@@ -2,12 +2,26 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
 import json
 import sqlite3
 import sys
 from pathlib import Path
 
+from .ledger_shape import (
+    IMPORT_COMMAND,
+    backup_stamp,
+    backups_dir,
+    copy_database,
+    execute_statements,
+    is_0_1_0_mailbox,
+    needs_idempotency_rebuild,
+    needs_message_actor_fk_rebuild,
+    quote_identifier,
+    reference_shape_from,
+    schema_shape,
+    shape_is_missing,
+    table_names,
+)
 from .schema import ValidationError
 
 # Deployed-fleet compatibility floor, not a monotonic schema revision. Additive
@@ -34,25 +48,11 @@ from .schema import ValidationError
 LEDGER_SCHEMA_VERSION = 3
 
 # The 0.1.0 release (package version 0.1.0) kept a five-table mailbox with no
-# actors and no user_version. Opening one in place would drop its workers
-# (see ``_sync_agent_actors``: an agents-table worker without an actors row is
-# a declined worker), so a 0.1.0 file is refused everywhere except the import
-# path, which migrates a copy in memory with resolved worker owners.
-V010_TABLES: dict[str, tuple[str, ...]] = {
-    "agents": ("id", "team", "role", "project_root", "capabilities_json", "last_seen_at"),
-    "messages": (
-        "id", "from_agent", "subject", "body", "refs_json", "priority", "requires_ack", "created_at",
-    ),
-    "message_recipients": (
-        "message_id", "to_agent", "status", "read_at", "acked_at", "closed_at", "ack_response",
-    ),
-    "message_threads": ("message_id", "parent_message_id"),
-    "statuses": (
-        "id", "agent_id", "summary", "current_files_json", "blocked_on", "next_step", "created_at",
-    ),
-}
-IMPORT_COMMAND = "import-mailbox"
-
+# actors and no user_version (``ledger_shape.V010_TABLES``). Opening one in
+# place would drop its workers (see ``_sync_agent_actors``: an agents-table
+# worker without an actors row is a declined worker), so a 0.1.0 file is
+# refused everywhere except the import path, which migrates a copy in memory
+# with resolved worker owners.
 # The actors shape from before worker ownership. Creating it for a 0.1.0
 # mailbox lets ``_migrate_worker_ownership`` run its tested backfill instead
 # of the fresh DDL silently declining every worker.
@@ -67,145 +67,6 @@ create table actors(
 """
 
 
-def table_names(conn: sqlite3.Connection) -> set[str]:
-    return {
-        row[0]
-        for row in conn.execute("select name from sqlite_master where type = 'table'").fetchall()
-    }
-
-
-def application_tables(conn: sqlite3.Connection) -> set[str]:
-    """Tables that are not SQLite's own (``sqlite_stat1`` after ANALYZE,
-    ``sqlite_sequence`` and so on), which say nothing about the schema."""
-    return {name for name in table_names(conn) if not name.startswith("sqlite_")}
-
-
-def quote_identifier(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
-def is_0_1_0_mailbox(conn: sqlite3.Connection) -> bool:
-    """True when the 0.1.0 five tables are present, ``actors`` is not, and
-    there is no user_version. This is the hazard recognizer for the in-place
-    guard: with the five tables and no actors row for its workers, applying
-    the schema would decline every worker, so anything else alongside (extra
-    columns, tables, triggers or views) does not make the file safe to open.
-    The import path applies its own, stricter admission (exactly 0.1.0)."""
-    if int(conn.execute("pragma user_version").fetchone()[0]) != 0:
-        return False
-    tables = application_tables(conn)
-    return set(V010_TABLES) <= tables and "actors" not in tables
-
-
-def backups_dir(db_path: Path) -> Path:
-    """Where ``Database.init`` keeps pre-migration copies of ``db_path``."""
-    return db_path.parent / "backups"
-
-
-def backup_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def copy_database(conn: sqlite3.Connection, destination: Path) -> None:
-    """Copy the whole database behind ``conn`` into ``destination`` with the
-    sqlite backup API (consistent, and includes committed WAL frames)."""
-    target = sqlite3.connect(destination)
-    try:
-        conn.backup(target)
-    finally:
-        target.close()
-
-
-def _execute_statements(conn: sqlite3.Connection, script: str) -> None:
-    """Run a multi-statement script inside the caller's transaction.
-
-    ``executescript`` commits any open transaction first and autocommits each
-    statement, which would break the single-transaction schema application.
-    Invariant for every script passed here: each statement ends with ``;`` at
-    the end of its line and no line holds two statements, because the split
-    is per complete line and ``execute`` takes one statement at a time.
-    """
-    statement = ""
-    for line in script.splitlines(keepends=True):
-        statement += line
-        if sqlite3.complete_statement(statement):
-            if statement.strip():
-                conn.execute(statement)
-            statement = ""
-    if statement.strip():
-        conn.execute(statement)
-
-
-def schema_shape(conn: sqlite3.Connection) -> dict:
-    """The parts of a schema that ``Database.init`` can add: table columns by
-    name, foreign-key edges, unique-index column tuples, and named indexes.
-    Declared types are left out because no migration changes them."""
-    tables: dict[str, dict] = {}
-    for table in sorted(application_tables(conn)):
-        quoted = quote_identifier(table)
-        columns = {row[1] for row in conn.execute(f"pragma table_info({quoted})").fetchall()}
-        foreign_keys = {
-            (row[3], row[2], row[4])
-            for row in conn.execute(f"pragma foreign_key_list({quoted})").fetchall()
-        }
-        tables[table] = {
-            "columns": columns,
-            "foreign_keys": foreign_keys,
-            "unique": unique_index_columns(conn, table),
-        }
-    indexes = {
-        row[0]
-        for row in conn.execute(
-            "select name from sqlite_master where type = 'index' and sql is not null"
-        ).fetchall()
-    }
-    return {"tables": tables, "indexes": indexes}
-
-
-def unique_index_columns(conn: sqlite3.Connection, table: str) -> set[tuple[str, ...]]:
-    unique: set[tuple[str, ...]] = set()
-    for index_row in conn.execute(f"pragma index_list({quote_identifier(table)})").fetchall():
-        if not index_row[2]:
-            continue
-        unique.add(tuple(
-            row[2]
-            for row in conn.execute(f"pragma index_info({quote_identifier(index_row[1])})").fetchall()
-        ))
-    return unique
-
-
-def needs_idempotency_rebuild(conn: sqlite3.Connection) -> bool:
-    """The predicate ``_migrate_idempotency_key_per_producer`` acts on: a
-    global unique(idempotency_key) present, or the per-producer one absent."""
-    unique = unique_index_columns(conn, "dispatch_ledger")
-    return ("idempotency_key",) in unique or ("producer_actor_id", "idempotency_key") not in unique
-
-
-def needs_message_actor_fk_rebuild(conn: sqlite3.Connection) -> bool:
-    """The predicate ``_migrate_message_actor_foreign_keys`` acts on."""
-    def targets_actors(table: str, column: str) -> bool:
-        return any(
-            row[3] == column and row[2] == "actors"
-            for row in conn.execute(f"pragma foreign_key_list({quote_identifier(table)})").fetchall()
-        )
-    return not (targets_actors("messages", "from_agent") and targets_actors("message_recipients", "to_agent"))
-
-
-def shape_is_missing(on_disk: dict, reference: dict) -> bool:
-    """True when ``on_disk`` lacks anything in ``reference``; extras are ignored."""
-    for table, expected in reference["tables"].items():
-        actual = on_disk["tables"].get(table)
-        if actual is None:
-            return True
-        if not expected["columns"] <= actual["columns"]:
-            return True
-        if not expected["foreign_keys"] <= actual["foreign_keys"]:
-            return True
-        if not expected["unique"] <= actual["unique"]:
-            return True
-    return not reference["indexes"] <= on_disk["indexes"]
-
-
 _REFERENCE_SHAPE: dict | None = None
 
 
@@ -213,13 +74,7 @@ def reference_shape() -> dict:
     """The shape this code produces, computed once per process in memory."""
     global _REFERENCE_SHAPE
     if _REFERENCE_SHAPE is None:
-        conn = sqlite3.connect(":memory:")
-        try:
-            conn.row_factory = sqlite3.Row
-            Database(Path(":memory:")).apply_schema(conn)
-            _REFERENCE_SHAPE = schema_shape(conn)
-        finally:
-            conn.close()
+        _REFERENCE_SHAPE = reference_shape_from(lambda conn: Database(Path(":memory:")).apply_schema(conn))
     return _REFERENCE_SHAPE
 
 
@@ -468,7 +323,7 @@ class Database:
         ledger_schema_version = int(conn.execute("pragma user_version").fetchone()[0])
         if legacy_mailbox and is_0_1_0_mailbox(conn):
             conn.execute(PRE_OWNERSHIP_ACTORS_DDL)
-        _execute_statements(
+        execute_statements(
             conn,
             """
                 create table if not exists agents(
@@ -665,7 +520,7 @@ class Database:
         # must not read a payload-capable ledger, so LEDGER_SCHEMA_VERSION
         # is 2 and `_stamp_ledger_schema_version` advances the on-disk
         # user_version accordingly.
-        _execute_statements(
+        execute_statements(
             conn,
             """
             create table if not exists dispatch_payload_refs(
@@ -737,7 +592,7 @@ class Database:
             self._backup_before_migration(
                 conn, int(conn.execute("pragma user_version").fetchone()[0])
             )
-        _execute_statements(
+        execute_statements(
             conn,
             """
                 create table if not exists review_dispatch_intents(
@@ -801,7 +656,7 @@ class Database:
         nonempty identity/algorithm fields. Multiple replies may each own a
         snapshot; no column or query selects a "latest" row.
         """
-        _execute_statements(
+        execute_statements(
             conn,
             """
                 create table if not exists review_reply_snapshots(
@@ -871,7 +726,7 @@ class Database:
             conn.execute(f"alter table {quote_identifier(table)} add column {column} {definition}")
 
     def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
-        _execute_statements(
+        execute_statements(
             conn,
             """
             create index if not exists idx_message_recipients_inbox
@@ -1006,7 +861,7 @@ class Database:
         conn.execute("pragma legacy_alter_table = on")
         try:
             conn.execute("savepoint message_actor_fk")
-            _execute_statements(
+            execute_statements(
                 conn,
                 """
                 alter table messages rename to messages_legacy_fk_agents;
@@ -1086,7 +941,7 @@ class Database:
         try:
             conn.execute("savepoint idempotency_per_producer")
             pre_count = conn.execute("select count(*) from dispatch_ledger").fetchone()[0]
-            _execute_statements(
+            execute_statements(
                 conn,
                 """
                 alter table dispatch_ledger rename to dispatch_ledger_legacy_idem;

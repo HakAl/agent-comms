@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 30
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "0170ef44c1177c89436fcd35f57302e0fa42f577b38155f0eb1d3ac1394f0772"
+    "2709d6a65a6d55f33913a5e88a107b307e664cefb0c204effdc15754c6bc5ffd"
 )
 
 
@@ -42,6 +42,7 @@ INCLUDED_EXPLICIT = frozenset(
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
         "agent_comms/handoff.py",
+        "agent_comms/ledger_shape.py",
         "agent_comms/mailbox.py",
         "agent_comms/mcp_server.py",
         "agent_comms/param_leak.py",
@@ -80,6 +81,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/codex_binding.py",
         "agent_comms/codex_hook.py",
         "agent_comms/db.py",
+        "agent_comms/ledger_shape.py",
         "agent_comms/delta_manifest.py",
         "agent_comms/dispatch_ledger.py",
         "agent_comms/handoff.py",
