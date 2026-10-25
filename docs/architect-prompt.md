@@ -46,5 +46,7 @@ agent-comms close <actor-id> <message-id>
 agent-comms post-status <actor-id> --summary "..." --next-step "..."
 ```
 
+An `ack` with a `--response` is accepted only after that response went to
+the sender as a threaded reply; a bare `ack` is the lightweight receipt.
 Sending and dispatching from the shell are operator actions under
 `agent-comms admin` and require the admin token.

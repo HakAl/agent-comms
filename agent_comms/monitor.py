@@ -346,7 +346,7 @@ def configure_file_logger(log_file: Path) -> logging.Logger:
     return logger
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-comms-monitor")
     parser.add_argument("--db", default=None, help="SQLite database path")
     parser.add_argument("--human-actor-id", help="Human actor to page for DLQ rows")
@@ -356,6 +356,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-file", help="Write monitor output to a rotating log file")
     parser.add_argument("--check-heartbeat", action="store_true", help="Check monitor heartbeat freshness")
     parser.add_argument("--fallback-page-root", help="Project root for a DB-independent watchdog semaphore")
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse a monitor command line, including the cross-argument rules.
+
+    Everything the command line can be refused for happens here, so the docs
+    test can check a documented command exactly as ``main`` would.
+    """
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.max_passes is not None and args.max_passes < 1:
         parser.error("--max-passes must be at least 1")
@@ -363,6 +373,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--check-heartbeat requires --human-actor-id")
     if args.check_heartbeat and args.log_file:
         parser.error("--log-file is not supported with --check-heartbeat")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     if args.check_heartbeat:
         try:
