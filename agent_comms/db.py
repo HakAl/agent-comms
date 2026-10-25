@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 from .schema import ValidationError
@@ -30,6 +32,195 @@ from .schema import ValidationError
 # stores only the fixed marker in messages.body, so every prior reader must
 # refuse rather than return that marker as message content.
 LEDGER_SCHEMA_VERSION = 3
+
+# The 0.1.0 release (package version 0.1.0) kept a five-table mailbox with no
+# actors and no user_version. Opening one in place would drop its workers
+# (see ``_sync_agent_actors``: an agents-table worker without an actors row is
+# a declined worker), so a 0.1.0 file is refused everywhere except the import
+# path, which migrates a copy in memory with resolved worker owners.
+V010_TABLES: dict[str, tuple[str, ...]] = {
+    "agents": ("id", "team", "role", "project_root", "capabilities_json", "last_seen_at"),
+    "messages": (
+        "id", "from_agent", "subject", "body", "refs_json", "priority", "requires_ack", "created_at",
+    ),
+    "message_recipients": (
+        "message_id", "to_agent", "status", "read_at", "acked_at", "closed_at", "ack_response",
+    ),
+    "message_threads": ("message_id", "parent_message_id"),
+    "statuses": (
+        "id", "agent_id", "summary", "current_files_json", "blocked_on", "next_step", "created_at",
+    ),
+}
+IMPORT_COMMAND = "import-mailbox"
+
+# The actors shape from before worker ownership. Creating it for a 0.1.0
+# mailbox lets ``_migrate_worker_ownership`` run its tested backfill instead
+# of the fresh DDL silently declining every worker.
+PRE_OWNERSHIP_ACTORS_DDL = """
+create table actors(
+  id text primary key, kind text not null, display_name text not null,
+  system_class text, system_instance text, project_root text, runtime text,
+  spawn_json text, capabilities_json text not null default '[]', team text,
+  role text, last_seen_at text not null, dispatch_cap integer not null default 4,
+  protected integer not null default 0
+)
+"""
+
+
+def table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        row[0]
+        for row in conn.execute("select name from sqlite_master where type = 'table'").fetchall()
+    }
+
+
+def application_tables(conn: sqlite3.Connection) -> set[str]:
+    """Tables that are not SQLite's own (``sqlite_stat1`` after ANALYZE,
+    ``sqlite_sequence`` and so on), which say nothing about the schema."""
+    return {name for name in table_names(conn) if not name.startswith("sqlite_")}
+
+
+def quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def is_0_1_0_mailbox(conn: sqlite3.Connection) -> bool:
+    """True when the 0.1.0 five tables are present, ``actors`` is not, and
+    there is no user_version. This is the hazard recognizer for the in-place
+    guard: with the five tables and no actors row for its workers, applying
+    the schema would decline every worker, so anything else alongside (extra
+    columns, tables, triggers or views) does not make the file safe to open.
+    The import path applies its own, stricter admission (exactly 0.1.0)."""
+    if int(conn.execute("pragma user_version").fetchone()[0]) != 0:
+        return False
+    tables = application_tables(conn)
+    return set(V010_TABLES) <= tables and "actors" not in tables
+
+
+def backups_dir(db_path: Path) -> Path:
+    """Where ``Database.init`` keeps pre-migration copies of ``db_path``."""
+    return db_path.parent / "backups"
+
+
+def backup_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def copy_database(conn: sqlite3.Connection, destination: Path) -> None:
+    """Copy the whole database behind ``conn`` into ``destination`` with the
+    sqlite backup API (consistent, and includes committed WAL frames)."""
+    target = sqlite3.connect(destination)
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+
+
+def _execute_statements(conn: sqlite3.Connection, script: str) -> None:
+    """Run a multi-statement script inside the caller's transaction.
+
+    ``executescript`` commits any open transaction first and autocommits each
+    statement, which would break the single-transaction schema application.
+    Invariant for every script passed here: each statement ends with ``;`` at
+    the end of its line and no line holds two statements, because the split
+    is per complete line and ``execute`` takes one statement at a time.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        conn.execute(statement)
+
+
+def schema_shape(conn: sqlite3.Connection) -> dict:
+    """The parts of a schema that ``Database.init`` can add: table columns by
+    name, foreign-key edges, unique-index column tuples, and named indexes.
+    Declared types are left out because no migration changes them."""
+    tables: dict[str, dict] = {}
+    for table in sorted(application_tables(conn)):
+        quoted = quote_identifier(table)
+        columns = {row[1] for row in conn.execute(f"pragma table_info({quoted})").fetchall()}
+        foreign_keys = {
+            (row[3], row[2], row[4])
+            for row in conn.execute(f"pragma foreign_key_list({quoted})").fetchall()
+        }
+        tables[table] = {
+            "columns": columns,
+            "foreign_keys": foreign_keys,
+            "unique": unique_index_columns(conn, table),
+        }
+    indexes = {
+        row[0]
+        for row in conn.execute(
+            "select name from sqlite_master where type = 'index' and sql is not null"
+        ).fetchall()
+    }
+    return {"tables": tables, "indexes": indexes}
+
+
+def unique_index_columns(conn: sqlite3.Connection, table: str) -> set[tuple[str, ...]]:
+    unique: set[tuple[str, ...]] = set()
+    for index_row in conn.execute(f"pragma index_list({quote_identifier(table)})").fetchall():
+        if not index_row[2]:
+            continue
+        unique.add(tuple(
+            row[2]
+            for row in conn.execute(f"pragma index_info({quote_identifier(index_row[1])})").fetchall()
+        ))
+    return unique
+
+
+def needs_idempotency_rebuild(conn: sqlite3.Connection) -> bool:
+    """The predicate ``_migrate_idempotency_key_per_producer`` acts on: a
+    global unique(idempotency_key) present, or the per-producer one absent."""
+    unique = unique_index_columns(conn, "dispatch_ledger")
+    return ("idempotency_key",) in unique or ("producer_actor_id", "idempotency_key") not in unique
+
+
+def needs_message_actor_fk_rebuild(conn: sqlite3.Connection) -> bool:
+    """The predicate ``_migrate_message_actor_foreign_keys`` acts on."""
+    def targets_actors(table: str, column: str) -> bool:
+        return any(
+            row[3] == column and row[2] == "actors"
+            for row in conn.execute(f"pragma foreign_key_list({quote_identifier(table)})").fetchall()
+        )
+    return not (targets_actors("messages", "from_agent") and targets_actors("message_recipients", "to_agent"))
+
+
+def shape_is_missing(on_disk: dict, reference: dict) -> bool:
+    """True when ``on_disk`` lacks anything in ``reference``; extras are ignored."""
+    for table, expected in reference["tables"].items():
+        actual = on_disk["tables"].get(table)
+        if actual is None:
+            return True
+        if not expected["columns"] <= actual["columns"]:
+            return True
+        if not expected["foreign_keys"] <= actual["foreign_keys"]:
+            return True
+        if not expected["unique"] <= actual["unique"]:
+            return True
+    return not reference["indexes"] <= on_disk["indexes"]
+
+
+_REFERENCE_SHAPE: dict | None = None
+
+
+def reference_shape() -> dict:
+    """The shape this code produces, computed once per process in memory."""
+    global _REFERENCE_SHAPE
+    if _REFERENCE_SHAPE is None:
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.row_factory = sqlite3.Row
+            Database(Path(":memory:")).apply_schema(conn)
+            _REFERENCE_SHAPE = schema_shape(conn)
+        finally:
+            conn.close()
+    return _REFERENCE_SHAPE
 
 
 def is_declined_worker(conn: sqlite3.Connection, agent_id: str) -> bool:
@@ -178,9 +369,108 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             ledger_schema_version = self._guard_ledger_schema_version(conn)
+            if self._needs_migration(conn, ledger_schema_version):
+                self._backup_before_migration(conn, ledger_schema_version)
             conn.execute("pragma journal_mode = wal")
-            conn.executescript(
-                """
+            self.apply_schema(conn)
+        self._initialized = True
+
+    def _needs_migration(self, conn: sqlite3.Connection, ledger_schema_version: int) -> bool:
+        """Would applying the schema change this existing database?
+
+        Three things change a ledger: the version stamp (only ever raised, so
+        a newer stamp on an explicit open is not a change), anything in the
+        reference shape that is absent, and the rebuild migrations, whose own
+        predicates also fire on a forbidden extra (a global unique index on
+        idempotency_key next to the per-producer one).
+        """
+        if not table_names(conn):
+            return False
+        if ledger_schema_version < LEDGER_SCHEMA_VERSION:
+            return True
+        if shape_is_missing(schema_shape(conn), reference_shape()):
+            return True
+        return needs_idempotency_rebuild(conn) or needs_message_actor_fk_rebuild(conn)
+
+    def _backup_before_migration(self, conn: sqlite3.Connection, ledger_schema_version: int) -> Path:
+        """Copy the ledger with the sqlite backup API before any DDL runs.
+
+        The name carries the stamp and the pre-migration user_version and is
+        never reused: a collision gets a numeric suffix, and the file is
+        claimed with an exclusive create so two processes cannot share one.
+        """
+        folder = backups_dir(self.db_path)
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = f"{self.db_path.name}.{backup_stamp()}.v{ledger_schema_version}"
+        attempt = 0
+        while True:
+            candidate = folder / (f"{stem}.bak" if attempt == 0 else f"{stem}-{attempt}.bak")
+            try:
+                with open(candidate, "xb"):
+                    pass
+                break
+            except FileExistsError:
+                attempt += 1
+        try:
+            copy_database(conn, candidate)
+        except BaseException:
+            # Never leave a half-written .bak that looks like a backup.
+            for leftover in (candidate, Path(f"{candidate}-journal"), Path(f"{candidate}-wal"), Path(f"{candidate}-shm")):
+                leftover.unlink(missing_ok=True)
+            raise
+        print(
+            f"agent-comms: schema migration ahead for {self.db_path}; backup written to {candidate}",
+            file=sys.stderr,
+        )
+        return candidate
+
+    def apply_schema(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        declarations: dict[str, str] | None = None,
+        legacy_mailbox: bool = False,
+    ) -> None:
+        """Create or migrate the schema on ``conn`` in one transaction.
+
+        ``journal_mode`` is the caller's business (it cannot change inside a
+        transaction). Foreign-key enforcement is off for the duration because
+        the rebuild migrations rename and recreate tables; each rebuild runs
+        its own ``foreign_key_check``. Any error rolls everything back, so an
+        interrupted migration leaves the file as it was.
+
+        ``legacy_mailbox`` admits a 0.1.0 mailbox (see ``is_0_1_0_mailbox``)
+        by creating the pre-ownership actors table first, so the worker
+        ownership backfill runs with ``declarations`` instead of the fresh
+        DDL declining every worker. Only the import path sets it.
+        """
+        previous_isolation = conn.isolation_level
+        conn.isolation_level = None
+        conn.execute("pragma foreign_keys = off")
+        conn.execute("begin immediate")
+        try:
+            self._apply_schema_body(conn, declarations, legacy_mailbox)
+            conn.execute("commit")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("rollback")
+            raise
+        finally:
+            conn.execute("pragma foreign_keys = on")
+            conn.isolation_level = previous_isolation
+
+    def _apply_schema_body(
+        self,
+        conn: sqlite3.Connection,
+        declarations: dict[str, str] | None,
+        legacy_mailbox: bool,
+    ) -> None:
+        ledger_schema_version = int(conn.execute("pragma user_version").fetchone()[0])
+        if legacy_mailbox and is_0_1_0_mailbox(conn):
+            conn.execute(PRE_OWNERSHIP_ACTORS_DDL)
+        _execute_statements(
+            conn,
+            """
                 create table if not exists agents(
                   id text primary key,
                   team text not null,
@@ -338,74 +628,92 @@ class Database:
 
                 create index if not exists idx_handoffs_actor_created
                   on handoffs(actor_id, created_at desc);
-                """
-            )
-            self._ensure_column(conn, "message_recipients", "closed_at", "text")
-            # Additive stage-2 cancellation timestamp on both state machines. It
-            # is added BEFORE the legacy rebuild migrations below so the renamed
-            # legacy table always carries the column for the insert...select.
-            self._ensure_column(conn, "message_recipients", "cancelled_at", "text")
-            self._ensure_column(conn, "statuses", "dispatch_id", "text")
-            self._ensure_column(conn, "statuses", "thread_ref", "text")
-            for column in ("dead_reason", "dead_at", "dead_digest"):
-                self._ensure_column(conn, "codex_refresh_claims", column, "text")
-            self._ensure_column(conn, "dispatch_ledger", "override_reason", "text")
-            self._ensure_column(conn, "dispatch_ledger", "auth_lineage_key", "text")
-            self._ensure_column(conn, "dispatch_ledger", "auth_lineage_claimed_at", "text")
-            self._ensure_column(
-                conn,
-                "dispatch_ledger",
-                "result",
-                "text check (case when result is null then policy_version <> 'v2' or status <> 'closed' "
-                "else policy_version = 'v2' and result in ('satisfied','blocked') and status = 'closed' end)",
-            )
-            self._ensure_column(conn, "dispatch_ledger", "cancelled_at", "text")
-            self._ensure_column(conn, "actors", "dispatch_cap", "integer not null default 4")
-            self._ensure_column(conn, "actors", "protected", "integer not null default 0")
-            self._sync_agent_actors(conn)
-            self._migrate_worker_ownership(conn)
-            self._migrate_message_actor_foreign_keys(conn)
-            self._migrate_idempotency_key_per_producer(conn)
-            # Dispatch payload transport metadata. Presence of a row is the
-            # ONLY artifact-backed routing discriminator (never a marker,
-            # filename, or body prefix). Created after the legacy rebuild
-            # migrations so its foreign key always targets the final
-            # dispatch_ledger table. The table create is idempotent, but the
-            # payload capability is a breaking floor change: prior binaries
-            # must not read a payload-capable ledger, so LEDGER_SCHEMA_VERSION
-            # is 2 and `_stamp_ledger_schema_version` advances the on-disk
-            # user_version accordingly.
-            conn.executescript(
-                """
-                create table if not exists dispatch_payload_refs(
-                  dispatch_id text primary key references dispatch_ledger(dispatch_id),
-                  storage_kind text not null check(storage_kind = 'sha256_utf8_v1'),
-                  payload_origin text not null check(payload_origin in (
-                    'authored_brief', 'generated_artifact', 'verbatim_source'
-                  )),
-                  payload_sha256 text not null,
-                  byte_count integer not null check(byte_count > 0),
-                  char_count integer not null check(char_count > 0),
-                  captured_at text not null
-                );
-                create table if not exists message_payload_refs(
-                  message_id text primary key references messages(id),
-                  storage_kind text not null check(storage_kind = 'sha256_utf8_v1'),
-                  payload_sha256 text not null,
-                  byte_count integer not null check(byte_count > 0),
-                  char_count integer not null check(char_count > 0),
-                  captured_at text not null
-                );
-                """
-            )
-            self.ensure_review_intent_schema(conn)
-            self.ensure_review_reply_snapshot_schema(conn)
-            self._ensure_indexes(conn)
-            self._stamp_ledger_schema_version(conn, ledger_schema_version)
-        self._initialized = True
+            """,
+        )
+        self._ensure_column(conn, "message_recipients", "closed_at", "text")
+        # Additive stage-2 cancellation timestamp on both state machines. It
+        # is added BEFORE the legacy rebuild migrations below so the renamed
+        # legacy table always carries the column for the insert...select.
+        self._ensure_column(conn, "message_recipients", "cancelled_at", "text")
+        self._ensure_column(conn, "statuses", "dispatch_id", "text")
+        self._ensure_column(conn, "statuses", "thread_ref", "text")
+        for column in ("dead_reason", "dead_at", "dead_digest"):
+            self._ensure_column(conn, "codex_refresh_claims", column, "text")
+        self._ensure_column(conn, "dispatch_ledger", "override_reason", "text")
+        self._ensure_column(conn, "dispatch_ledger", "auth_lineage_key", "text")
+        self._ensure_column(conn, "dispatch_ledger", "auth_lineage_claimed_at", "text")
+        self._ensure_column(
+            conn,
+            "dispatch_ledger",
+            "result",
+            "text check (case when result is null then policy_version <> 'v2' or status <> 'closed' "
+            "else policy_version = 'v2' and result in ('satisfied','blocked') and status = 'closed' end)",
+        )
+        self._ensure_column(conn, "dispatch_ledger", "cancelled_at", "text")
+        self._ensure_column(conn, "actors", "dispatch_cap", "integer not null default 4")
+        self._ensure_column(conn, "actors", "protected", "integer not null default 0")
+        self._sync_agent_actors(conn)
+        self._migrate_worker_ownership(conn, declarations)
+        self._migrate_message_actor_foreign_keys(conn)
+        self._migrate_idempotency_key_per_producer(conn)
+        # Dispatch payload transport metadata. Presence of a row is the
+        # ONLY artifact-backed routing discriminator (never a marker,
+        # filename, or body prefix). Created after the legacy rebuild
+        # migrations so its foreign key always targets the final
+        # dispatch_ledger table. The table create is idempotent, but the
+        # payload capability is a breaking floor change: prior binaries
+        # must not read a payload-capable ledger, so LEDGER_SCHEMA_VERSION
+        # is 2 and `_stamp_ledger_schema_version` advances the on-disk
+        # user_version accordingly.
+        _execute_statements(
+            conn,
+            """
+            create table if not exists dispatch_payload_refs(
+              dispatch_id text primary key references dispatch_ledger(dispatch_id),
+              storage_kind text not null check(storage_kind = 'sha256_utf8_v1'),
+              payload_origin text not null check(payload_origin in (
+                'authored_brief', 'generated_artifact', 'verbatim_source'
+              )),
+              payload_sha256 text not null,
+              byte_count integer not null check(byte_count > 0),
+              char_count integer not null check(char_count > 0),
+              captured_at text not null
+            );
+            create table if not exists message_payload_refs(
+              message_id text primary key references messages(id),
+              storage_kind text not null check(storage_kind = 'sha256_utf8_v1'),
+              payload_sha256 text not null,
+              byte_count integer not null check(byte_count > 0),
+              char_count integer not null check(char_count > 0),
+              captured_at text not null
+            );
+            """
+        )
+        self.ensure_review_intent_schema(conn, backup=False)
+        self.ensure_review_reply_snapshot_schema(conn)
+        self._ensure_indexes(conn)
+        self._stamp_ledger_schema_version(conn, ledger_schema_version)
 
-    def ensure_review_intent_schema(self, conn: sqlite3.Connection) -> None:
+    REVIEW_INTENT_INDEXES = ("idx_review_dispatch_intents_state", "idx_review_dispatch_intents_dispatch")
+
+    def review_intent_schema_missing(self, conn: sqlite3.Connection) -> bool:
+        if "review_dispatch_intents" not in table_names(conn):
+            return True
+        indexes = {
+            row[0]
+            for row in conn.execute("select name from sqlite_master where type = 'index'").fetchall()
+        }
+        return not set(self.REVIEW_INTENT_INDEXES) <= indexes
+
+    def ensure_review_intent_schema(self, conn: sqlite3.Connection, *, backup: bool = True) -> None:
         """Create the additive review dispatch-intent table and indexes.
+
+        Called outside ``init`` by the review-intent operations on an existing
+        ledger, so it keeps the backup-before-migration promise itself: when
+        the table or an index is missing from a ledger that already has
+        tables, a backup is written first (``backup=False`` only inside
+        ``apply_schema``, where ``init`` has already decided). No-op calls
+        write nothing.
 
         Review dispatch-intent binding (dispatch contract 17, review evidence
         lifecycle Landing 1). Additive and idempotent: it never bumps
@@ -425,7 +733,12 @@ class Database:
         an EXISTING ledger without running full schema initialization (which,
         among other things, re-syncs agent actors).
         """
-        conn.executescript(
+        if backup and table_names(conn) and self.review_intent_schema_missing(conn):
+            self._backup_before_migration(
+                conn, int(conn.execute("pragma user_version").fetchone()[0])
+            )
+        _execute_statements(
+            conn,
             """
                 create table if not exists review_dispatch_intents(
                   producer_actor_id text not null,
@@ -488,7 +801,8 @@ class Database:
         nonempty identity/algorithm fields. Multiple replies may each own a
         snapshot; no column or query selects a "latest" row.
         """
-        conn.executescript(
+        _execute_statements(
+            conn,
             """
                 create table if not exists review_reply_snapshots(
                   reply_message_id text primary key references messages(id),
@@ -515,6 +829,12 @@ class Database:
 
     def _guard_ledger_schema_version(self, conn: sqlite3.Connection) -> int:
         ledger_schema_version = int(conn.execute("pragma user_version").fetchone()[0])
+        if is_0_1_0_mailbox(conn):
+            raise ValidationError(
+                f"{self.db_path} is a 0.1.0 mailbox (five tables, no actors); opening it in place "
+                "would drop its workers, so it is not migrated here; import it into a new ledger: "
+                f"agent-comms --db <new ledger> {IMPORT_COMMAND} {self.db_path}"
+            )
         if self.is_default_db_open and ledger_schema_version > LEDGER_SCHEMA_VERSION:
             raise ValidationError(
                 "refusing to open default agent-comms ledger because it was written by a newer "
@@ -546,12 +866,13 @@ class Database:
             conn.execute(f"pragma user_version = {LEDGER_SCHEMA_VERSION}")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
+        columns = {row["name"] for row in conn.execute(f"pragma table_info({quote_identifier(table)})").fetchall()}
         if column not in columns:
-            conn.execute(f"alter table {table} add column {column} {definition}")
+            conn.execute(f"alter table {quote_identifier(table)} add column {column} {definition}")
 
     def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
-        conn.executescript(
+        _execute_statements(
+            conn,
             """
             create index if not exists idx_message_recipients_inbox
               on message_recipients(to_agent, status);
@@ -609,11 +930,11 @@ class Database:
                 )
             owners[worker["id"]] = declared_owner["id"]
 
-        conn.commit()
+        # Nested in apply_schema's transaction, or its own when called directly.
         conn.execute("pragma foreign_keys = off")
         conn.execute("pragma legacy_alter_table = on")
         try:
-            conn.execute("begin immediate")
+            conn.execute("savepoint worker_ownership")
             conn.execute("alter table actors rename to actors_legacy_worker_ownership")
             conn.execute(
                 """
@@ -660,9 +981,10 @@ class Database:
             violations = conn.execute("pragma foreign_key_check").fetchall()
             if violations:
                 raise ValidationError(f"worker ownership migration foreign key violations: {violations}")
-            conn.commit()
+            conn.execute("release worker_ownership")
         except Exception:
-            conn.rollback()
+            conn.execute("rollback to worker_ownership")
+            conn.execute("release worker_ownership")
             raise
         finally:
             conn.execute("pragma legacy_alter_table = off")
@@ -680,11 +1002,12 @@ class Database:
         if messages_fk_ok and recipients_fk_ok:
             return
 
-        conn.commit()
         conn.execute("pragma foreign_keys = off")
         conn.execute("pragma legacy_alter_table = on")
         try:
-            conn.executescript(
+            conn.execute("savepoint message_actor_fk")
+            _execute_statements(
+                conn,
                 """
                 alter table messages rename to messages_legacy_fk_agents;
 
@@ -730,25 +1053,22 @@ class Database:
 
                 drop table message_recipients_legacy_fk_agents;
                 drop table messages_legacy_fk_agents;
-                """
+                """,
             )
+            conn.execute("release message_actor_fk")
+        except Exception:
+            conn.execute("rollback to message_actor_fk")
+            conn.execute("release message_actor_fk")
+            raise
         finally:
             conn.execute("pragma legacy_alter_table = off")
             conn.execute("pragma foreign_keys = on")
 
     def _migrate_idempotency_key_per_producer(self, conn: sqlite3.Connection) -> None:
-        unique_columns = []
-        for index_row in conn.execute("pragma index_list(dispatch_ledger)").fetchall():
-            if not index_row["unique"]:
-                continue
-            columns = [
-                column_row["name"]
-                for column_row in conn.execute(f"pragma index_info({index_row['name']})").fetchall()
-            ]
-            unique_columns.append(columns)
-        has_composite = ["producer_actor_id", "idempotency_key"] in unique_columns
-        has_global_idempotency = ["idempotency_key"] in unique_columns
-        if has_composite and not has_global_idempotency:
+        # One shared, quoting reader for the predicate: ``_needs_migration``
+        # and this rebuild must agree, and an operator's index with an odd
+        # name must not break the open.
+        if not needs_idempotency_rebuild(conn):
             return
 
         residue = conn.execute(
@@ -761,12 +1081,13 @@ class Database:
         if residue is not None:
             raise RuntimeError("found residue table dispatch_ledger_legacy_idem; refusing to overwrite")
 
-        conn.commit()
         conn.execute("pragma foreign_keys = off")
         conn.execute("pragma legacy_alter_table = on")
         try:
+            conn.execute("savepoint idempotency_per_producer")
             pre_count = conn.execute("select count(*) from dispatch_ledger").fetchone()[0]
-            conn.executescript(
+            _execute_statements(
+                conn,
                 """
                 alter table dispatch_ledger rename to dispatch_ledger_legacy_idem;
 
@@ -824,7 +1145,7 @@ class Database:
                   dlq_at, override_reason, failure_reason, auth_lineage_key,
                   auth_lineage_claimed_at, result, cancelled_at, observed_values_json
                 from dispatch_ledger_legacy_idem;
-                """
+                """,
             )
             post_count = conn.execute("select count(*) from dispatch_ledger").fetchone()[0]
             if post_count != pre_count:
@@ -836,6 +1157,11 @@ class Database:
             if fk_rows:
                 raise RuntimeError(f"dispatch_ledger idempotency migration foreign key check failed: {fk_rows}")
             conn.execute("drop table dispatch_ledger_legacy_idem")
+            conn.execute("release idempotency_per_producer")
+        except Exception:
+            conn.execute("rollback to idempotency_per_producer")
+            conn.execute("release idempotency_per_producer")
+            raise
         finally:
             conn.execute("pragma legacy_alter_table = off")
             conn.execute("pragma foreign_keys = on")
