@@ -300,14 +300,15 @@ def resolve_owners(conn: sqlite3.Connection, declarations: dict[str, str]) -> di
     problems = _declaration_problems(roles, owners, ambiguous, declarations)
     if problems:
         raise ValidationError("; ".join(problems))
-    unresolved = sorted(worker for worker in ambiguous if worker not in declarations)
+    owners.update({worker: declarations.get(worker, "") for worker in ambiguous})
+    # Falsy, not merely absent: an architect whose id is "" is no owner either.
+    unresolved = sorted(worker for worker, owner in owners.items() if not owner)
     if unresolved:
         hints = " ".join(f"--owner {worker}=<architect>" for worker in unresolved)
         raise ValidationError(
             f"no single architect in the team of worker(s) {', '.join(unresolved)}; "
             f"declare each owner: {hints}"
         )
-    owners.update({worker: declarations[worker] for worker in ambiguous})
     return owners
 
 

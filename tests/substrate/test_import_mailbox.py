@@ -162,6 +162,14 @@ class ImportMailboxTest(unittest.TestCase):
         report = mailbox_import.run_import(plan)
         self.assertEqual(report["workers"], {"team-a-worker": "team-a-architect-2"})
 
+    def test_sole_architect_with_an_empty_id_does_not_resolve_a_worker(self) -> None:
+        # Lookout round 5: "" is not an owner, even when it is the team's only architect.
+        with contextlib.closing(sqlite3.connect(self.source)) as conn, conn:
+            conn.execute("update agents set id = '' where id = 'team-a-architect'")
+        with self.assertRaisesRegex(ValidationError, r"team-a-worker.*--owner"):
+            mailbox_import.plan_import(self.source, self.target, {})
+        self.assertFalse(self.target.exists())
+
     def test_declaration_for_a_worker_that_already_resolves_is_refused(self) -> None:
         with self.assertRaisesRegex(ValidationError, "team-a-worker"):
             mailbox_import.plan_import(self.source, self.target, {"team-a-worker": "team-a-architect"})
