@@ -174,7 +174,9 @@ stored spawn that still passes `--profile <worker>` is updated by
 `agent-comms rerender-spawn --runtime codex --apply`. A worker's stored
 spawn args may not set `mcp_servers.agent-comms` (or the whole
 `mcp_servers` table) with `-c`, since a later `-c` would win; such a
-dispatch is refused. The worker runs the custody copy of the pinned Codex
+dispatch is refused. Like every operator write, `rerender-spawn --apply`
+needs the admin token (see the [runbook](runbook.md#operator-credential)).
+The worker runs the custody copy of the pinned Codex
 (`agent-comms custody codex` fills it), never the `codex` on `PATH`; the
 architect's seat above keeps using the `codex` you run yourself.
 

@@ -56,6 +56,19 @@ skip, never as a pass.
 The full suite exercises an MCP client subprocess; it does not require a
 Claude/Codex account. Do not delete or reset live data to make tests pass.
 
+The docs are under test too. `tests/substrate/test_docs_commands.py` reads
+every fenced `sh` block in README.md, CONTRIBUTING.md, AGENTS.md and
+`docs/*.md`, parses each `agent-comms`, `agent-comms-mcp`,
+`agent-comms-monitor` and `agent-comms-seat` command against the real
+parser (and the command's preflight rules), and requires its command path
+(`admin <verb>` included) to be exercised: run by a test (a `cli.run`,
+`main` or `python -m agent_comms.<module>` call found in the test's AST,
+with the argv it passes; a string that merely mentions the subcommand is not
+evidence) or by `scripts/gates/install-smoke.sh`. `make <target>` must name
+a Makefile target. When a doc change fails it, add the test or walkthrough
+step that exercises the command, or correct the doc; the test has no
+exception list.
+
 ## Gates
 
 Run `make gate` before any push. It runs, in order, the five checks that a
