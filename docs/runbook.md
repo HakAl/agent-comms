@@ -215,6 +215,192 @@ writing under `~/.agent-comms`; the variable must match the file. An `admin` com
 --apply`, refuse without both and never print the token. Architect sessions
 dispatch through their seat and never need it; neither does the demo.
 
+## Approval signing key
+
+**When:** before the first `review approve` or `push_approval create`
+(next section), or when one of them refuses with `approval signing key
+unavailable`, or `gate-merge`, `verify` or `scripts/guarded-push` refuses
+with `approval signers unavailable` or `approval signature verification
+failed`.
+
+A human approval is an SSH signature. The approver signs with a private
+ed25519 key; the checks read the matching public key from a committed
+`config/approval-signers` file, never from a working tree. Generate the key
+outside every checkout, at the path the tools look in by default,
+`approval-key` under the runtime root:
+
+```sh
+root="${AGENT_COMMS_HOME:-$HOME/.agent-comms}"
+ssh-keygen -t ed25519 -N "" -C agent-comms-approver -f "$root/approval-key"
+```
+
+`--key` on a verb, or `AGENT_COMMS_APPROVAL_KEY`, names another key file.
+
+The signers file is an `allowed_signers` file (see `ssh-keygen(1)`) with one
+line per approver, and the principal must be `agent-comms-approver`. It is
+read from the committed history of the checkout named by
+`AGENT_COMMS_APPROVAL_SIGNERS_REPO`, on its `main` branch (another branch
+name goes in `AGENT_COMMS_APPROVAL_INTEGRATION_REF`). The usual choice is the
+integration checkout of the next section, which must already exist with a
+`main` branch; commit the file there before any worktree is created from
+it, so that the worktree starts at a commit that already carries it:
+
+```sh
+export AGENT_COMMS_APPROVAL_SIGNERS_REPO="$HOME/work/integration"
+mkdir -p "$AGENT_COMMS_APPROVAL_SIGNERS_REPO/config"
+printf 'agent-comms-approver %s\n' "$(cut -d' ' -f1,2 "$root/approval-key.pub")" \
+    > "$AGENT_COMMS_APPROVAL_SIGNERS_REPO/config/approval-signers"
+git -C "$AGENT_COMMS_APPROVAL_SIGNERS_REPO" add config/approval-signers
+git -C "$AGENT_COMMS_APPROVAL_SIGNERS_REPO" commit -m "approval signers"
+```
+
+`config/approval-signers.example` in this repository is the template. The
+real file cannot live in this public repository, since its hygiene gate
+rejects a public key line; keep it in the signers checkout. The two verbs
+that sign, `review approve` and `push_approval create`, also ask the person
+at the terminal to type the word `APPROVE`; they refuse when no terminal is
+attached, so run them yourself, not from a script or an agent session.
+`approve` only signs; the signers file is read later, by `gate-merge`,
+`verify` and the guarded push.
+
+## Review and land a dispatch
+
+**When:** a dispatch's change must be reviewed, approved by a person, merged
+into the integration branch, and pushed with a signed record that the push
+checks. This is the third layer of the [roadmap](ROADMAP.md): a checkout
+workflow, run as Python modules from a clone with `uv sync` done, since the
+four installed commands do not include it. The cycle is a state machine; a
+verb run out of order refuses with the state it expected, and nothing is
+retried with different inputs to make it pass.
+
+**Topology**, before `setup` registers the team, because the review repo
+must be the worker's registered project root. The integration checkout is a
+git repository on `main`, clean, with the signers file of the previous
+section committed, and named by `AGENT_COMMS_MAIN`. The team's project root
+is a linked worktree of it on a named branch, created at that commit; that
+worktree is the `--repo` of every verb, and it must stay the worker's
+registered project root (`review open` refuses when they differ). The
+brief, the key and anything else untracked live outside both checkouts,
+since `mark-dispatched` requires both trees clean and at the same commit.
+
+```sh
+export AGENT_COMMS_MAIN="$HOME/work/integration"
+git -C "$AGENT_COMMS_MAIN" worktree add -b change-1 "$HOME/work/change-1"
+```
+
+Register `"$HOME/work/change-1"` as the project root in `agent-comms setup`
+(quickstart, Part 2), so the worker edits the worktree.
+
+**The brief** is a Markdown file with five level-2 sections. A heading
+matches a section when, lowercased, it contains one of the section's words:
+scope (`surface`, `deliverable`, `what changes`, `likely fix`,
+`requirements`; a heading beginning with `Part` followed by a space and a
+number also counts), anti-scope (`anti-claims`, `out of scope`,
+`out-of-scope`, `constraints`, `invariants`), definition of done
+(`definition of done`, `dod`, `verification`), process (`process`), and
+production surface (`production surface`). The words "scope" and
+"anti-scope" alone match nothing. The production surface section holds only
+lines of the form `- touches: <item>; <clause>: <text>` where the item is
+one of `canonical_db`, `installed_cli`, `system_interpreter`, `launchd`,
+`seat_config`, `auth_config`, `real_runtime`, or `none`; `none` needs
+`reason:` and stands alone, the others need `gated-by:` or `residual:`.
+
+```markdown
+## Surface
+Add a line to NOTES.md.
+
+## Out of scope
+No other file changes; no commit by the worker.
+
+## Definition of Done
+NOTES.md gains one line.
+
+## Process
+The worker edits and replies; the architect commits.
+
+## Production surface
+- touches: none; reason: documentation change in a scratch project
+```
+
+**The criteria** are given to `open` separately from the brief, and `open`
+requires them even though its usage line does not say so. `--dod-section`
+takes the criteria as text, one per line (it does not read a section of the
+brief; pass the text itself), and binds each to the `green` check.
+`--dod` takes the path of a JSON file, a list of objects with `id`,
+`claim` and `check_id` (and `argv` for `extra`). The checks that `gates`
+can run are `green` (unconditional success, for exercising the cycle),
+`fail`, `unittest` (`python -m unittest discover -s tests` in the repo) and
+`extra` (the argv of the one criterion declared with it). For real work
+declare a check that tests the claim, and read the gate result before
+`clean`.
+
+**The cycle.** From the clone, with the ids `setup` printed
+(`team-a-architect`, `team-a-codex-worker`) and a dispatch id of your own:
+
+```sh
+.venv/bin/python -m agent_comms.review open --dispatch-id change-1 --brief "$HOME/work/brief.md" \
+    --dod-section "NOTES.md gains one line" --repo "$HOME/work/change-1" \
+    --expected-producer team-a-architect --expected-recipient team-a-codex-worker
+.venv/bin/python -m agent_comms.review brief-check --dispatch-id change-1 --clean --by reviewer \
+    --surface-verdict complete --surface-reason "no production surface"
+.venv/bin/python -m agent_comms.review mark-dispatched --dispatch-id change-1 --idempotency-key change-1
+```
+
+`mark-dispatched` opens a fifteen-minute window. Within it, the architect
+seat dispatches to the worker with the same idempotency key (`change-1`);
+that binds the dispatch to the review. The worker edits files in the
+worktree, replies to the dispatch and closes it `satisfied`. It must not
+commit or switch branch before replying (the reply is refused as source
+drift), and nothing may change in the worktree after the reply, since the
+tree the architect commits must equal the one the reply recorded. When the
+row is closed, commit the worker's change on the worktree branch yourself
+(or let the architect do it), then record the execution, run the gates, and
+declare the review clean:
+
+```sh
+git -C "$HOME/work/change-1" add -A
+git -C "$HOME/work/change-1" commit -m "change-1: the worker's change"
+.venv/bin/python -m agent_comms.review mark-executed --dispatch-id change-1
+.venv/bin/python -m agent_comms.review gates --dispatch-id change-1 --check green
+.venv/bin/python -m agent_comms.review clean --dispatch-id change-1
+```
+
+A finding (`review finding`) must be resolved or deferred before `clean`.
+
+Approve, check the signature, merge, and verify. `approve` is the step a
+person takes: it asks for `APPROVE` on the terminal and signs with the key
+from the previous section. `gate-merge` verifies that signature against the
+committed signers file and does not merge; the merge is a plain
+fast-forward into the integration checkout, and `verify` confirms the
+approved head is now an ancestor of its `HEAD`.
+
+```sh
+.venv/bin/python -m agent_comms.review approve --dispatch-id change-1
+.venv/bin/python -m agent_comms.review gate-merge --dispatch-id change-1
+git -C "$AGENT_COMMS_MAIN" merge --ff-only change-1
+.venv/bin/python -m agent_comms.review verify --dispatch-id change-1
+.venv/bin/python -m agent_comms.review summary --dispatch-id change-1
+```
+
+**The push.** A push approval is a second signed record, for one head, one
+target ref and one remote identity (`git remote get-url origin` of the
+integration checkout, so the checkout needs a configured, reachable
+`origin`). `scripts/guarded-push` finds the newest record for the head it
+is about to push, verifies it, and only then runs `git push`; without a
+record it prints `guarded-push: refused` and pushes nothing.
+
+```sh
+head="$(git -C "$AGENT_COMMS_MAIN" rev-parse HEAD)"
+.venv/bin/python -m agent_comms.push_approval create --head "$head" --target-ref refs/heads/main \
+    --repo "$AGENT_COMMS_MAIN" --approver "$USER"
+.venv/bin/python scripts/guarded-push --repo "$AGENT_COMMS_MAIN"
+```
+
+Records are files under the runtime root: `dispatch/reviews/<dispatch
+id>.json` with a `.summary.md` beside it, and
+`dispatch/push-approvals/push_<stamp>_<head>.json`. No admin token is
+involved anywhere in this cycle.
+
 ## Codex logins
 
 **When:** `doctor` fails `runtime:codex:login:<lineage>` or

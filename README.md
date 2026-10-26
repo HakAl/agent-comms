@@ -46,7 +46,7 @@ Start with the quickstart; it needs no other page.
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | Install, set up a team, check the install, run the no-login demo, then your first real dispatch |
 | [docs/concepts.md](docs/concepts.md) | The vocabulary: runtime root, actors and roles, seats, the mailbox, dispatch and the monitor, runtimes, the MCP tools, the review cycle |
-| [docs/runbook.md](docs/runbook.md) | Operating tasks: the doctor report, keeping the monitor up, logs, the DLQ, acting on a dispatch by hand, Codex logins and upgrades, backups and restore, a second install |
+| [docs/runbook.md](docs/runbook.md) | Operating tasks: the doctor report, keeping the monitor up, logs, the DLQ, acting on a dispatch by hand, the approval signing key, reviewing and landing a dispatch, Codex logins and upgrades, backups and restore, a second install |
 | [docs/mcp-setup.md](docs/mcp-setup.md) | What `setup` wires into each MCP client, seats for other clients, how workers are bound, and every Claude vs Codex difference |
 | [docs/architect-prompt.md](docs/architect-prompt.md) | The operating rules to give an architect seat, and the CLI fallback |
 | [docs/communication_contract.md](docs/communication_contract.md) | When to send, how to reply, how threads end |
