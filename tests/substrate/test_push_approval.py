@@ -472,6 +472,24 @@ class PushApprovalTest(unittest.TestCase):
             self.assertNotEqual(rc, 0)
             self.assertIn("detached HEAD", stderr.getvalue())
 
+    def test_t6b_guarded_push_scans_the_default_record_root(self) -> None:
+        # Without --record, guarded-push scans the runtime root's push-approval
+        # directory. The module default for PUSH_APPROVAL_ROOT is None (the
+        # path is resolved at call time), and the scan must fall back to it
+        # rather than crash; the other tests patch the root and so never saw
+        # this.
+        loader = importlib.machinery.SourceFileLoader("guarded_push_default", str(Path(__file__).parents[2] / "scripts" / "guarded-push"))
+        spec = importlib.util.spec_from_loader("guarded_push_default", loader)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        guarded_push = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guarded_push)
+        head = self.git("rev-parse", "HEAD")
+        with mock.patch.object(push_approval, "PUSH_APPROVAL_ROOT", None):
+            match, summary = guarded_push.scan_records(head=head, target_ref="refs/heads/main", repo_identity=str(self.repo))
+        self.assertIsNone(match)
+        self.assertIn("no matching push approval record among 0 candidates", summary)
+
     def test_t7_confirmation_refusal_writes_nothing(self) -> None:
         key_path = self.commit_signers()
         head = self.git("rev-parse", "HEAD")
