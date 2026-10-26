@@ -5,9 +5,9 @@
       "boundary": "exact",
       "platforms": {
         "darwin-arm64": {
-          "version": "0.160.0",
-          "certified_on": "2026-10-11",
-          "sha256": "9bffa05a017ad0396e397b3d5f6eb7d1d38f6a5326a1ffa815b3bcb8defde80e"
+          "version": "0.164.0",
+          "certified_on": "2026-10-25",
+          "sha256": "2bfda010e68e0c2c4156a4562a6248800103132d911e812661cb5a446738e10b"
         }
       }
     },
@@ -15,9 +15,9 @@
       "boundary": "exact",
       "platforms": {
         "darwin-arm64": {
-          "version": "2.1.300",
-          "certified_on": "2026-10-15",
-          "sha256": "475517caa611e3318a2f298fa071287ec98955538df78c58f709ecc01e5ae2d3"
+          "version": "2.1.310",
+          "certified_on": "2026-10-25",
+          "sha256": "ffb64331bc0ee1b69efb7c2c428bd3ab516bc31b75bf60886b356c97c1c25ffd"
         }
       }
     }
