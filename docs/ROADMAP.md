@@ -65,6 +65,22 @@ on a clean Mac:
 The human supplies logins and choices. Nothing else from the maintainer is
 needed. The commands and results are saved with the release.
 
+**Status:** walked through with release 0.2.0 on a clean Mac, recorded in
+[releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
+with a verdict per criterion. Items 1, 2, 3 and 5 are met. Item 4 is met on
+the fake runtime and not met with native runtimes: `doctor` ended with one
+failing check, the Claude seat lookup for a linked worktree, while the seat
+itself worked and both real dispatches went through it. That lookup is fixed
+in the same change as the record (verified by tests, not by a rerun on a
+clean machine; the 0.2.0 wheel the walkthrough installed predates it). The
+milestone closes when the maintainer either records that check as an
+accepted exception for 0.2.0 here, or reruns the check on a fresh machine
+with the fix.
+The two other defects the walkthrough found (the lockfile on a machine whose
+only Python is 3.15, the shared Codex login directory that `setup` does not
+create) were worked around in the walkthrough and are open bugs, not
+blockers.
+
 ### Milestone 2: Linux
 
 1. **Service manager.** The monitor runs under systemd user units as well as

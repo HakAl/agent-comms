@@ -975,6 +975,77 @@ class McpClientHelpersTest(unittest.TestCase):
             found = mcp_clients.read_claude_seat(config, temp_dir).server()
             self.assertEqual((found.args, found.env), ([], {"AGENT_COMMS_DB": "/e"}))
 
+    def test_claude_project_keys_follow_the_main_checkout_of_a_linked_worktree(self) -> None:
+        # ac-6k7: Claude Code keys its local scope by the toplevel of the
+        # repository whose git dir the project shares. A linked worktree's
+        # entry lives under the main checkout; the project root (and its
+        # realpath) stays a candidate for a main checkout, a project outside
+        # git, or no git at all.
+        answers: dict[str, tuple[int, str]] = {}  # directory -> (exit, "<git-dir>\n<git-common-dir>\n")
+
+        def run(argv, **kwargs):
+            self.assertEqual(argv[:2], ["git", "-C"])
+            self.assertEqual(argv[3:], ["rev-parse", "--git-dir", "--git-common-dir"])
+            code, out = answers[argv[2]]
+            return subprocess.CompletedProcess(argv, code, stdout=out, stderr="" if code == 0 else "fatal: not a git repository")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(os.path.realpath(temp_dir))  # a symlinked temp dir would add realpath keys
+            main = root / "integration"
+            worktree = root / "change-1"
+            main.mkdir()
+            worktree.mkdir()
+            which = lambda name: "/usr/bin/git" if name == "git" else None  # noqa: E731
+            answers[str(worktree)] = (0, f"{main}/.git/worktrees/change-1\n{main}/.git\n")
+            self.assertEqual(mcp_clients.claude_main_checkout(worktree, which=which, run=run), str(main))
+            self.assertEqual(mcp_clients.claude_project_keys(worktree, which=which, run=run), [str(main), str(worktree)])
+            # A main checkout: git answers the relative ".git" for both, which is its own root.
+            answers[str(main)] = (0, ".git\n.git\n")
+            self.assertIsNone(mcp_clients.claude_main_checkout(main, which=which, run=run))
+            self.assertEqual(mcp_clients.claude_project_keys(main, which=which, run=run), [str(main)])
+            # A directory inside a main checkout shares nothing: its git dir is the common dir.
+            inside = main / "sub"
+            inside.mkdir()
+            answers[str(inside)] = (0, f"{main}/.git\n../.git\n")
+            self.assertEqual(mcp_clients.claude_project_keys(inside, which=which, run=run), [str(inside)])
+            # Outside git, an unusual git dir name, a short answer, or no git: the project root alone.
+            answers[str(root)] = (128, "")
+            self.assertEqual(mcp_clients.claude_project_keys(root, which=which, run=run), [str(root)])
+            answers[str(worktree)] = (0, f"{main}/repo.git/worktrees/change-1\n{main}/repo.git\n")
+            self.assertEqual(mcp_clients.claude_project_keys(worktree, which=which, run=run), [str(worktree)])
+            answers[str(worktree)] = (0, f"{main}/.git\n")
+            self.assertEqual(mcp_clients.claude_project_keys(worktree, which=which, run=run), [str(worktree)])
+            self.assertEqual(mcp_clients.claude_project_keys(worktree, which=lambda name: None, run=run), [str(worktree)])
+            # A symlinked project root contributes its realpath (the physical directory Claude keys by) and then itself.
+            link = root / "link"
+            link.symlink_to(worktree, target_is_directory=True)
+            answers[str(link)] = (0, f"{main}/.git/worktrees/change-1\n{main}/.git\n")
+            self.assertEqual(mcp_clients.claude_project_keys(link, which=which, run=run), [str(main), os.path.realpath(worktree), str(link)])
+            # The reader reads the first key present and no other: the main
+            # checkout when it is there, else the project root; an entry under
+            # a later key is shadowed, not merged.
+            config = root / "claude.json"
+            config.write_text(json.dumps({"projects": {str(main): {"mcpServers": {"agent-comms": {"command": "/m", "args": ["--actor-id", "a"]}}}}}))
+            reading = mcp_clients.read_claude_seat(config, worktree, main_checkout=str(main))
+            self.assertEqual((reading.status, reading.key, reading.server().args, reading.shadowed), ("ok", str(main), ["--actor-id", "a"], []))
+            self.assertEqual(mcp_clients.read_claude_seat(config, worktree).status, "no_project")
+            config.write_text(json.dumps({"projects": {str(worktree): {"mcpServers": {"agent-comms": {"command": "/m", "args": ["--actor-id", "b"]}}}}}))
+            reading = mcp_clients.read_claude_seat(config, worktree, main_checkout=str(main))
+            self.assertEqual((reading.key, reading.server().args), (str(worktree), ["--actor-id", "b"]))
+            config.write_text(json.dumps({"projects": {
+                str(worktree): {"mcpServers": {"agent-comms": {"command": "/m", "args": ["--actor-id", "b"]}}},
+                str(main): {"mcpServers": {"agent-comms": {"command": "/m", "args": ["--actor-id", "a"]}, "other": {}}},
+            }}))
+            reading = mcp_clients.read_claude_seat(config, worktree, main_checkout=str(main))
+            self.assertEqual((reading.key, reading.servers, reading.shadowed), (str(main), [("agent-comms", ["--actor-id", "a"]), ("other", [])], [str(worktree)]))
+            # A later key without our server is not shadowing anything.
+            config.write_text(json.dumps({"projects": {str(worktree): {"allowedTools": []}, str(main): {"mcpServers": {}}}}))
+            reading = mcp_clients.read_claude_seat(config, worktree, main_checkout=str(main))
+            self.assertEqual((reading.status, reading.key, reading.servers, reading.shadowed), ("ok", str(main), [], []))
+            missing = mcp_clients.read_claude_seat(config, root / "elsewhere", main_checkout=str(root / "nowhere"))
+            self.assertEqual(missing.status, "no_project")
+            self.assertIn(str(root / "nowhere"), missing.error)
+
     def test_codex_reader_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = Path(temp_dir) / "config.toml"

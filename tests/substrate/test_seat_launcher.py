@@ -3,6 +3,7 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,50 @@ class SeatLauncherTests(unittest.TestCase):
         real = self.path / "real"; real.mkdir(); link = self.path / "link"; link.symlink_to(real, target_is_directory=True)
         self.write_config(real, [["--actor-id", "other"]])
         self.assertEqual(self.run_launcher("wanted", sys.executable, str(self.probe), cwd=link).returncode, 3)
+
+    def test_l8b_linked_worktree_reads_the_main_checkout_entry(self):
+        # ac-6k7: launched from a linked worktree, the guard reads the entry
+        # Claude Code keeps under the main checkout (git's common dir).
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is not on PATH")
+        main = self.path / "integration"
+        subprocess.run([git, "-c", "init.defaultBranch=main", "init", "-q", str(main)], check=True, capture_output=True)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid", "HOME": str(self.path)}
+        subprocess.run([git, "-C", str(main), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True, env=env)
+        worktree = self.path / "change-1"
+        subprocess.run([git, "-C", str(main), "worktree", "add", "-q", str(worktree), "-b", "change-1"], check=True, capture_output=True, env=env)
+        self.write_config(main, [["--actor-id", "other-actor"]])
+        proc = self.run_launcher("wanted", sys.executable, str(self.probe), cwd=worktree)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("other-actor", proc.stderr)
+        self.write_config(main, [["--actor-id", "wanted"]])
+        proc = self.run_launcher("wanted", sys.executable, str(self.probe), cwd=worktree)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("warning", proc.stderr)
+        # No entry anywhere: the warning names both places it looked.
+        self.write_config(self.path / "unrelated", [["--actor-id", "x"]])
+        proc = self.run_launcher("wanted", sys.executable, str(self.probe), cwd=worktree)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(os.path.realpath(main), proc.stderr)
+        self.assertIn(os.path.realpath(worktree), proc.stderr)
+        # Both keys hold our server (Lookout F1): only the main checkout's scope
+        # decides, as for doctor; the worktree's entry is reported as shadowed.
+        both = {"projects": {
+            os.path.realpath(main): {"mcpServers": {"agent-comms": {"args": ["--actor-id", "wanted"]}}},
+            os.path.realpath(worktree): {"mcpServers": {"agent-comms": {"args": ["--actor-id", "stale"]}}},
+        }}
+        self.config.write_text(json.dumps(both))
+        proc = self.run_launcher("wanted", sys.executable, str(self.probe), cwd=worktree)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("warning:", proc.stderr)
+        self.assertIn(os.path.realpath(worktree), proc.stderr)
+        both["projects"][os.path.realpath(main)]["mcpServers"]["agent-comms"]["args"] = ["--actor-id", "other-actor"]
+        both["projects"][os.path.realpath(worktree)]["mcpServers"]["agent-comms"]["args"] = ["--actor-id", "wanted"]
+        self.config.write_text(json.dumps(both))
+        proc = self.run_launcher("wanted", sys.executable, str(self.probe), cwd=worktree)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("other-actor", proc.stderr)
 
     def test_l9_unparseable(self):
         self.config.write_text("{")

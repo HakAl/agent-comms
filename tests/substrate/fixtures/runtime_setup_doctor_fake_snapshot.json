@@ -122,7 +122,7 @@
       {
         "id": "mcp:my-project-architect:claude",
         "status": "ok",
-        "detail": "my-project-architect claude seat in <ROOT>/claude.json binds my-project-architect",
+        "detail": "my-project-architect claude seat in <ROOT>/claude.json (<ROOT>/my project) binds my-project-architect",
         "fix": null
       },
       {

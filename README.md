@@ -34,9 +34,12 @@ process. Humans and scripts use the `agent-comms` CLI.
   installs a pre-push hook that runs hygiene and lint on the commits about
   to be published. CI mirrors the same checks on macOS.
 
-Milestone 1 of [the roadmap](docs/ROADMAP.md) (macOS) is nearly complete;
-what remains is the recorded release walkthrough. There is no PyPI release
-yet: the package installs from a wheel built out of a clone.
+Release 0.2.0 was walked through on a clean Mac against milestone 1 of
+[the roadmap](docs/ROADMAP.md) (macOS); the commands and results are in
+[docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md).
+Every criterion was met except a clean `doctor` report with native runtimes:
+one seat check failed on a bug fixed since, while the seat worked. There is no PyPI
+release yet: the package installs from a wheel built out of a clone.
 
 ## Documentation
 
@@ -51,6 +54,7 @@ Start with the quickstart; it needs no other page.
 | [docs/architect-prompt.md](docs/architect-prompt.md) | The operating rules to give an architect seat, and the CLI fallback |
 | [docs/communication_contract.md](docs/communication_contract.md) | When to send, how to reply, how threads end |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Where this is going and what is not planned |
+| [docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md) | The 0.2.0 walkthrough on a clean Mac: every command and result, a verdict per milestone criterion, the departures and findings |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, the gates, runtime pins and certification, review, failure reports |
 | [AGENTS.md](AGENTS.md) | How to work on this repository |
 

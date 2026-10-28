@@ -3,7 +3,10 @@ client, behind one interface that setup, ``bind-seat`` and doctor use.
 
 Claude Code keeps a local-scope MCP entry per project directory in
 ``~/.claude.json`` (``projects[<cwd>].mcpServers``); its CLI is the
-supported writer, so the Claude seat runs ``claude mcp add/remove``. Codex
+supported writer, so the Claude seat runs ``claude mcp add/remove``. The
+directory it keys by is the toplevel of the repository whose git dir the
+project shares, so a linked worktree's entry lives under the main checkout
+(``claude_project_keys``). Codex
 loads ``<project>/.codex/config.toml`` in a trusted project, and only that
 file is per directory, so the Codex seat writes our server's tables there
 (every other table in the file is preserved and checked unchanged) and
@@ -54,14 +57,19 @@ class ClientConfig:
     ``status`` is ``ok`` when the scope was read, ``missing`` when the file
     does not exist, ``unparseable`` when it could not be read or parsed and
     ``no_project`` when a Claude config has no entry for the project
-    directory. ``entries`` lists every server in the scope, in file order; a
-    project keyed both by its path and its realpath contributes both entries.
+    directory. ``entries`` lists every server in the scope, in file order.
+    For Claude, ``key`` is the one ``projects`` key read (the first of
+    ``claude_project_keys`` present: the scope Claude Code resolves for the
+    directory) and ``shadowed`` names the other candidate keys that also
+    hold our server, which Claude does not read from there.
     """
 
     path: Path
     status: str
     error: str | None = None
     entries: list[ServerEntry] = field(default_factory=list)
+    key: str | None = None
+    shadowed: list[str] = field(default_factory=list)
 
     @property
     def servers(self) -> list[tuple[str, list]]:
@@ -99,8 +107,59 @@ def codex_config_path() -> Path:
     return root / "config.toml"
 
 
-def read_claude_seat(config_path: Path, project_root: str | os.PathLike[str]) -> ClientConfig:
-    """The local-scope servers Claude Code holds for ``project_root``."""
+def claude_main_checkout(project_root: str | os.PathLike[str], *, which: Which, run: Runner) -> str | None:
+    """The main checkout a linked worktree at ``project_root`` shares its git
+    dir with: the parent of ``git rev-parse --git-common-dir`` when it is a
+    ``.git`` directory other than the project's own ``--git-dir``. None for
+    a main checkout (or a directory inside one), a project outside git, no
+    git on PATH, or a shared git dir not named ``.git``."""
+    if which("git") is None:
+        return None
+    try:
+        result = run(["git", "-C", str(project_root), "rev-parse", "--git-dir", "--git-common-dir"], text=True, capture_output=True, check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = (result.stdout or "").splitlines() if result.returncode == 0 else []
+    if len(lines) != 2 or not all(lines):
+        return None
+    # git answers relative to the directory it ran in (".git" for a main checkout).
+    git_dir, common = (Path(line) if os.path.isabs(line) else Path(project_root) / line for line in lines)
+    if common.name != ".git" or os.path.realpath(git_dir) == os.path.realpath(common):
+        return None
+    return os.path.normpath(str(common.parent))
+
+
+def _claude_keys(project_root: str | os.PathLike[str], main_checkout: str | None) -> list[str]:
+    """The ``projects`` keys that may hold ``project_root``'s scope, most
+    likely first: the main checkout Claude Code keys a linked worktree by,
+    then the project root itself; each as its realpath (the physical
+    directory Claude keys by) and then as given; no repeats."""
+    keys: list[str] = []
+    for root in ([main_checkout] if main_checkout else []) + [str(project_root)]:
+        for key in (os.path.realpath(root), root):
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+def claude_project_keys(project_root: str | os.PathLike[str], *, which: Which, run: Runner) -> list[str]:
+    """The ``projects`` keys Claude Code may hold ``project_root``'s local
+    scope under (see ``_claude_keys``), asking git for the main checkout."""
+    return _claude_keys(project_root, claude_main_checkout(project_root, which=which, run=run))
+
+
+def _holds_our_server(entry: object) -> bool:
+    servers = entry.get("mcpServers") if isinstance(entry, dict) else None
+    return isinstance(servers, dict) and SERVER_NAME in servers
+
+
+def read_claude_seat(config_path: Path, project_root: str | os.PathLike[str], main_checkout: str | None = None) -> ClientConfig:
+    """The local-scope servers Claude Code holds for ``project_root``: the
+    servers under the first of its keys present (``main_checkout`` is where
+    it keys a linked worktree's scope; ``claude_main_checkout`` finds it).
+    Every consumer (setup, bind-seat, doctor, the launcher) reads this one
+    scope, so they agree; our server under another candidate key is
+    reported in ``shadowed``, never merged in."""
     try:
         data = json.loads(config_path.read_text())
     except FileNotFoundError:
@@ -108,17 +167,15 @@ def read_claude_seat(config_path: Path, project_root: str | os.PathLike[str]) ->
     except (OSError, ValueError) as exc:
         # ValueError covers JSONDecodeError and a UnicodeDecodeError from read_text().
         return ClientConfig(config_path, "unparseable", str(exc))
-    root = str(project_root)
-    keys = {root, os.path.realpath(root)}
+    keys = _claude_keys(project_root, main_checkout)
     projects = data.get("projects", {}) if isinstance(data, dict) else {}
-    entries = [projects[key] for key in sorted(keys) if isinstance(projects, dict) and key in projects]
-    if not entries:
-        return ClientConfig(config_path, "no_project", f"no project entry for {sorted(keys)!r}")
-    config = ClientConfig(config_path, "ok")
-    for entry in entries:
-        servers = entry.get("mcpServers", {}) if isinstance(entry, dict) else {}
-        if not isinstance(servers, dict):
-            continue
+    present = [key for key in keys if isinstance(projects, dict) and key in projects]
+    if not present:
+        return ClientConfig(config_path, "no_project", f"no project entry for {keys!r}")
+    key, *others = present
+    config = ClientConfig(config_path, "ok", key=key, shadowed=[other for other in others if _holds_our_server(projects[other])])
+    servers = projects[key].get("mcpServers", {}) if isinstance(projects[key], dict) else {}
+    if isinstance(servers, dict):
         for name, server in servers.items():
             config.entries.append(_entry(name, server))
     return config
@@ -375,11 +432,11 @@ class ClaudeSeat:
     def argv(self, target: SeatTarget) -> list[str]:
         return server_argv(target.mcp_command, target.actor_id, target.db_path if target.db_explicit else None, target.home)
 
-    def read(self, project_root: Path) -> ClientConfig:
-        return read_claude_seat(claude_config_path(), project_root)
+    def read(self, project_root: Path, *, which: Which, run: Runner) -> ClientConfig:
+        return read_claude_seat(claude_config_path(), project_root, claude_main_checkout(project_root, which=which, run=run))
 
     def inspect(self, target: SeatTarget, *, which: Which, run: Runner) -> SeatState:
-        config = self.read(target.project_root)
+        config = self.read(target.project_root, which=which, run=run)
         found = config.server() if config.status == "ok" else None
         if found is None:
             return SeatState("absent", config.path)
@@ -396,19 +453,28 @@ class ClaudeSeat:
         return SeatResult(commands=done if failure else commands, failure=failure)
 
     def diagnose(self, target: SeatTarget, *, which: Which, run: Runner) -> list[Finding]:
-        config = self.read(target.project_root)
+        config = self.read(target.project_root, which=which, run=run)
         found = config.server() if config.status == "ok" else None
+        shadowed = [Finding(":shadowed", "warn", claude_shadowed_detail(config, target.project_root))] if config.shadowed else []
         if found is None:
             why = {
                 "missing": f"no claude config at {config.path}",
                 "unparseable": f"{config.path}: {config.error}",
-                "no_project": f"{config.path} has no entry for {target.project_root}",
-            }.get(config.status, f"{config.path} has no {SERVER_NAME} server")
-            return [Finding("", "fail", f"{target.actor_id} has no claude seat: {why}", "rebind")]
+                "no_project": f"{config.path} has {config.error}",
+            }.get(config.status, f"{config.path} has no {SERVER_NAME} server under {config.key}")
+            return [Finding("", "fail", f"{target.actor_id} has no claude seat: {why}", "rebind")] + shadowed
         problems = binding_problems(found, target, binding(self.argv(target))["db"])  # type: ignore[arg-type]
         if problems:
-            return [Finding("", "fail", f"{target.actor_id} claude seat in {config.path}: {'; '.join(problems)}", "replace")]
-        return [Finding("", "ok", f"{target.actor_id} claude seat in {config.path} binds {target.actor_id}")]
+            return [Finding("", "fail", f"{target.actor_id} claude seat in {config.path} ({config.key}): {'; '.join(problems)}", "replace")] + shadowed
+        return [Finding("", "ok", f"{target.actor_id} claude seat in {config.path} ({config.key}) binds {target.actor_id}")] + shadowed
+
+
+def claude_shadowed_detail(config: ClientConfig, project_root: str | os.PathLike[str]) -> str:
+    """Why an entry under another candidate key is ignored, and what to do."""
+    return (
+        f"{config.path} also holds {SERVER_NAME} under {', '.join(config.shadowed)}, which Claude Code does not read "
+        f"from {project_root} (it reads {config.key}); that entry is ignored here and only a hand edit of {config.path} removes it"
+    )
 
 
 # --- the Codex project seat ------------------------------------------------

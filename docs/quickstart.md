@@ -139,6 +139,21 @@ Codex project that is not trusted yet is "open `codex` in the project once
 and accept the trust prompt". Run each fix, rerun `doctor`, stop when it
 exits 0. The remaining warning about the monitor goes away in the next step.
 
+On a machine where nothing has signed in yet, expect three logins, each with
+your own account: the Claude custody copy (the `auth login` command the fix
+prints), your own `codex login` (the architect seat in your terminal and the
+trust prompt use it), and the workers' shared Codex home (the printed
+`CODEX_HOME=<runtime root>/codex-auth codex login`). Create that directory
+with `mkdir -p` before the shared login; `setup` does not create it yet and
+Codex refuses a `CODEX_HOME` that does not exist. On a machine without a
+browser, add `--device-auth` to each `codex login` and finish the sign-in
+from another device. The Claude custody copy is a file you place: the fix
+names the version and the path, and the installer keeps that version's
+binary under `~/.local/share/claude/versions/`, so copy it from there with
+`install -m 0755`. The release walkthrough in
+[releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
+shows each of these as it was run.
+
 ### 7. Start the monitor
 
 Real workers do not drive themselves. In a second terminal, with the human id

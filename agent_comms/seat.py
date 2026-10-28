@@ -11,9 +11,11 @@ same interpreter, and ``review status`` compares its own prefix against it.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 
-from .mcp_clients import actor_ids_in, claude_config_path, read_claude_seat
+from .mcp_clients import actor_ids_in, claude_config_path, claude_main_checkout, claude_shadowed_detail, read_claude_seat
 
 INSTALL_ROOT = sys.prefix
 
@@ -24,7 +26,9 @@ def usage() -> int:
 
 
 def guard(actor_id: str) -> bool:
-    config = read_claude_seat(claude_config_path(), os.getcwd())
+    # Claude Code keys a linked worktree's scope by its main checkout (ac-6k7).
+    cwd = os.getcwd()
+    config = read_claude_seat(claude_config_path(), cwd, claude_main_checkout(cwd, which=shutil.which, run=subprocess.run))
     config_path = config.path
     if config.status == "missing":
         print(f"warning: expected actor id {actor_id!r}; no config at {config_path}", file=sys.stderr)
@@ -33,14 +37,10 @@ def guard(actor_id: str) -> bool:
         print(f"warning: expected actor id {actor_id!r}; could not parse {config_path}: {config.error}", file=sys.stderr)
         return True
     if config.status == "no_project":
-        cwd = os.getcwd()
-        keys = {cwd, os.path.realpath(cwd)}
-        print(
-            f"warning: expected actor id {actor_id!r}; no project entry in {config_path} "
-            f"for {sorted(keys)!r}",
-            file=sys.stderr,
-        )
+        print(f"warning: expected actor id {actor_id!r}; {config.error} in {config_path}", file=sys.stderr)
         return True
+    if config.shadowed:
+        print(f"warning: {claude_shadowed_detail(config, cwd)}", file=sys.stderr)
 
     found = []
     malformed = False
@@ -53,7 +53,7 @@ def guard(actor_id: str) -> bool:
     if malformed or distinct != {actor_id}:
         print(
             f"refusing launch: requested actor id {actor_id!r}; discovered ids "
-            f"{sorted(distinct)!r} in {config_path}; malformed={malformed}",
+            f"{sorted(distinct)!r} in {config_path} ({config.key}); malformed={malformed}",
             file=sys.stderr,
         )
         return False
