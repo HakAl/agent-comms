@@ -65,7 +65,9 @@ on a clean Mac:
 The human supplies logins and choices. Nothing else from the maintainer is
 needed. The commands and results are saved with the release.
 
-**Status:** walked through with release 0.2.0 on a clean Mac, recorded in
+**Status: complete** (2026-10-31, on the maintainer's word with the
+`claude-seat` job green at Claude Code 2.1.310). Walked through with release
+0.2.0 on a clean Mac, recorded in
 [releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
 with a verdict per criterion. Items 1, 2, 3 and 5 were met in that run. Item
 4 was met on the fake runtime and not with native runtimes: `doctor` ended
@@ -77,7 +79,6 @@ on every change by the `claude-seat` job of
 Claude Code at the pinned version, the runbook's worktree topology, and
 `doctor` clean on that seat (`make claude-seat` runs the same check
 locally). The 0.2.0 wheel predates the fix; the next release carries it.
-The milestone closes on the maintainer's word once that job is green.
 The two other defects the walkthrough found (the lockfile on a machine whose
 only Python is 3.15, the shared Codex login directory that `setup` does not
 create) were worked around in the walkthrough and are open bugs, not
