@@ -53,7 +53,10 @@ claude mcp list
 
 Claude Code keeps a local-scope entry per project directory in
 `~/.claude.json`, so the command runs from the project directory and the
-seat belongs to that directory.
+seat belongs to that directory. For a linked git worktree, Claude Code
+files the entry under the main checkout the worktree shares its git
+directory with; `setup`, `bind-seat`, `doctor` and the seat launcher look
+it up there too.
 
 ### Codex CLI
 

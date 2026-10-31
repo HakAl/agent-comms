@@ -45,6 +45,14 @@ class FakeClients:
         self.failing: set[str] = set()
         self.failing_subcommands: set[tuple[str, str]] = set()  # e.g. ("claude", "add")
         self.calls: list[tuple[list[str], str | None]] = []
+        # Linked worktrees by realpath -> the main checkout whose git dir they
+        # share. Claude Code keys its local scope by that checkout (ac-6k7);
+        # a fake git answers rev-parse for them when git is on the fake PATH.
+        self.main_checkout: dict[str, str] = {}
+
+    def claude_key(self, cwd: str) -> str:
+        real = os.path.realpath(cwd)
+        return os.path.realpath(self.main_checkout.get(real, real))
 
     def which(self, name: str) -> str | None:
         return f"/fake/bin/{name}" if name in self.on_path else None
@@ -63,8 +71,11 @@ class FakeClients:
             return _completed(argv, stdout="codex-cli 0.157.0")
         if tool in self.failing or (argv[1:2] == ["mcp"] and (tool, argv[2]) in self.failing_subcommands):
             return _completed(argv, 1, stderr=f"{tool}: boom")
+        if tool == "git" and argv[1] == "-C" and argv[3:] == ["rev-parse", "--git-dir", "--git-common-dir"]:
+            main = self.main_checkout.get(os.path.realpath(argv[2]))
+            return _completed(argv, stdout=f"{main}/.git/worktrees/wt\n{main}/.git\n" if main else ".git\n.git\n")
         if tool == "claude" and argv[1:3] == ["mcp", "add"]:
-            key = os.path.realpath(kwargs["cwd"])
+            key = self.claude_key(kwargs["cwd"])
             separator = argv.index("--")
             data = self._claude()
             servers = data.setdefault("projects", {}).setdefault(key, {}).setdefault("mcpServers", {})
@@ -73,7 +84,7 @@ class FakeClients:
             servers[argv[3]] = {"command": argv[separator + 1], "args": argv[separator + 2:]}
             self.claude_config.write_text(json.dumps(data))
         elif tool == "claude" and argv[1:3] == ["mcp", "remove"]:
-            key = os.path.realpath(kwargs["cwd"])
+            key = self.claude_key(kwargs["cwd"])
             data = self._claude()
             data.get("projects", {}).get(key, {}).get("mcpServers", {}).pop(argv[3], None)
             self.claude_config.write_text(json.dumps(data))
@@ -673,6 +684,99 @@ class SetupCommandTest(_Scratch):
         ids = {actor["id"] for actor in Store(self.db).list_actors()}
         self.assertIn("old-architect", ids)
         self.assertEqual(result["doctor"], {"ok": True, "fixes": []})
+
+    def test_claude_seat_of_a_linked_worktree_is_read_where_claude_keeps_it(self) -> None:
+        # ac-6k7: Claude Code keys the local scope by the main checkout a
+        # linked worktree shares its git dir with, so setup's `claude mcp
+        # add` from the worktree lands there. The check must look there too,
+        # or doctor fails the seat and bind-seat cannot clear it ("already
+        # exists in local config").
+        main = self.root / "integration"
+        main.mkdir()
+        self.clients.main_checkout[os.path.realpath(str(self.project))] = str(main)
+        self.clients.on_path.add("git")
+        rc, result = self.setup("--runtimes", "fake", "--clients", "claude")
+        self.assertEqual(rc, 0, result)
+        self.assertEqual(self.clients.commands("claude"), [["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", *self.expected_argv()]])
+        stored = json.loads(self.claude_config.read_text())["projects"]
+        self.assertEqual(list(stored), [os.path.realpath(str(main))])
+        self.assertEqual(result["doctor"], {"ok": True, "fixes": []})
+        # Doctor and a repeated bind-seat agree the seat is bound; nothing is rewritten.
+        self.clients.calls.clear()
+        checks = doctor.check_mcp(
+            [{"id": "my-project-architect", "project_root": str(self.project)}], {"my-project-architect": ["claude"]},
+            db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run,
+        )
+        self.assertEqual([(item["id"], item["status"]) for item in checks], [("mcp:my-project-architect:claude", doctor.OK)], checks)
+        self.assertIn(str(self.claude_config), checks[0]["detail"])
+        outcome = setup.bind_seat(
+            db_path=self.db, db_explicit=True, architect="my-project-architect", client="claude",
+            replace_seat=False, which=self.clients.which, run=self.clients.run,
+        )
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(self.clients.commands("claude"), [])
+        self.assertEqual(outcome["mcp"]["applied"][0]["detail"], "already bound to my-project-architect")
+
+    def test_claude_seat_reads_one_scope_when_both_worktree_keys_hold_entries(self) -> None:
+        # Lookout F1 on ac-6k7: with different entries under the main checkout
+        # and the worktree key, every consumer must read the one scope Claude
+        # resolves (the main checkout) and report the other as shadowed, not
+        # merge them (doctor "ok" while the launcher refused both actors).
+        main = self.root / "integration"
+        main.mkdir()
+        self.clients.main_checkout[os.path.realpath(str(self.project))] = str(main)
+        self.clients.on_path.add("git")
+        self.clients.run(["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", *self.expected_argv()], cwd=str(self.project))
+        stored = json.loads(self.claude_config.read_text())
+        stale = {"command": MCP_COMMAND, "args": ["--actor-id", "stale-architect"]}
+        stored["projects"][os.path.realpath(str(self.project))] = {"mcpServers": {"agent-comms": stale}}
+        self.claude_config.write_text(json.dumps(stored))
+        self.clients.calls.clear()
+        architects = [{"id": "my-project-architect", "project_root": str(self.project)}]
+        checks = doctor.check_mcp(architects, {"my-project-architect": ["claude"]}, db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
+        self.assertEqual([(item["id"], item["status"]) for item in checks], [("mcp:my-project-architect:claude", doctor.OK), ("mcp:my-project-architect:claude:shadowed", doctor.WARN)], checks)
+        self.assertIn(os.path.realpath(str(self.project)), checks[1]["detail"])
+        self.assertIn(os.path.realpath(str(main)), checks[1]["detail"])
+        self.assertIsNone(checks[1]["fix"])
+        rc, result = self.setup("--runtimes", "fake", "--clients", "claude")
+        self.assertEqual(rc, 0, result)
+        self.assertEqual(self.clients.commands("claude"), [])
+        self.assertEqual(result["mcp"]["applied"][0]["detail"], "already bound to my-project-architect")
+        # The other way round, the main checkout's entry is the one that counts: taken, and replaced there.
+        stored["projects"][os.path.realpath(str(main))]["mcpServers"]["agent-comms"] = stale
+        stored["projects"][os.path.realpath(str(self.project))]["mcpServers"]["agent-comms"] = {"command": MCP_COMMAND, "args": self.expected_argv()[1:]}
+        self.claude_config.write_text(json.dumps(stored))
+        self.clients.calls.clear()
+        checks = doctor.check_mcp(architects, {"my-project-architect": ["claude"]}, db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
+        self.assertEqual([(item["id"], item["status"]) for item in checks], [("mcp:my-project-architect:claude", doctor.FAIL), ("mcp:my-project-architect:claude:shadowed", doctor.WARN)], checks)
+        self.assertIn("bound to actor 'stale-architect'", checks[0]["detail"])
+        self.assertEqual(checks[0]["fix"], self.bind_seat_fix("claude", replace=True))
+        outcome = setup.bind_seat(
+            db_path=self.db, db_explicit=True, architect="my-project-architect", client="claude",
+            replace_seat=True, which=self.clients.which, run=self.clients.run,
+        )
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual([argv[2] for argv in self.clients.commands("claude")], ["remove", "add"])
+        reading = mcp_clients.read_claude_seat(self.claude_config, self.project, main_checkout=str(main))
+        self.assertEqual((reading.key, reading.server().args, reading.shadowed), (os.path.realpath(str(main)), self.expected_argv()[1:], [os.path.realpath(str(self.project))]))
+
+    def test_claude_seat_of_a_linked_worktree_taken_by_another_actor_is_replaced(self) -> None:
+        # The entry under the main checkout binds someone else: replacing it
+        # removes and adds from the worktree, where Claude resolves the same key.
+        main = self.root / "integration"
+        main.mkdir()
+        self.clients.main_checkout[os.path.realpath(str(self.project))] = str(main)
+        self.clients.on_path.add("git")
+        self.clients.run(["claude", "mcp", "add", "agent-comms", "--scope", "local", "--", MCP_COMMAND, "--actor-id", "old-architect"], cwd=str(self.project))
+        self.clients.calls.clear()
+        rc, result = self.setup("--runtimes", "fake", "--clients", "claude")
+        self.assertEqual(rc, 2, result)
+        self.assertIn("seat already taken", result["error"])
+        self.assertIn("bound to actor 'old-architect'", result["error"])
+        rc, result = self.setup("--runtimes", "fake", "--clients", "claude", "--replace-seat")
+        self.assertEqual(rc, 0, result)
+        self.assertEqual([argv[2] for argv in self.clients.commands("claude")], ["remove", "add"])
+        self.assertEqual(mcp_clients.read_claude_seat(self.claude_config, self.project, main_checkout=str(main)).server().args, self.expected_argv()[1:])
 
     def test_already_bound_seat_is_left_alone(self) -> None:
         # Bound by hand through the symlink an installed package puts on PATH: the same server.

@@ -23,6 +23,13 @@ make hooks
 the direct form is `uv run --frozen --extra test python -m unittest discover
 -s tests -t .`.
 
+The suite, the gates and the lockfile are run on CPython 3.11 and 3.14 (CI
+and `make preverify`). On a machine whose only interpreter is another
+version, name one of those: `uv sync --python 3.14 --extra test`, and uv
+downloads it. A Mac with only Python 3.15 needs this today, since the locked
+`rpds-py` has no wheel for it and its source build fails; the quickstart's
+wheel install resolves fresh and is not affected.
+
 Importing the `tests` package moves the process into a scratch home before
 any `agent_comms` module loads. It points `HOME` and
 `AGENT_COMMS_SUPERVISOR_ROOT` at fresh temporary directories, drops every
@@ -234,6 +241,15 @@ unresolved limitations in the contribution description. Explain any rejected
 review finding. Keep unrelated cleanups separate. Runtime-dependent tests
 must state versions and required credentials and must never silently count a
 skipped integration as a pass. No credentials are needed for mailbox-only work.
+
+## Release records
+
+Each release's acceptance walkthrough on a clean machine is saved under
+`docs/releases/`; for 0.2.0 it is
+[docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md).
+A record is a frozen snapshot of one run, scrubbed of personal paths and
+account details. The docs checker does not parse it and a later doc change
+does not update it; the next release gets its own.
 
 ## Useful failure reports
 
