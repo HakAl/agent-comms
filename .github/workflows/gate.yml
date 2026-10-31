@@ -81,9 +81,6 @@ jobs:
       # on yet (the walkthrough's open lockfile bug); pin like the test jobs.
       UV_PYTHON: "3.14"
       CLAUDE_SEAT_REQUIRE_PIN: "1"
-      # The runner's checkout path is deep enough that control sockets under
-      # the default scratch root would exceed the AF_UNIX limit; use a short one.
-      CLAUDE_SEAT_SCRATCH: ${{ runner.temp }}/claude-seat
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -97,5 +94,10 @@ jobs:
       - name: Snapshot HOME and the checkout
         run: sh scripts/gates/leftovers.sh before
       - run: make claude-seat
+        env:
+          # The runner's checkout path is deep enough that control sockets
+          # under the default scratch root would exceed the AF_UNIX limit;
+          # use a short one (the runner context is step-level only).
+          CLAUDE_SEAT_SCRATCH: ${{ runner.temp }}/claude-seat
       - name: Nothing left in HOME or the checkout
         run: sh scripts/gates/leftovers.sh after
