@@ -90,7 +90,6 @@ jobs:
           version=$(python3 -c 'import json; print(json.load(open("agent_comms/runtime_pins.json"))["runtimes"]["claude"]["platforms"]["darwin-arm64"]["version"])')
           curl -fsSL https://claude.ai/install.sh | bash -s "$version"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: claude --version
       - name: Snapshot HOME and the checkout
         run: sh scripts/gates/leftovers.sh before
       - run: make claude-seat

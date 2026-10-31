@@ -40,36 +40,42 @@ for name in $(env | sed -n 's/^\(AGENT_COMMS_[A-Z0-9_]*\)=.*/\1/p') \
 done
 export HOME="$scratch/home"
 export AGENT_COMMS_HOME="$scratch/root"
-echo "claude $(claude --version 2>/dev/null | head -1) at $(command -v claude); scratch $scratch"
+# fail MESSAGE [FILE]: FILE's contents go into the log too, since a CI
+# runner's scratch directory is gone once the job ends.
+fail() {
+  echo "FAIL claude-seat-worktree: $1" >&2
+  if [ -n "${2:-}" ] && [ -s "$2" ]; then echo "--- $2" >&2; cat "$2" >&2; echo "---" >&2; fi
+  echo "scratch kept at $scratch" >&2
+  exit 1
+}
 
-fail() { echo "FAIL claude-seat-worktree: $1" >&2; echo "scratch kept at $scratch" >&2; exit 1; }
-
-# The pin: version and certified digest of the binary behind `claude`.
+# The pin: the certified digest of the binary behind `claude`, checked before
+# anything runs it, then its reported version. Only after this does the
+# script execute `claude` at all.
 if [ "${CLAUDE_SEAT_REQUIRE_PIN:-0}" = "1" ]; then
-  "$checkout/.venv/bin/python" - "$(command -v claude)" "$(claude --version 2>/dev/null | head -1)" <<'PY' || fail "claude on PATH is not the pinned, certified binary"
-import os, sys
+  "$checkout/.venv/bin/python" - "$(command -v claude)" <<'PY' || fail "claude on PATH is not the pinned, certified binary"
+import os, subprocess, sys
 from pathlib import Path
 from agent_comms import runtime_pins
 pin = runtime_pins.claude_pin()
 binary = Path(os.path.realpath(sys.argv[1]))
-reported = sys.argv[2]
 digest = runtime_pins.custody_binary_sha256(binary)
-problems = []
-if reported.split()[:1] != [pin.version]:
-    problems.append(f"claude --version says {reported!r}, pin is {pin.version}")
 if digest != pin.sha256:
-    problems.append(f"{binary} has sha256 {digest}, pin is {pin.sha256}")
-if problems:
-    print("; ".join(problems), file=sys.stderr)
+    print(f"{binary} has sha256 {digest}, pin is {pin.sha256}; not running it", file=sys.stderr)
+    sys.exit(1)
+reported = subprocess.run([str(binary), "--version"], capture_output=True, text=True, check=False).stdout.strip()
+if reported.split()[:1] != [pin.version]:
+    print(f"claude --version says {reported!r}, pin is {pin.version}", file=sys.stderr)
     sys.exit(1)
 print(f"pin: claude {pin.version} ({pin.platform}, certified {pin.certified_on}), digest matches at {binary}")
 PY
 fi
+echo "claude $(claude --version 2>/dev/null | head -1) at $(command -v claude); scratch $scratch"
 
 # setup refuses a runtime root whose control sockets would exceed the AF_UNIX
 # path limit (103 bytes on macOS), so the root must be short; a deep checkout
 # fails here with the reason. CLAUDE_SEAT_SCRATCH moves the scratch directory.
-socket_path_length=$(printf '%s' "$AGENT_COMMS_HOME/run/0123456789abcdef0123456789abcdef/s" | wc -c | tr -d ' ')
+socket_path_length=$(printf '%s' "$AGENT_COMMS_HOME/run/s/0123456789abcdef0123456789abcdef/s" | wc -c | tr -d ' ')
 [ "$socket_path_length" -le 103 ] \
   || fail "control socket path would be $socket_path_length bytes (limit 103); set CLAUDE_SEAT_SCRATCH to a shorter directory"
 
@@ -82,8 +88,8 @@ cd "$project"
 
 # 1. setup binds the Claude seat from the worktree and its own doctor is clean.
 "$checkout/.venv/bin/agent-comms" setup --project-root "$project" --team team-a --runtimes fake --clients claude --human alice --yes >"$scratch/setup.json" \
-  || fail "setup exited $? ($scratch/setup.json)"
-python3 - "$scratch/setup.json" <<'PY' || fail "setup result"
+  || fail "setup exited $?" "$scratch/setup.json"
+python3 - "$scratch/setup.json" <<'PY' || fail "setup result" "$scratch/setup.json"
 import json, sys
 result = json.load(open(sys.argv[1]))
 assert result["ok"], result
@@ -101,8 +107,8 @@ print(f"claude keyed the local scope by {where}: {keys}")
 PY
 
 # 3. doctor from a fresh process: exit 0, the seat check ok.
-"$checkout/.venv/bin/agent-comms" doctor >"$scratch/doctor.json" || fail "doctor exited $? ($scratch/doctor.json)"
-python3 - "$scratch/doctor.json" <<'PY' || fail "doctor report"
+"$checkout/.venv/bin/agent-comms" doctor >"$scratch/doctor.json" || fail "doctor exited $?" "$scratch/doctor.json"
+python3 - "$scratch/doctor.json" <<'PY' || fail "doctor report" "$scratch/doctor.json"
 import json, sys
 report = json.load(open(sys.argv[1]))
 assert report["ok"] and report["fixes"] == [], report
@@ -113,8 +119,8 @@ print("doctor:", seat[0]["detail"])
 PY
 
 # 4. bind-seat again: already bound, nothing rewritten.
-"$checkout/.venv/bin/agent-comms" bind-seat team-a-architect --client claude >"$scratch/bind.json" || fail "bind-seat exited $? ($scratch/bind.json)"
-python3 - "$scratch/bind.json" <<'PY' || fail "bind-seat result"
+"$checkout/.venv/bin/agent-comms" bind-seat team-a-architect --client claude >"$scratch/bind.json" || fail "bind-seat exited $?" "$scratch/bind.json"
+python3 - "$scratch/bind.json" <<'PY' || fail "bind-seat result" "$scratch/bind.json"
 import json, sys
 result = json.load(open(sys.argv[1]))
 assert result["ok"] and result["mcp"]["pending"] == [], result
@@ -124,16 +130,16 @@ print("bind-seat:", applied["detail"])
 PY
 
 # 5. The seat launcher from the worktree: starts its command, no warning.
-"$checkout/.venv/bin/agent-comms-seat" team-a-architect -- /bin/echo launched >"$scratch/seat.out" 2>"$scratch/seat.err" || fail "seat launcher exited $? ($scratch/seat.err)"
+"$checkout/.venv/bin/agent-comms-seat" team-a-architect -- /bin/echo launched >"$scratch/seat.out" 2>"$scratch/seat.err" || fail "seat launcher exited $?" "$scratch/seat.err"
 grep -qx launched "$scratch/seat.out" || fail "seat launcher did not start its command"
 [ ! -s "$scratch/seat.err" ] || fail "seat launcher warned: $(cat "$scratch/seat.err")"
 echo "seat launcher: launched, no warning"
 
 # 6. Claude itself resolves the server from the worktree.
-claude mcp get agent-comms >"$scratch/mcp-get.out" 2>&1 || fail "claude mcp get agent-comms failed in the worktree ($scratch/mcp-get.out)"
-grep -q -- "--actor-id team-a-architect" "$scratch/mcp-get.out" || fail "claude mcp get does not show the architect's argv ($scratch/mcp-get.out)"
-grep -q -- "--home $AGENT_COMMS_HOME" "$scratch/mcp-get.out" || fail "claude mcp get does not show this run's runtime root ($scratch/mcp-get.out)"
-grep -q -- "$checkout/.venv/bin/agent-comms-mcp" "$scratch/mcp-get.out" || fail "claude mcp get does not show this checkout's server ($scratch/mcp-get.out)"
+claude mcp get agent-comms >"$scratch/mcp-get.out" 2>&1 || fail "claude mcp get agent-comms failed in the worktree" "$scratch/mcp-get.out"
+grep -q -- "--actor-id team-a-architect" "$scratch/mcp-get.out" || fail "claude mcp get does not show the architect's argv" "$scratch/mcp-get.out"
+grep -q -- "--home $AGENT_COMMS_HOME" "$scratch/mcp-get.out" || fail "claude mcp get does not show this run's runtime root" "$scratch/mcp-get.out"
+grep -q -- "$checkout/.venv/bin/agent-comms-mcp" "$scratch/mcp-get.out" || fail "claude mcp get does not show this checkout's server" "$scratch/mcp-get.out"
 echo "claude mcp get: resolves this checkout's agent-comms-mcp for team-a-architect under this run's runtime root, from the worktree"
 
 cd "$checkout"
