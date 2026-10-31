@@ -67,3 +67,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: make install-smoke
+
+  # The Claude seat on a linked worktree with the real Claude Code CLI at the
+  # pinned version (ac-6k7): the check the 0.2.0 walkthrough could not get
+  # clean. The script refuses a `claude` whose version or digest is not the
+  # pin's. No login: `claude mcp` edits configuration only. The leftovers
+  # snapshot proves the run wrote nothing into the runner's HOME or the checkout.
+  claude-seat:
+    name: claude-seat (worktree)
+    runs-on: macos-latest
+    env:
+      # The runner's default Python is 3.15, which the lockfile cannot build
+      # on yet (the walkthrough's open lockfile bug); pin like the test jobs.
+      UV_PYTHON: "3.14"
+      CLAUDE_SEAT_REQUIRE_PIN: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --frozen --extra test
+      - name: Install Claude Code at the pinned version
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("agent_comms/runtime_pins.json"))["runtimes"]["claude"]["platforms"]["darwin-arm64"]["version"])')
+          curl -fsSL https://claude.ai/install.sh | bash -s "$version"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Snapshot HOME and the checkout
+        run: sh scripts/gates/leftovers.sh before
+      - run: make claude-seat
+        env:
+          # The runner's checkout path is deep enough that control sockets
+          # under the default scratch root would exceed the AF_UNIX limit;
+          # use a short one (the runner context is step-level only).
+          CLAUDE_SEAT_SCRATCH: ${{ runner.temp }}/claude-seat
+      - name: Nothing left in HOME or the checkout
+        run: sh scripts/gates/leftovers.sh after

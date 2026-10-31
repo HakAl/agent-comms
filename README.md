@@ -38,7 +38,8 @@ Release 0.2.0 was walked through on a clean Mac against milestone 1 of
 [the roadmap](docs/ROADMAP.md) (macOS); the commands and results are in
 [docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md).
 Every criterion was met except a clean `doctor` report with native runtimes:
-one seat check failed on a bug fixed since, while the seat worked. There is no PyPI
+one seat check failed on a bug fixed since and now rerun by CI on every
+change, while the seat worked. There is no PyPI
 release yet: the package installs from a wheel built out of a clone.
 
 ## Documentation
