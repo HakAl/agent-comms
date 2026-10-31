@@ -67,15 +67,17 @@ needed. The commands and results are saved with the release.
 
 **Status:** walked through with release 0.2.0 on a clean Mac, recorded in
 [releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
-with a verdict per criterion. Items 1, 2, 3 and 5 are met. Item 4 is met on
-the fake runtime and not met with native runtimes: `doctor` ended with one
-failing check, the Claude seat lookup for a linked worktree, while the seat
-itself worked and both real dispatches went through it. That lookup is fixed
-in the same change as the record (verified by tests, not by a rerun on a
-clean machine; the 0.2.0 wheel the walkthrough installed predates it). The
-milestone closes when the maintainer either records that check as an
-accepted exception for 0.2.0 here, or reruns the check on a fresh machine
-with the fix.
+with a verdict per criterion. Items 1, 2, 3 and 5 were met in that run. Item
+4 was met on the fake runtime and not with native runtimes: `doctor` ended
+with one failing check, the Claude seat lookup for a linked worktree, while
+the seat itself worked and both real dispatches went through it. That lookup
+was fixed after the run (#18); the failing check is now rerun with the fix
+on every change by the `claude-seat` job of
+[the gate workflow](../.github/workflows/gate.yml): a fresh macOS runner,
+Claude Code at the pinned version, the runbook's worktree topology, and
+`doctor` clean on that seat (`make claude-seat` runs the same check
+locally). The 0.2.0 wheel predates the fix; the next release carries it.
+The milestone closes on the maintainer's word once that job is green.
 The two other defects the walkthrough found (the lockfile on a machine whose
 only Python is 3.15, the shared Codex login directory that `setup` does not
 create) were worked around in the walkthrough and are open bugs, not
