@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -67,7 +68,13 @@ def check_claude(
     *,
     run: Runner = subprocess.run,
     binary: Path | None = None,
+    which: Callable[[str], str | None] = shutil.which,
 ) -> dict:
+    """``runtime:claude``: the custody copy is present, certified and logged
+    in. Claude Code's login is per HOME, not per binary, so the custody copy
+    shares the operator's own Claude Code login and the fix is the ordinary
+    ``claude auth login`` (the custody copy's, only when no ``claude`` is on
+    PATH)."""
     check_id = "runtime:claude"
     if pin is None:
         return check(check_id, SKIP, "platform is not certified for claude (see platform)")
@@ -101,7 +108,7 @@ def check_claude(
         return check(check_id, FAIL, f"{binary} --version exited {result.returncode}: {output!r}", install)
     if not version_matches(installed, pin):
         return check(check_id, FAIL, f"pinned Claude version drifted: expected {pin.version}, got {installed}; path={binary}", install)
-    login = sh(binary, "auth", "login")
+    login = sh("claude", "auth", "login") if which("claude") else sh(binary, "auth", "login")
     result = run_quietly(run, [str(binary), "auth", "status"])
     if isinstance(result, Exception):
         return check(check_id, FAIL, f"could not execute {binary} auth status: {result}", login)
@@ -112,7 +119,12 @@ def check_claude(
         except (ValueError, AttributeError):
             logged_in = False
     if not logged_in:
-        return check(check_id, FAIL, f"claude {installed} at {binary} is not logged in", login)
+        return check(
+            check_id,
+            FAIL,
+            f"claude {installed} at {binary} is not logged in (the custody copy shares your Claude Code login)",
+            login,
+        )
     return check(check_id, OK, f"claude {installed} at {binary}, digest certified, logged in")
 
 
@@ -146,11 +158,14 @@ class ClaudeRuntime:
         binary = claude_versions_dir() / pin.version
         return {"claude_custody": {"version": pin.version, "path": str(binary), "present": binary.is_file()}}
 
+    def setup_refusal(self) -> str | None:
+        return None
+
     def provision_absent(self) -> dict:
         return {"claude_custody": None}
 
-    def doctor_checks(self, pin, snapshot, *, run, now, ledger) -> list[dict]:  # type: ignore[no-untyped-def]
-        return [check_claude(pin, run=run)]
+    def doctor_checks(self, pin, snapshot, *, run, now, ledger, which=shutil.which) -> list[dict]:  # type: ignore[no-untyped-def]
+        return [check_claude(pin, run=run, which=which)]
 
     def doctor_skip(self) -> dict | None:
         return check("runtime:claude", SKIP, "no claude worker registered")

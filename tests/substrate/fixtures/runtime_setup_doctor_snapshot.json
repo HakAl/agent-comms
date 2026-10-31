@@ -27,8 +27,8 @@
       "fixes": [
         "download Claude Code 2.1.310 and place the executable at <ROOT>/custody/2.1.310, or re-certify and bump the pin",
         "agent-comms custody codex",
-        "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login",
-        "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"
+        "codex login",
+        "codex login"
       ],
       "ok": false
     },
@@ -75,8 +75,7 @@
       "agent-comms --db '<ROOT>/ledger dir/ledger.sqlite' doctor",
       "download Claude Code 2.1.310 and place the executable at <ROOT>/custody/2.1.310, or re-certify and bump the pin",
       "agent-comms custody codex",
-      "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login",
-      "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"
+      "codex login"
     ],
     "ok": true,
     "project_root": "<ROOT>/my project",
@@ -138,14 +137,14 @@
       {
         "id": "runtime:codex:auth",
         "status": "fail",
-        "detail": "shared auth <RUNTIME_ROOT>/codex-auth/auth.json is missing",
-        "fix": "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login"
+        "detail": "not logged in to Codex: <ROOT>/codex/auth.json is missing",
+        "fix": "codex login"
       },
       {
         "id": "runtime:codex:home:my-project-codex-worker",
         "status": "fail",
         "detail": "my-project-codex-worker: <ROOT>/codex-homes/default/my-project-codex-worker: auth.json is missing",
-        "fix": "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"
+        "fix": "codex login"
       },
       {
         "id": "monitor",
@@ -181,8 +180,8 @@
     "fixes": [
       "download Claude Code 2.1.310 and place the executable at <ROOT>/custody/2.1.310, or re-certify and bump the pin",
       "agent-comms custody codex",
-      "CODEX_HOME=<RUNTIME_ROOT>/codex-auth codex login",
-      "CODEX_HOME=<ROOT>/codex-homes/default/my-project-codex-worker codex login"
+      "codex login",
+      "codex login"
     ],
     "runtime_root": "<RUNTIME_ROOT>"
   }

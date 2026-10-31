@@ -74,6 +74,11 @@ class Runtime(Protocol):
     def provision_absent(self) -> dict:
         """The same fields when setup registered no worker of this runtime."""
 
+    def setup_refusal(self) -> str | None:
+        """Why setup must not register a worker of this runtime on this
+        machine as it is configured, checked before anything is written; None
+        when it may."""
+
     def doctor_checks(
         self,
         pin: Any | None,
@@ -82,6 +87,7 @@ class Runtime(Protocol):
         run: Callable[..., Any],
         now: datetime | None,
         ledger: Any,
+        which: Callable[[str], str | None],
     ) -> list[dict]:
         """Doctor's rows when a worker of this runtime is registered."""
 

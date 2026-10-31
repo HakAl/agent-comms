@@ -187,7 +187,7 @@ def _base(actors, groups, results):
             "failures": failures, "deferred": deferred, "results": results}
 
 
-def refresh(store, *, exec_runner=_default_exec_runner) -> dict:
+def refresh(store, *, exec_runner=_default_exec_runner, sleep=time.sleep) -> dict:
     actors = resolve_codex_actors(store)
     groups = group_by_lineage(actors)
     ordered = sorted(groups.items())
@@ -211,7 +211,7 @@ def refresh(store, *, exec_runner=_default_exec_runner) -> dict:
             else:
                 item = refresh_if_due(store, lineage_key=lineage_key,
                     codex_home=members[0]["codex_home"], actor_count=len(members),
-                    lineage_ordinal=ordinal, exec_runner=exec_runner)
+                    lineage_ordinal=ordinal, exec_runner=exec_runner, sleep=sleep)
             results.append({"lineage_ordinal": ordinal, "actor_count": len(members), **item})
     except PageFailed:
         value = _base(actors, groups, results)

@@ -77,9 +77,10 @@ milestone closes when the maintainer either records that check as an
 accepted exception for 0.2.0 here, or reruns the check on a fresh machine
 with the fix.
 The two other defects the walkthrough found (the lockfile on a machine whose
-only Python is 3.15, the shared Codex login directory that `setup` does not
+only Python is 3.15, the shared Codex login directory that `setup` did not
 create) were worked around in the walkthrough and are open bugs, not
-blockers.
+blockers. The second is gone: workers now share the operator's own Codex
+login, so there is no agent-comms-specific login to create.
 
 ### Milestone 2: Linux
 

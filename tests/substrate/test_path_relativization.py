@@ -284,8 +284,9 @@ class CodexProvisioningTest(unittest.TestCase):
             self.assertIn(auth, written)
             self.assertTrue(auth.is_symlink())
             self.assertFalse(auth.exists())
-            self.assertEqual(os.readlink(auth), str(source.resolve()))
-            self.assertIn(f"CODEX_HOME={shlex.quote(str(source.parent.resolve()))} codex login", stderr.getvalue())
+            self.assertEqual(os.readlink(auth), str(source))
+            # A source that is not the operator's login is logged into by name.
+            self.assertIn(f"CODEX_HOME={shlex.quote(str(source.parent))} codex login", stderr.getvalue())
             # Once the login writes the target, the same link resolves.
             source.parent.mkdir()
             source.write_text("{}")

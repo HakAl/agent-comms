@@ -26,6 +26,7 @@ from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.adapters.fake import FakeAdapter
 from agent_comms.adapters._base import SpawnFailed
 from agent_comms.codex_auth_refresh import (
+    AUTH_READ_ATTEMPTS,
     access_token_remaining_seconds,
     codex_auth_snapshot,
     spawn_freshness_margin_seconds,
@@ -97,11 +98,19 @@ class SnapshotTest(ScratchTest):
                     auth.write_bytes(raw)
                     expected = frozen(auth)
                     self.assertEqual(expected is None, encoding == "utf-8")
+                    sleeps = []
                     with mock.patch.object(
                         Path, "read_bytes", return_value=raw
                     ) as read:
-                        snapshot = codex_auth_snapshot(auth, now=NOW)
-                    read.assert_called_once()
+                        snapshot = codex_auth_snapshot(auth, now=NOW, sleep=sleeps.append)
+                    # Parseable bytes are read once; unparseable bytes are
+                    # re-read a bounded number of times (an in-place save by
+                    # the interactive client) and the last read is what the
+                    # status and digest describe.
+                    self.assertEqual(
+                        read.call_count, 1 if expected is None else AUTH_READ_ATTEMPTS
+                    )
+                    self.assertEqual(len(sleeps), read.call_count - 1)
                     self.assertEqual(
                         snapshot["read_status"],
                         "ok" if expected is None else "not_json",
@@ -141,25 +150,37 @@ class SnapshotTest(ScratchTest):
                         self.assertEqual((ok, why), (expected is None, expected))
                         self.assertEqual(captured, snapshot)
 
-    def test_criterion_11_snapshot_status_gaps_and_single_read(self):
+    def test_criterion_11_snapshot_status_gaps_and_bounded_read(self):
         auth = self.root / "auth.json"
-        self.assertEqual(codex_auth_snapshot(auth, now=NOW)["read_status"], "missing")
+        sleeps = []
+        # Missing and not-regular are final: Codex saves in place, so neither
+        # is a partial save worth re-reading.
         self.assertEqual(
-            codex_auth_snapshot(self.root, now=NOW)["read_status"], "not_regular"
+            codex_auth_snapshot(auth, now=NOW, sleep=sleeps.append)["read_status"],
+            "missing",
         )
+        self.assertEqual(
+            codex_auth_snapshot(self.root, now=NOW, sleep=sleeps.append)["read_status"],
+            "not_regular",
+        )
+        self.assertEqual(sleeps, [])
         auth.write_bytes(b"not JSON")
-        snapshot = codex_auth_snapshot(auth, now=NOW)
+        snapshot = codex_auth_snapshot(auth, now=NOW, sleep=sleeps.append)
         self.assertEqual(snapshot["read_status"], "not_json")
         self.assertEqual(
             snapshot["auth_digest"], hashlib.sha256(b"not JSON").hexdigest()
         )
+        self.assertEqual(len(sleeps), AUTH_READ_ATTEMPTS - 1)
+        sleeps.clear()
         with mock.patch.object(
             Path, "read_bytes", side_effect=PermissionError("fixture")
         ) as read:
             self.assertEqual(
-                codex_auth_snapshot(auth, now=NOW)["read_status"], "unreadable"
+                codex_auth_snapshot(auth, now=NOW, sleep=sleeps.append)["read_status"],
+                "unreadable",
             )
-            read.assert_called_once()
+            self.assertEqual(read.call_count, AUTH_READ_ATTEMPTS)
+        self.assertEqual(len(sleeps), AUTH_READ_ATTEMPTS - 1)
         values = [
             (None, "no_last_refresh"),
             ("", "no_last_refresh"),

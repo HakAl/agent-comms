@@ -245,6 +245,8 @@ class SetupCommandTest(_Scratch):
         self.assertEqual(result["project_root"], str(self.project.resolve()))
         self.assertEqual(result["codex_homes"], [])
         self.assertIsNone(result["claude_custody"])
+        # No Codex worker, so no shared Codex login is bound.
+        self.assertFalse(self.auth_dir.exists())
         # The registry: the human, the architect, one worker per runtime, and the seats.
         document = self.read_registry()
         self.assertEqual(document["actors"][HUMAN], {"kind": "human", "display_name": "alice"})
@@ -346,8 +348,12 @@ class SetupCommandTest(_Scratch):
         auth = home / "auth.json"
         self.assertTrue(auth.is_symlink())
         self.assertFalse(auth.exists())
-        self.assertEqual(os.readlink(auth), str(paths.runtime_codex_auth_source().resolve()))
-        self.assertIn("codex login", stderr.getvalue())
+        # The worker links to the runtime's shared file, which links to the
+        # operator's own (not yet existing) login: codex login completes both.
+        shared = paths.runtime_codex_auth_source()
+        self.assertEqual(os.readlink(auth), str(shared))
+        self.assertEqual(os.readlink(shared), str(self.codex_home / "auth.json"))
+        self.assertIn("log in with: codex login", stderr.getvalue())
         actors = {actor["id"]: actor for actor in Store(self.db).list_actors()}
         worker = actors["my-project-codex-worker"]
         self.assertEqual(worker["spawn"]["env"]["CODEX_HOME"], str(home))
@@ -367,11 +373,62 @@ class SetupCommandTest(_Scratch):
             env = CodexAdapter()._build_env(context, compile_policy(WORKER_DISPATCH_POLICY), worker["spawn"], zdotdir=self.root / "zdot")
         self.assertNotIn("AGENT_COMMS_DB", env)
         self.assertEqual(env["CODEX_HOME"], str(home))
-        login = f"CODEX_HOME={shlex_quote(self.auth_dir)} codex login"
+        login = "codex login"
         self.assertIn(login, result["doctor"]["fixes"])
         self.assertIn(login, result["next"])
+        self.assertNotIn("CODEX_HOME=", " ".join(result["next"]))
         self.assertFalse(result["doctor"]["ok"])
+        # The operator's login completes setup with no further agent-comms command.
+        self.codex_home.mkdir(exist_ok=True)
+        (self.codex_home / "auth.json").write_text(json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat()}))
+        self.assertTrue(auth.is_file())
+        with mock.patch.object(doctor, "current_platform", return_value="test-platform"), \
+                mock.patch.object(doctor, "pin_for", side_effect=lambda runtime, platform=None: pins[runtime]):
+            report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
+        by_id = {item["id"]: item for item in report["checks"]}
+        self.assertEqual(by_id["runtime:codex:auth"]["status"], doctor.OK, by_id["runtime:codex:auth"])
+        self.assertEqual(by_id["runtime:codex:home:my-project-codex-worker"]["status"], doctor.OK)
         self.assertEqual(self.codex_entry()["args"], ["--actor-id", "my-project-architect", "--db", str(self.db)])
+
+    def test_separate_worker_login_from_an_earlier_install_is_kept(self) -> None:
+        self.auth_dir.mkdir(parents=True)
+        (self.auth_dir / "auth.json").write_text('{"separate": true}')
+        pins = {"codex": RuntimePin("codex", "test-platform", "0.157.0", "exact", "2026-09-26")}
+        with mock.patch.object(doctor, "current_platform", return_value="test-platform"), \
+                mock.patch.object(doctor, "pin_for", side_effect=lambda runtime, platform=None: pins[runtime]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc, result = self.setup("--runtimes", "codex", "--clients", "", "--human-id", HUMAN)
+        self.assertEqual(rc, 0, result)
+        self.assertEqual((self.auth_dir / "auth.json").read_text(), '{"separate": true}')
+        self.assertFalse((self.auth_dir / "auth.json").is_symlink())
+        self.assertEqual(os.path.realpath(Path(result["codex_homes"][0]) / "auth.json"), os.path.realpath(self.auth_dir / "auth.json"))
+        # Doctor warns (the install still works on its own login) and names the switch.
+        with mock.patch.object(doctor, "current_platform", return_value="test-platform"), \
+                mock.patch.object(doctor, "pin_for", side_effect=lambda runtime, platform=None: pins[runtime]):
+            report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
+        auth_check = {item["id"]: item for item in report["checks"]}["runtime:codex:auth"]
+        self.assertEqual(auth_check["status"], doctor.WARN, auth_check)
+        self.assertEqual(auth_check["fix"], "agent-comms bind-codex-login --replace")
+        self.assertNotIn(auth_check["fix"], report["fixes"])
+
+    def test_project_root_overlapping_the_credential_home_or_runtime_state_is_refused(self) -> None:
+        home = Path(os.environ["HOME"])
+        for root, name in ((home, "runtime root"), (self.codex_home / "sub", "Codex home"), (paths.runtime_root() / "x", "runtime root")):
+            root.mkdir(parents=True, exist_ok=True)
+            rc, result = self.run_cli("--project-root", str(root), "--yes", "--runtimes", "fake", "--clients", "", "--human-id", HUMAN)
+            self.assertEqual(rc, 2, result)
+            self.assertIn(name, result["error"])
+            self.assertIn("--project-root", result["error"])
+            self.assertFalse(self.registry.exists())
+
+    def test_codex_home_inside_the_runtime_root_is_refused_before_any_write(self) -> None:
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(paths.runtime_root() / "codex-auth")}):
+            rc, result = self.setup("--runtimes", "codex,fake", "--clients", "", "--human-id", HUMAN)
+        self.assertEqual(rc, 2, result)
+        self.assertIn("runtime root", result["error"])
+        self.assertFalse(self.registry.exists())
+        self.assertFalse(self.auth_dir.exists())
+        self.assertFalse(self.db.exists())
 
     def test_doctor_repair_of_a_codex_home_keeps_the_ledger_binding(self) -> None:
         # SETUP-003: the repair doctor prescribes for a broken custody home must
@@ -386,9 +443,9 @@ class SetupCommandTest(_Scratch):
         home = Path(result["codex_homes"][0])
         (home / "config.toml").unlink()
         (home / "auth.json").unlink()
-        # Shared auth is fresh, so the only problem is the broken home.
-        self.auth_dir.mkdir(parents=True, exist_ok=True)
-        (self.auth_dir / "auth.json").write_text(json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat()}))
+        # The operator's login is fresh, so the only problem is the broken home.
+        self.codex_home.mkdir(exist_ok=True)
+        (self.codex_home / "auth.json").write_text(json.dumps({"last_refresh": datetime.now(timezone.utc).isoformat()}))
         with platform, pin_for:
             report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
         by_id = {item["id"]: item for item in report["checks"]}
@@ -404,7 +461,7 @@ class SetupCommandTest(_Scratch):
         self.assertNotIn("mcp_servers", config)
         auth = home / "auth.json"
         self.assertTrue(auth.is_symlink())
-        self.assertEqual(os.readlink(auth), str(paths.runtime_codex_auth_source().resolve()))
+        self.assertEqual(os.readlink(auth), str(paths.runtime_codex_auth_source()))
         # The real server, built from the per-run binding a dispatch on this
         # ledger renders, binds the worker in the selected ledger.
         worker = {actor["id"]: actor for actor in Store(self.db).list_actors()}["my-project-codex-worker"]

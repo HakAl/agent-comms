@@ -149,10 +149,14 @@ exists so the install can be proven before any login.
   runtime root, filled by `custody codex`, never the `codex` on `PATH`
   (which updates itself). A Claude worker runs the certified Claude binary
   from custody, checked against the pinned digest before every run.
-- **Homes and logins.** Each Codex worker gets a home that holds trust
-  settings only and links to one shared login; the monitor refreshes that
-  login after it expires, and when it cannot, `doctor` says which home to
-  log in again. Claude workers use your Claude login.
+- **Homes and logins.** No login is specific to agent-comms. Each Codex
+  worker gets a home that holds trust settings only; its `auth.json` links,
+  through the runtime root's `codex-auth/auth.json`, to your own Codex login
+  (`$CODEX_HOME/auth.json`, else `~/.codex/auth.json`), so `codex login` in
+  your terminal is the workers' login too. The monitor refreshes that login
+  after it expires, yielding first to your own Codex session, and when it
+  cannot, `doctor` says `codex login`. Claude workers use your Claude Code
+  login; the custody copy shares it.
 
 The two runtimes are wired differently in places; the table at the end of
 [mcp-setup.md](mcp-setup.md) lists each difference and why.

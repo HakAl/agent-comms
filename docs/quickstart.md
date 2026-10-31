@@ -133,26 +133,28 @@ With native runtimes the report checks more: the platform's pins, each
 runtime's custody copy, version and login, every Codex worker home, the
 architect's seats in each client, the monitor heartbeat and the admin token.
 Expect failures on a fresh machine, and treat `fixes` as the to-do list: a
-Codex login for a worker home is `CODEX_HOME=<home> codex login` with the
-home filled in; a missing custody copy is `agent-comms custody codex`; a
-Codex project that is not trusted yet is "open `codex` in the project once
-and accept the trust prompt". Run each fix, rerun `doctor`, stop when it
-exits 0. The remaining warning about the monitor goes away in the next step.
+missing login is `claude auth login` or `codex login`; a missing custody
+copy is `agent-comms custody codex`; a Codex project that is not trusted
+yet is "open `codex` in the project once and accept the trust prompt". Run
+each fix, rerun `doctor`, stop when it exits 0. The remaining warning about
+the monitor goes away in the next step.
 
-On a machine where nothing has signed in yet, expect three logins, each with
-your own account: the Claude custody copy (the `auth login` command the fix
-prints), your own `codex login` (the architect seat in your terminal and the
-trust prompt use it), and the workers' shared Codex home (the printed
-`CODEX_HOME=<runtime root>/codex-auth codex login`). Create that directory
-with `mkdir -p` before the shared login; `setup` does not create it yet and
-Codex refuses a `CODEX_HOME` that does not exist. On a machine without a
-browser, add `--device-auth` to each `codex login` and finish the sign-in
-from another device. The Claude custody copy is a file you place: the fix
-names the version and the path, and the installer keeps that version's
-binary under `~/.local/share/claude/versions/`, so copy it from there with
-`install -m 0755`. The release walkthrough in
+Workers use the logins you already have. On a machine where you already use
+Claude Code and Codex, expect no login at all: the Claude custody copy
+shares your Claude Code login, and every Codex worker home links to your own
+`~/.codex/auth.json` (or `$CODEX_HOME/auth.json`). On a machine where
+nothing has signed in yet, expect one login per runtime you chose, with
+your own account and the ordinary command: `claude auth login` and `codex
+login`. `setup` links the workers to your Codex login before it exists, so
+the login alone completes them; nothing else is needed. On a machine
+without a browser, add `--device-auth` to `codex login` and finish the
+sign-in from another device. The Claude custody copy is a file you place:
+the fix names the version and the path, and the installer keeps that
+version's binary under `~/.local/share/claude/versions/`, so copy it from
+there with `install -m 0755`. The release walkthrough in
 [releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
-shows each of these as it was run.
+shows each of these as it was run; it predates the shared login, so it
+shows a third, worker-only Codex login that is no longer asked for.
 
 ### 7. Start the monitor
 

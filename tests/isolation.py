@@ -250,6 +250,7 @@ def _verify(home: Path, supervisor_root: Path) -> None:
         "agent_comms.paths.runtime_root()": paths.runtime_root(),
         "agent_comms.paths.db_path()": paths.db_path(),
         "agent_comms.paths.codex_custody_root()": paths.codex_custody_root(),
+        "agent_comms.paths.operator_codex_auth()": paths.operator_codex_auth(),
         "agent_comms.supervisor.default_control_root()": supervisor.default_control_root(),
         "agent_comms.supervisor.control_root()": supervisor.control_root(),
     }

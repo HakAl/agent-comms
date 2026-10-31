@@ -55,10 +55,13 @@ class FakeRuntime:
     def provision(self, worker_id, *, pin, pin_error, which, run) -> dict:  # type: ignore[no-untyped-def]
         return {}
 
+    def setup_refusal(self) -> str | None:
+        return None
+
     def provision_absent(self) -> dict:
         return {}
 
-    def doctor_checks(self, pin, snapshot, *, run, now, ledger) -> list[dict]:  # type: ignore[no-untyped-def]
+    def doctor_checks(self, pin, snapshot, *, run, now, ledger, which=None) -> list[dict]:  # type: ignore[no-untyped-def]
         return []
 
     def doctor_skip(self) -> dict | None:

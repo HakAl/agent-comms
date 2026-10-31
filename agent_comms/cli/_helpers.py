@@ -340,6 +340,9 @@ def bootstrap_store(
                 raise ValidationError(f"owner is only valid for worker actor {actor_id}")
             codex_home = None
             if runtime == "codex" and codex_custody:
+                # Workers share the operator's own login: the runtime's shared
+                # file is a link to it, dangling until the first codex login.
+                provisioning.link_shared_codex_auth()
                 home = paths.provisioned_codex_home(actor_id)
                 provisioning.write_codex_home(
                     home,

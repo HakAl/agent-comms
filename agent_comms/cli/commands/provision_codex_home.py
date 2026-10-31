@@ -74,6 +74,10 @@ def handle(store, args):
             codex_home_path = Path(expand_path_value(args.codex_home))
         auth_source = paths.codex_auth_source()
         enforce_custody_root = False
+    if link_absent_source:
+        # Custody-managed homes link to the runtime's shared file, which
+        # links to the operator's own login (bound here if not yet).
+        provisioning.link_shared_codex_auth()
     written = provisioning.write_codex_home(
         codex_home_path,
         args.actor_id,

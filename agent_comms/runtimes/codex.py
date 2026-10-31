@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
+import tomllib
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +15,7 @@ from ..checks import (
     FAIL,
     OK,
     SKIP,
+    WARN,
     LedgerRef,
     Runner,
     check,
@@ -126,6 +127,7 @@ def check_codex(
     run: Runner = subprocess.run,
     bundle: Path | None = None,
     auth_source: Path | None = None,
+    operator_auth: Path | None = None,
     now: datetime | None = None,
     ledger: LedgerRef | None = None,
 ) -> list[dict]:
@@ -135,11 +137,7 @@ def check_codex(
     if pin is None:
         return [check("runtime:codex", SKIP, "platform is not certified for codex (see platform)")]
     checks = [check_codex_custody(pin, run=run, bundle=bundle)]
-    source = (auth_source or paths.runtime_codex_auth_source()).expanduser()
-    if not source.is_file():
-        checks.append(check("runtime:codex:auth", FAIL, f"shared auth {source} is missing", _codex_login(source.parent)))
-    else:
-        checks.append(check("runtime:codex:auth", OK, f"shared auth {source} present"))
+    checks.append(check_shared_auth(auth_source, operator_auth))
     for worker in workers:
         worker_id = worker["id"]
         home_id = f"runtime:codex:home:{worker_id}"
@@ -152,7 +150,7 @@ def check_codex(
             checks.append(check(home_id, OK, f"{worker_id}: {home} provisioned, auth fresh"))
             continue
         if reason and reason.startswith("auth.json"):
-            checks.append(check(home_id, FAIL, f"{worker_id}: {home}: {reason}", _codex_login(home)))
+            checks.append(check(home_id, FAIL, f"{worker_id}: {home}: {reason}", paths.codex_login_command(home)))
             continue
         # The repair names the inspected home and the inspected ledger, so it
         # cannot land on the default home or the default ledger by accident.
@@ -177,14 +175,63 @@ def check_codex(
                 f"runtime:codex:login:{lineage}",
                 FAIL,
                 f"expired login (refresh failed: {row['dead_reason']} since {row['dead_at']}); lineage {lineage}",
-                _codex_login(Path(lineage).parent),
+                paths.codex_login_command(Path(lineage)),
             )
         )
     return checks
 
 
-def _codex_login(home: Path | str) -> str:
-    return f"CODEX_HOME={shlex.quote(str(home))} codex login"
+# The Codex config key that moves the login out of auth.json (0.164.0
+# config_toml.rs); ``keyring`` and ``auto`` key the secret by the canonical
+# CODEX_HOME, so no other home can share it.
+CREDENTIALS_STORE_KEY = "cli_auth_credentials_store"
+UNSHAREABLE_STORES = ("keyring", "auto")
+
+
+def _credentials_store(config: Path) -> str | None:
+    """``cli_auth_credentials_store`` from the operator's config.toml, if readable."""
+    try:
+        document = tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = document.get(CREDENTIALS_STORE_KEY)
+    return value if isinstance(value, str) else None
+
+
+def check_shared_auth(link: Path | None = None, operator_auth: Path | None = None) -> dict:
+    """``runtime:codex:auth``: the runtime's shared ``auth.json`` is a link
+    to the operator's own login, and that login is a file Codex will share."""
+    check_id = "runtime:codex:auth"
+    link = (link or paths.runtime_codex_auth_source()).expanduser()
+    operator_auth = (operator_auth or paths.operator_codex_auth()).expanduser()
+    problem = paths.operator_codex_auth_problem(operator_auth)
+    if problem:
+        return check(check_id, FAIL, problem, f"unset {paths.CODEX_HOME_ENV} and run doctor again")
+    bind = home_prefix() + sh("agent-comms", "bind-codex-login")
+    replace = f"{bind} --replace"
+    config = operator_auth.parent / "config.toml"
+    store = _credentials_store(config)
+    if store in UNSHAREABLE_STORES:
+        return check(
+            check_id,
+            FAIL,
+            f"Codex keeps its login in the keyring ({CREDENTIALS_STORE_KEY} = {store!r} in {config}), which workers cannot share",
+            f'set {CREDENTIALS_STORE_KEY} = "file" in {config} and run codex login',
+        )
+    if link.is_symlink():
+        if os.path.realpath(link) == os.path.realpath(operator_auth):
+            if operator_auth.is_file():
+                return check(check_id, OK, f"shared with your Codex login ({operator_auth})")
+            return check(check_id, FAIL, f"not logged in to Codex: {operator_auth} is missing", "codex login")
+        current = os.readlink(link)
+        if link.is_file():
+            return check(check_id, WARN, f"{link} links to {current}, not your Codex login ({operator_auth})", replace)
+        return check(check_id, FAIL, f"{link} links to {current}, which does not exist", replace)
+    if link.is_file():
+        return check(check_id, WARN, f"separate worker login at {link}; your own Codex login ({operator_auth}) is not shared", replace)
+    if link.exists():
+        return check(check_id, FAIL, f"{link} is neither a file nor a link; move it away", bind)
+    return check(check_id, FAIL, f"shared auth {link} is missing; workers share your own Codex login once it is bound", bind)
 
 
 class CodexRuntime:
@@ -224,7 +271,12 @@ class CodexRuntime:
     def provision_absent(self) -> dict:
         return {"codex_homes": [], "codex_custody": None}
 
-    def doctor_checks(self, pin, snapshot, *, run, now, ledger) -> list[dict]:  # type: ignore[no-untyped-def]
+    def setup_refusal(self) -> str | None:
+        # Workers share the operator's own login, so it must not sit inside
+        # the runtime state the link would be written to.
+        return paths.operator_codex_auth_problem()
+
+    def doctor_checks(self, pin, snapshot, *, run, now, ledger, which=None) -> list[dict]:  # type: ignore[no-untyped-def]
         return check_codex(
             pin,
             snapshot.workers(self.name) if snapshot else [],

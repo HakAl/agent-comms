@@ -259,7 +259,7 @@ class KeepaliveTest(_Base):
             calls.append(home)
             Path(home, "auth.json").write_text(json.dumps({"last_refresh": FRESH}))
             return True
-        result = codex_refresh_driver.refresh(self.store, exec_runner=runner)
+        result = codex_refresh_driver.refresh(self.store, exec_runner=runner, sleep=lambda seconds: None)
         # Two distinct lineages: one shared (h1/h2) and one private (priv).
         self.assertEqual(result["lineages"], 2)
         self.assertEqual(result["lineages_refreshed"], 2, result)
@@ -521,7 +521,7 @@ class RefreshExitAndOpacityTest(_Base):
 
     def test_results_use_opaque_ordinals_not_auth_paths(self) -> None:
         self._two_private_homes()
-        res = codex_refresh_driver.refresh(self.store, exec_runner=self._rotate)
+        res = codex_refresh_driver.refresh(self.store, exec_runner=self._rotate, sleep=lambda seconds: None)
         self.assertTrue(res["ok"])
         self.assertEqual(res["failures"], 0)
         for entry in res["results"]:
@@ -531,7 +531,7 @@ class RefreshExitAndOpacityTest(_Base):
 
     def test_failed_runner_marks_not_ok(self) -> None:
         self._two_private_homes()
-        res = codex_refresh_driver.refresh(self.store, exec_runner=lambda h, b: False)
+        res = codex_refresh_driver.refresh(self.store, exec_runner=lambda h, b: False, sleep=lambda seconds: None)
         self.assertFalse(res["ok"])
         self.assertEqual(res["failures"], 2)
 
@@ -677,8 +677,12 @@ class ProductionScratchBoundaryTest(_Base):
         auth = Path(result["codex_home"]) / "auth.json"
         self.assertTrue(auth.is_symlink())
         self.assertFalse(auth.exists())
-        self.assertEqual(os.readlink(auth), str(runtime_auth.resolve()))
-        self.assertIn("codex login", stderr.getvalue())
+        # Two hops: the worker links to the runtime's shared file, which links
+        # to the operator's own login; the chain is not collapsed.
+        self.assertEqual(os.readlink(auth), str(runtime_auth))
+        self.assertEqual(os.readlink(runtime_auth), str(paths.operator_codex_auth()))
+        self.assertEqual(os.path.realpath(auth), os.path.realpath(paths.operator_codex_auth()))
+        self.assertIn("log in with: codex login", stderr.getvalue())
 
     def test_canonical_explicit_out_of_root_provision_refuses_before_mutation(self) -> None:
         custody = self.root / "prod-custody2"
@@ -728,8 +732,9 @@ class ProductionScratchBoundaryTest(_Base):
             provision_codex_home.handle(store, args)
         self.assertNotIn("mcp_servers", tomllib.loads((inside / "config.toml").read_text()))
         self.assertTrue((inside / "auth.json").is_symlink())
-        self.assertEqual(os.readlink(inside / "auth.json"), str(runtime_auth.resolve()))
-        self.assertIn("codex login", stderr.getvalue())
+        self.assertEqual(os.readlink(inside / "auth.json"), str(runtime_auth))
+        self.assertEqual(os.readlink(runtime_auth), str(paths.operator_codex_auth()))
+        self.assertIn("log in with: codex login", stderr.getvalue())
         # A legacy home outside the custody root on the same ledger: legacy auth.
         outside = self.root / "legacy-home-c"
         args.codex_home = str(outside)

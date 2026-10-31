@@ -8,16 +8,18 @@ class ConstantsTest(unittest.TestCase):
         from agent_comms.codex_auth_constants import (
             REFRESH_TOKEN_EXPIRED_MESSAGE as expired,
             REFRESH_TOKEN_INVALIDATED_MESSAGE as revoked,
+            REFRESH_TOKEN_REUSED_MESSAGE as reused,
         )
         from agent_comms.codex_auth_refresh import classify_refresh_failure
 
-        reused = "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."
+        self.assertEqual(reused, "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.")
         for output, reason in (
             (expired, "expired"),
             (revoked, "revoked"),
+            (reused, "reused"),
             (expired + revoked, None),
+            (expired + reused, None),
             ("noise", None),
-            (reused, None),
             (None, None),
         ):
             with self.subTest(output=output):

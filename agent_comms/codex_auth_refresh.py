@@ -10,11 +10,14 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 import uuid
 
+from . import runtime_pins
 from .codex_auth_constants import (
     REFRESH_TOKEN_EXPIRED_MESSAGE,
     REFRESH_TOKEN_INVALIDATED_MESSAGE,
+    REFRESH_TOKEN_REUSED_MESSAGE,
 )
 
 
@@ -26,6 +29,16 @@ DEFERRAL_PAGE_MARGIN = 86400
 PAGE_THROTTLE_SECONDS = 12 * 3600
 CLAIM_TTL_SECONDS = 3600
 SPAWN_FRESHNESS_MARGIN_SECONDS = 900
+# The wait between finding a lineage due and refreshing it: the operator's
+# own Codex shares the login, and its session that just hit 401 refreshes
+# within seconds. Two refreshes of one refresh token end the login
+# (``refresh_token_reused``), so agent-comms yields first and re-reads.
+REFRESH_GRACE_SECONDS = 20
+REFRESH_GRACE_ENV = "AGENT_COMMS_CODEX_REFRESH_GRACE_SECONDS"
+# An in-place save by another Codex process can hand a reader an empty or
+# partial file; the readers re-read a few times before calling it invalid.
+AUTH_READ_ATTEMPTS = 3
+AUTH_READ_RETRY_SECONDS = 0.05
 FAILURE_OUTCOMES = frozenset(
     {"exec_failed", "verify_failed", "binary_missing", "hardlink_refused", "due_metadata_invalid"}
 )
@@ -39,6 +52,7 @@ def classify_refresh_failure(output: str | None) -> str | None:
         for message, reason in (
             (REFRESH_TOKEN_EXPIRED_MESSAGE, "expired"),
             (REFRESH_TOKEN_INVALIDATED_MESSAGE, "revoked"),
+            (REFRESH_TOKEN_REUSED_MESSAGE, "reused"),
         )
         if message in output
     ]
@@ -92,8 +106,36 @@ def _jwt_exp(token: object) -> int | None:
         return None
 
 
-def codex_auth_snapshot(auth_path: Path, *, now: datetime) -> dict:
-    """Read at most once and expose only parsed credential timing and a digest."""
+def read_auth_document(auth_path: Path, *, sleep=time.sleep) -> tuple[str, bytes | None, object]:
+    """Read ``auth.json`` once, re-reading a bounded number of times when the
+    bytes are empty or not JSON (another Codex process saving in place).
+
+    Returns ``(status, raw, data)``: ``ok`` with the parsed document, or
+    ``missing``, ``not_regular``, ``unreadable`` or ``not_json`` with
+    whatever bytes the last attempt read.
+    """
+    status, raw = "unreadable", None
+    for attempt in range(AUTH_READ_ATTEMPTS):
+        try:
+            if not auth_path.exists():
+                return "missing", None, None
+            if not auth_path.is_file():
+                return "not_regular", None, None
+            raw = auth_path.read_bytes()
+        except OSError:
+            status, raw = "unreadable", None
+        else:
+            try:
+                return "ok", raw, json.loads(raw.decode("utf-8"))
+            except ValueError:
+                status = "not_json"
+        if attempt + 1 < AUTH_READ_ATTEMPTS:
+            sleep(AUTH_READ_RETRY_SECONDS)
+    return status, raw, None
+
+
+def codex_auth_snapshot(auth_path: Path, *, now: datetime, sleep=time.sleep) -> dict:
+    """Read once (re-reading a partial file) and expose only parsed credential timing and a digest."""
     current = _now(now).astimezone(timezone.utc)
     snapshot = {
         "lineage_key": str(auth_path),
@@ -110,22 +152,14 @@ def codex_auth_snapshot(auth_path: Path, *, now: datetime) -> dict:
     except Exception:
         pass
     try:
-        if not auth_path.exists():
-            snapshot["read_status"] = "missing"
-            return snapshot
-        if not auth_path.is_file():
-            snapshot["read_status"] = "not_regular"
-            return snapshot
-        raw = auth_path.read_bytes()
+        status, raw, data = read_auth_document(auth_path, sleep=sleep)
     except Exception:
         return snapshot
-    snapshot["auth_digest"] = hashlib.sha256(raw).hexdigest()
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except Exception:
-        snapshot["read_status"] = "not_json"
+    if raw is not None:
+        snapshot["auth_digest"] = hashlib.sha256(raw).hexdigest()
+    snapshot["read_status"] = status
+    if status != "ok":
         return snapshot
-    snapshot["read_status"] = "ok"
     data = data if isinstance(data, dict) else {}
     gaps = []
     last_refresh = data.get("last_refresh")
@@ -158,16 +192,15 @@ def codex_auth_snapshot(auth_path: Path, *, now: datetime) -> dict:
     return snapshot
 
 
-def access_token_remaining_seconds(auth_path: str | Path, *, now=None) -> int | None:
+def access_token_remaining_seconds(auth_path: str | Path, *, now=None, sleep=time.sleep) -> int | None:
     """Return remaining JWT access-token life, failing closed with ``None``.
 
     Callers use this public helper for admission decisions so refresh and spawn
     share the same synthetic-document parsing rules.
     """
     current = _now(now)
-    try:
-        data = json.loads(Path(auth_path).read_text())
-    except (OSError, json.JSONDecodeError):
+    status, _raw, data = read_auth_document(Path(auth_path), sleep=sleep)
+    if status != "ok":
         return None
     if not isinstance(data, dict):
         return None
@@ -200,12 +233,9 @@ def _jwt_exp_is_nonnumeric(token: str) -> bool:
         return False
 
 
-def _metadata(auth_path: Path, now: datetime) -> tuple[bool | None, tuple[int | None, str | None]]:
-    try:
-        if not auth_path.is_file():
-            return None, (None, None)
-        data = json.loads(auth_path.read_text())
-    except (OSError, json.JSONDecodeError):
+def _metadata(auth_path: Path, now: datetime, *, sleep=time.sleep) -> tuple[bool | None, tuple[int | None, str | None]]:
+    status, _raw, data = read_auth_document(auth_path, sleep=sleep)
+    if status != "ok":
         return None, (None, None)
     if not isinstance(data, dict):
         return None, (None, None)
@@ -305,11 +335,41 @@ def _release(store, lineage_key: str, *, reset_deferred: bool) -> None:
                      (", first_deferred_at=NULL" if reset_deferred else "") + " where lineage_key=?", (lineage_key,))
 
 
+def refresh_binary() -> str | None:
+    """The Codex the refresher runs: the custody copy of the pinned version
+    when it is certified for this platform, present and digest-matched (the
+    behavior that was certified: reload before refresh), else ``codex`` on
+    PATH, else None."""
+    try:
+        bundle = runtime_pins.codex_bundle_path()
+    except runtime_pins.PlatformNotCertified:
+        bundle = None
+    if bundle is not None:
+        binary = bundle / "bin" / "codex"
+        if binary.is_file() and runtime_pins.codex_bundle_digest_matches(bundle):
+            return str(binary)
+    return shutil.which("codex")
+
+
+def refresh_grace_seconds() -> int:
+    return max(0, _env_seconds(REFRESH_GRACE_ENV, REFRESH_GRACE_SECONDS))
+
+
+def _advanced(before: tuple[int | None, str | None], after: tuple[int | None, str | None]) -> bool:
+    return ((before[0] is not None and after[0] is not None and after[0] > before[0]) or
+            (before[1] is not None and after[1] is not None and after[1] > before[1]))
+
+
 def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int,
-                   lineage_ordinal: int, exec_runner, now=None) -> dict:
+                   lineage_ordinal: int, exec_runner, now=None, sleep=time.sleep) -> dict:
+    """Refresh one lineage if its token is due, from the one claim holder.
+
+    ``sleep`` serves the grace window and the partial-file re-read; tests
+    inject it (a no-op, or a callback that plays the other process).
+    """
     now = _now(now)
     auth_path = Path(codex_home) / "auth.json"
-    due, before = _metadata(auth_path, now)
+    due, before = _metadata(auth_path, now, sleep=sleep)
     with store._db.connection() as conn:
         row = conn.execute(
             "select dead_digest from codex_refresh_claims where lineage_key=?",
@@ -345,16 +405,36 @@ def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int
         return {"outcome": "claim_contention", "ok": True}
     reset_deferred = True
     release_lease = True
+
+    def deferred_busy() -> dict:
+        nonlocal reset_deferred
+        reset_deferred = False
+        with store._db.connection() as conn:
+            conn.execute("update codex_refresh_claims set first_deferred_at=coalesce(first_deferred_at, ?) where lineage_key=?", (stamp, lineage_key))
+        remaining = (before[0] - now.timestamp()) if before[0] is not None else None
+        if remaining is None or remaining < _env_seconds("AGENT_COMMS_CODEX_DEFERRAL_PAGE_MARGIN", DEFERRAL_PAGE_MARGIN):
+            _page(store, lineage_ordinal, "deferred_busy", actor_count, lineage_key, now, **urgency)
+        return {"outcome": "deferred_busy", "ok": True}
+
     try:
         if store._dispatch.codex_lineage_holding(lineage_key):
-            reset_deferred = False
-            with store._db.connection() as conn:
-                conn.execute("update codex_refresh_claims set first_deferred_at=coalesce(first_deferred_at, ?) where lineage_key=?", (stamp, lineage_key))
-            remaining = (before[0] - now.timestamp()) if before[0] is not None else None
-            if remaining is None or remaining < _env_seconds("AGENT_COMMS_CODEX_DEFERRAL_PAGE_MARGIN", DEFERRAL_PAGE_MARGIN):
-                _page(store, lineage_ordinal, "deferred_busy", actor_count, lineage_key, now, **urgency)
-            return {"outcome": "deferred_busy", "ok": True}
-        binary = shutil.which("codex")
+            return deferred_busy()
+        grace = refresh_grace_seconds()
+        if grace:
+            # The login is shared with the operator's own Codex, whose session
+            # that hit 401 refreshes within seconds; yield, then look again.
+            sleep(grace)
+            if store._dispatch.codex_lineage_holding(lineage_key):
+                return deferred_busy()
+            after_due, after = _metadata(auth_path, now, sleep=sleep)
+            if after_due is None:
+                _page(store, lineage_ordinal, "due_metadata_invalid", actor_count, lineage_key, now, **urgency)
+                return {"outcome": "due_metadata_invalid", "ok": False}
+            if after_due is False or _advanced(before, after):
+                with store._db.connection() as conn:
+                    _clear_dead(conn, lineage_key)
+                return {"outcome": "refreshed_by_other", "ok": True}
+        binary = refresh_binary()
         if not binary:
             _page(store, lineage_ordinal, "binary_missing", actor_count, lineage_key, now, **urgency)
             return {"outcome": "binary_missing", "ok": False}
@@ -399,10 +479,8 @@ def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int
             if dead_reason is not None:
                 result["dead_reason"] = dead_reason
             return result
-        after_due, after = _metadata(auth_path, now)
-        advanced = ((before[0] is not None and after[0] is not None and after[0] > before[0]) or
-                    (before[1] is not None and after[1] is not None and after[1] > before[1]))
-        if after_due is None or not advanced:
+        after_due, after = _metadata(auth_path, now, sleep=sleep)
+        if after_due is None or not _advanced(before, after):
             _page(store, lineage_ordinal, "verify_failed", actor_count, lineage_key, now, **urgency)
             return {"outcome": "verify_failed", "ok": False}
         with store._db.connection() as conn:

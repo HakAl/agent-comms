@@ -388,7 +388,6 @@ class CodexAdapter(ProcessSpawnAdapter):
 
     @staticmethod
     def _auth_stale(codex_home: Path, reason: str) -> AuthStale:
-        home = str(codex_home)
         return AuthStale(
-            f"{reason}; CODEX_HOME={home}; recover with: CODEX_HOME={home} codex login"
+            f"{reason}; CODEX_HOME={codex_home}; recover with: {paths.codex_login_command(codex_home)}"
         )

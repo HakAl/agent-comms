@@ -479,10 +479,13 @@ class ClaudeCheckTest(_Scratch):
         self.assertIn("expected 9.9.9, got 9.9.8", result["detail"])
         self.assertIn("install Claude Code 9.9.9", result["fix"])
         logged_out = _runner({("--version",): {"stdout": "9.9.9"}, ("auth", "status"): {"stdout": json.dumps({"loggedIn": False}), "returncode": 1}})
-        result = doctor.check_claude(self.pin, run=logged_out)
+        result = doctor.check_claude(self.pin, run=logged_out, which=lambda name: None)
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertIn("not logged in", result["detail"])
+        self.assertIn("not logged in (the custody copy shares your Claude Code login)", result["detail"])
+        # The custody copy's own command only when no claude is on PATH.
         self.assertEqual(result["fix"], f"{self.binary} auth login")
+        result = doctor.check_claude(self.pin, run=logged_out, which=lambda name: "/opt/bin/claude" if name == "claude" else None)
+        self.assertEqual(result["fix"], "claude auth login")
         logged_in = _runner({("--version",): {"stdout": "9.9.9"}, ("auth", "status"): {"stdout": json.dumps({"loggedIn": True})}})
         result = doctor.check_claude(self.pin, run=logged_in)
         self.assertEqual(result["status"], doctor.OK, result)
@@ -524,11 +527,24 @@ class CodexCheckTest(_Scratch):
             "spawn_json": json.dumps({"command": "codex", "args": [], "env": {"CODEX_HOME": str(home)}}),
         }
 
-    def _provision(self, home: Path, actor_id: str, *, age_days: float = 1) -> None:
+    def _provision(self, home: Path, actor_id: str, *, age_days: float = 1, shared: bool = False) -> None:
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.toml").write_text("# base\n")
         (home / f"{actor_id}.config.toml").write_text("# profile\n")
-        self._write_auth(home / "auth.json", age_days=age_days)
+        if shared:
+            (home / "auth.json").symlink_to(self.auth_source)
+        else:
+            self._write_auth(home / "auth.json", age_days=age_days)
+
+    def _share(self, *, logged_in: bool = True, age_days: float = 1) -> Path:
+        """The shared link bound to the operator's login (the scratch CODEX_HOME)."""
+        operator = self.codex_home / "auth.json"
+        self.auth_source.parent.mkdir(parents=True, exist_ok=True)
+        if not self.auth_source.is_symlink():
+            self.auth_source.symlink_to(operator)
+        if logged_in:
+            self._write_auth(operator, age_days=age_days)
+        return operator
 
     def test_uncertified_pin_skips(self) -> None:
         self.assertEqual(doctor.check_codex(None, [], [])[0]["status"], doctor.SKIP)
@@ -554,7 +570,7 @@ class CodexCheckTest(_Scratch):
         self.assertIn("make certify RUNTIME=codex", result["fix"])
 
     def test_the_path_codex_is_not_consulted(self) -> None:
-        self._write_auth(self.auth_source)
+        self._share()
         with mock.patch("shutil.which", side_effect=AssertionError("PATH lookup")):
             results = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))
         self.assertEqual(results["runtime:codex"]["status"], doctor.OK, results)
@@ -569,7 +585,6 @@ class CodexCheckTest(_Scratch):
         self.assertIn("make certify RUNTIME=codex", result["fix"])
         minor = RuntimePin("codex", CERTIFIED_PLATFORM, "0.157.0", "minor", "2026-09-26", self.pin.sha256)
         patch = _runner({("--version",): {"stdout": "codex-cli 0.157.4"}})
-        self._write_auth(self.auth_source)
         result = doctor.check_codex_custody(minor, bundle=self.bundle, run=patch)
         self.assertEqual(result["status"], doctor.OK, result)
 
@@ -580,25 +595,87 @@ class CodexCheckTest(_Scratch):
         self.assertIn("exited 2", result["detail"])
         self.assertEqual(result["fix"], "agent-comms custody codex --replace")
 
-    def test_missing_shared_auth_prescribes_the_login(self) -> None:
-        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))["runtime:codex:auth"]
+    def _auth_check(self) -> dict:
+        return self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))["runtime:codex:auth"]
+
+    def test_shared_auth_absent_then_bound_then_logged_in(self) -> None:
+        result = self._auth_check()
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertEqual(result["fix"], f"CODEX_HOME={self.auth_source.parent} codex login")
-        self._write_auth(self.auth_source)
-        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version))["runtime:codex:auth"]
+        self.assertIn("is missing", result["detail"])
+        self.assertEqual(result["fix"], "agent-comms bind-codex-login")
+        operator = self._share(logged_in=False)
+        result = self._auth_check()
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn(f"not logged in to Codex: {operator} is missing", result["detail"])
+        self.assertEqual(result["fix"], "codex login")
+        self._share()
+        result = self._auth_check()
         self.assertEqual(result["status"], doctor.OK, result)
+        self.assertEqual(result["detail"], f"shared with your Codex login ({operator})")
+
+    def test_separate_worker_login_warns_with_the_replace_fix(self) -> None:
+        self._write_auth(self.auth_source)
+        result = self._auth_check()
+        self.assertEqual(result["status"], doctor.WARN)
+        self.assertIn(f"separate worker login at {self.auth_source}", result["detail"])
+        self.assertEqual(result["fix"], "agent-comms bind-codex-login --replace")
+
+    def test_link_elsewhere_fails_when_dangling_and_warns_when_a_file(self) -> None:
+        elsewhere = self.root / "elsewhere" / "auth.json"
+        self.auth_source.parent.mkdir(parents=True)
+        self.auth_source.symlink_to(elsewhere)
+        result = self._auth_check()
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn(f"links to {elsewhere}, which does not exist", result["detail"])
+        self.assertEqual(result["fix"], "agent-comms bind-codex-login --replace")
+        self._write_auth(elsewhere)
+        result = self._auth_check()
+        self.assertEqual(result["status"], doctor.WARN)
+        self.assertIn(f"links to {elsewhere}, not your Codex login", result["detail"])
+        self.assertEqual(result["fix"], "agent-comms bind-codex-login --replace")
+
+    def test_codex_home_inside_the_runtime_root_is_refused(self) -> None:
+        self._share()
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(self.runtime_root / "codex-auth")}):
+            result = self._auth_check()
+        self.assertEqual(result["status"], doctor.FAIL)
+        self.assertIn("runtime root", result["detail"])
+        self.assertEqual(result["fix"], "unset CODEX_HOME and run doctor again")
+
+    def test_keyring_credential_store_cannot_be_shared(self) -> None:
+        operator = self._share()
+        config = self.codex_home / "config.toml"
+        for store in ("keyring", "auto"):
+            config.write_text(f'model = "x"\ncli_auth_credentials_store = "{store}"\n')
+            result = self._auth_check()
+            self.assertEqual(result["status"], doctor.FAIL, result)
+            self.assertIn(f"cli_auth_credentials_store = {store!r} in {config}", result["detail"])
+            self.assertEqual(result["fix"], f'set cli_auth_credentials_store = "file" in {config} and run codex login')
+        config.write_text('cli_auth_credentials_store = "file"\n')
+        self.assertEqual(self._auth_check()["status"], doctor.OK)
+        config.write_text("not = toml =\n")
+        self.assertEqual(self._auth_check()["status"], doctor.OK)
+        self.assertTrue(operator.is_file())
+
+    def test_bind_fix_carries_the_install_home(self) -> None:
+        with mock.patch.dict(os.environ, {paths.HOME_ENV: str(self.root / "other home")}):
+            result = self._auth_check()
+        self.assertEqual(shlex.split(result["fix"]), [f"{paths.HOME_ENV}={self.root / 'other home'}", "agent-comms", "bind-codex-login"])
 
     def test_worker_homes_missing_stale_and_fresh(self) -> None:
-        self._write_auth(self.auth_source)
+        self._share(age_days=20)
         missing = self.root / "codex-homes" / "default" / "t-codex-missing"
         stale = self.root / "codex-homes" / "default" / "t-codex-stale"
         fresh = self.root / "codex-homes" / "default" / "t-codex-fresh"
+        shared = self.root / "codex-homes" / "default" / "t-codex-shared"
         self._provision(stale, "t-codex-stale", age_days=20)
         self._provision(fresh, "t-codex-fresh")
+        self._provision(shared, "t-codex-shared", shared=True)
         workers = [
             self._worker("t-codex-missing", missing, project_root="/srv/one"),
             self._worker("t-codex-stale", stale),
             self._worker("t-codex-fresh", fresh),
+            self._worker("t-codex-shared", shared),
         ]
         results = {item["id"]: item for item in doctor.check_codex(self.pin, workers, [], bundle=self.bundle, run=self.version, now=NOW)}
         self.assertEqual(results["runtime:codex"]["status"], doctor.OK)
@@ -615,12 +692,21 @@ class CodexCheckTest(_Scratch):
         self.assertIn("stale", stale_check["detail"])
         self.assertEqual(stale_check["fix"], f"CODEX_HOME={stale} codex login")
         self.assertEqual(results["runtime:codex:home:t-codex-fresh"]["status"], doctor.OK)
+        # A home on the shared login is repaired by the operator's own login,
+        # never by a login into the worker's home.
+        shared_check = results["runtime:codex:home:t-codex-shared"]
+        self.assertEqual(shared_check["status"], doctor.FAIL)
+        self.assertIn("stale", shared_check["detail"])
+        self.assertEqual(shared_check["fix"], "codex login")
+        self._share(age_days=1)
+        results = {item["id"]: item for item in doctor.check_codex(self.pin, workers, [], bundle=self.bundle, run=self.version, now=NOW)}
+        self.assertEqual(results["runtime:codex:home:t-codex-shared"]["status"], doctor.OK)
 
     def test_worker_repairs_target_the_inspected_ledger_and_home(self) -> None:
         # DOCTOR-001 F1: with an explicit ledger the provisioning repair carries
         # ``--db`` and the inspected (custom) home, so it cannot land on the
         # default ledger or the default home. F3: every operand is quoted.
-        self._write_auth(self.auth_source)
+        self._share()
         custom = self.root / "custom homes" / "t-codex-custom"
         worker = self._worker("t-codex-custom", custom, project_root="/srv/my project")
         ledger = doctor.LedgerRef(self.root / "scratch ledger.sqlite", True)
@@ -641,14 +727,20 @@ class CodexCheckTest(_Scratch):
         results = {item["id"]: item for item in doctor.check_codex(self.pin, [bare], [], bundle=self.bundle, run=self.version, ledger=ledger)}
         self.assertTrue(results["runtime:codex:home:t-codex-bare"]["fix"].endswith(f"agent-comms --db {shlex.quote(str(ledger.path))} bootstrap"))
 
-    def test_shared_auth_login_is_quoted(self) -> None:
-        source = self.root / "auth dir" / "auth.json"
-        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version, auth_source=source))["runtime:codex:auth"]
+    def test_shared_auth_takes_an_explicit_link_and_operator_file(self) -> None:
+        link = self.root / "auth dir" / "auth.json"
+        operator = self.root / "my codex" / "auth.json"
+        link.parent.mkdir()
+        link.symlink_to(operator)
+        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version, auth_source=link, operator_auth=operator))["runtime:codex:auth"]
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertEqual(shlex.split(result["fix"]), [f"CODEX_HOME={source.parent}", "codex", "login"])
+        self.assertEqual(result["fix"], "codex login")
+        self._write_auth(operator)
+        result = self.by_id(doctor.check_codex(self.pin, [], [], bundle=self.bundle, run=self.version, auth_source=link, operator_auth=operator))["runtime:codex:auth"]
+        self.assertEqual(result["status"], doctor.OK, result)
 
     def test_worker_without_codex_home_in_spawn(self) -> None:
-        self._write_auth(self.auth_source)
+        self._share()
         worker = {"id": "t-codex-bare", "kind": "agent", "role": "worker", "runtime": "codex", "project_root": "/srv", "spawn_json": json.dumps({"env": {}})}
         results = {item["id"]: item for item in doctor.check_codex(self.pin, [worker], [], bundle=self.bundle, run=self.version)}
         result = results["runtime:codex:home:t-codex-bare"]
@@ -656,17 +748,20 @@ class CodexCheckTest(_Scratch):
         self.assertIn("CODEX_HOME", result["detail"])
 
     def test_each_dead_lineage_gets_its_own_login_command(self) -> None:
-        self._write_auth(self.auth_source)
+        operator = self._share()
         dead = [
             {"lineage_key": str(self.root / "homes" / "a" / "auth.json"), "dead_reason": "expired", "dead_at": "2026-09-01T00:00:00+00:00"},
             {"lineage_key": str(self.root / "homes" / "b" / "auth.json"), "dead_reason": "revoked", "dead_at": "2026-09-02T00:00:00+00:00"},
+            {"lineage_key": os.path.realpath(operator), "dead_reason": "expired", "dead_at": "2026-09-03T00:00:00+00:00"},
         ]
         results = doctor.check_codex(self.pin, [], dead, bundle=self.bundle, run=self.version)
         logins = [item for item in results if item["id"].startswith("runtime:codex:login:")]
-        self.assertEqual(len(logins), 2)
-        self.assertEqual([item["status"] for item in logins], [doctor.FAIL, doctor.FAIL])
+        self.assertEqual(len(logins), 3)
+        self.assertEqual([item["status"] for item in logins], [doctor.FAIL] * 3)
         self.assertEqual(logins[0]["fix"], f"CODEX_HOME={self.root / 'homes' / 'a'} codex login")
         self.assertEqual(logins[1]["fix"], f"CODEX_HOME={self.root / 'homes' / 'b'} codex login")
+        # The shared lineage is the operator's own login.
+        self.assertEqual(logins[2]["fix"], "codex login")
         self.assertIn("refresh failed: expired since 2026-09-01T00:00:00+00:00", logins[0]["detail"])
         self.assertIn("revoked", logins[1]["detail"])
 
@@ -1218,7 +1313,7 @@ class DoctorCommandTest(_Scratch):
         self.assertEqual(by_id["runtime:claude"]["status"], doctor.OK, by_id["runtime:claude"])
         self.assertEqual(by_id["runtime:codex"]["status"], doctor.OK, by_id["runtime:codex"])
         self.assertEqual(by_id["runtime:codex:auth"]["status"], doctor.FAIL)
-        self.assertEqual(by_id["runtime:codex:auth"]["fix"], f"CODEX_HOME={self.runtime_root / 'codex-auth'} codex login")
+        self.assertEqual(by_id["runtime:codex:auth"]["fix"], "agent-comms bind-codex-login")
         home_check = by_id["runtime:codex:home:t-codex-worker"]
         self.assertEqual(home_check["status"], doctor.FAIL)
         self.assertIn("--override-protected", home_check["fix"])

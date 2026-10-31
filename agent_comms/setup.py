@@ -301,6 +301,24 @@ def bind_seat(
     }
 
 
+def refuse_project_root_overlap(root: Path) -> None:
+    """Refuse a resolved project root that contains or sits inside the
+    operator's Codex home (the shared login file would be in every worker's
+    sandbox write set), the runtime root or the custody root (a worker's
+    workspace would be runtime state)."""
+    for name, path in (
+        ("your Codex home", paths.operator_codex_home()),
+        ("the agent-comms runtime root", paths.runtime_root()),
+        ("the Codex custody root", paths.codex_custody_root()),
+    ):
+        resolved = Path(os.path.realpath(path))
+        if root == resolved or root.is_relative_to(resolved) or resolved.is_relative_to(root):
+            raise ValidationError(
+                f"--project-root {root} contains or is inside {name} ({path}); "
+                "choose a project directory outside it"
+            )
+
+
 def run_setup(
     store: Store,
     *,
@@ -367,6 +385,12 @@ def run_setup(
     unknown = [client for client in clients if client not in mcp_clients.CLIENTS]
     if unknown:
         raise ValidationError(f"--clients must be a subset of {', '.join(mcp_clients.CLIENTS)}; unknown: {', '.join(unknown)}")
+    refuse_project_root_overlap(root)
+    for runtime in runtime_registry.registered():
+        if runtime.name in runtimes:
+            refusal = runtime.setup_refusal()
+            if refusal:
+                raise ValidationError(refusal)
     architect = f"{team}-architect"
     workers = {runtime: f"{team}-{runtime}-worker" for runtime in runtimes}
     for actor_id in (architect, *workers.values()):
