@@ -256,6 +256,16 @@ A record is a frozen snapshot of one run, scrubbed of personal paths and
 account details. The docs checker does not parse it and a later doc change
 does not update it; the next release gets its own.
 
+The release itself is published with `scripts/release.sh`, which has three
+subcommands: `build <version>` exports the tag and builds the wheel and sdist
+under `local/release/<version>/`, recording the tag's commit and both digests
+in `build.txt`; `publish <version>` creates the GitHub release of that tag
+from those artifacts (refused unless they still match the build record) and
+the hand-written `local/release/<version>/notes.md` (which must state the
+wheel's sha256); and `verify <version>` downloads the served wheel and
+compares its digest. `tests/substrate/test_release_script.py` runs the script
+against a scratch repository with fake `gh`, `uv` and `shasum`.
+
 ## Useful failure reports
 
 Include the package revision, OS/architecture, Python and relevant runtime
