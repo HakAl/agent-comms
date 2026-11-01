@@ -22,7 +22,9 @@ process. Humans and scripts use the `agent-comms` CLI.
 - **Setup and doctor.** `agent-comms setup` creates a team for a project and
   binds the architect's seat in your own Claude Code and Codex;
   `agent-comms doctor` checks the install and prints the fix for every
-  failing check.
+  failing check. Workers use the logins you already have: no login is
+  specific to agent-comms, and a machine that already runs Claude Code and
+  Codex needs none.
 - **Review and landing.** A review gate runner and a signed push approval
   check (`scripts/guarded-push`), so nothing pushes without a human approval
   signed with an SSH key. Landing needs two paths from the operator's shell:

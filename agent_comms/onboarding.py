@@ -73,6 +73,8 @@ def onboard_worker(
                 # home under the runtime custody root, the runtime shared auth
                 # source, containment enforced before any mutation.
                 codex_home_path = paths.provisioned_codex_home(actor_id)
+                provisioning.refuse_shared_login_overlap(project_root_value, actor_id=actor_id)
+                provisioning.link_shared_codex_auth()
                 provisioning.write_codex_home(
                     codex_home_path,
                     actor_id,

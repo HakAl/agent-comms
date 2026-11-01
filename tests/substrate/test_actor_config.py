@@ -260,8 +260,8 @@ class ActorConfigTest(unittest.TestCase):
                     {
                         "actors": {
                             "01M36YTJV9XBW95S6ZWV47C4RG": {"kind": "human", "display_name": "alice"},
-                            "alpha-architect": {"kind": "agent", "display_name": "alpha-architect", "team": "alpha", "role": "architect", "project_root": str(root), "capabilities": []},
-                            "alpha-codex-worker": {"kind": "agent", "display_name": "alpha-codex-worker", "team": "alpha", "role": "worker", "owner": "alpha-architect", "runtime": "codex", "project_root": str(root), "capabilities": []},
+                            "alpha-architect": {"kind": "agent", "display_name": "alpha-architect", "team": "alpha", "role": "architect", "project_root": str(root / "project"), "capabilities": []},
+                            "alpha-codex-worker": {"kind": "agent", "display_name": "alpha-codex-worker", "team": "alpha", "role": "worker", "owner": "alpha-architect", "runtime": "codex", "project_root": str(root / "project"), "capabilities": []},
                         }
                     }
                 )
@@ -277,7 +277,9 @@ class ActorConfigTest(unittest.TestCase):
                 self.assertFalse((home / "alpha-codex-worker.config.toml").exists())
                 self.assertTrue((home / "auth.json").is_symlink())
                 self.assertFalse((home / "auth.json").exists())
-                self.assertEqual(os.readlink(home / "auth.json"), str(source.resolve()))
+                # The worker links to the shared file as named, which links to the operator's login.
+                self.assertEqual(os.readlink(home / "auth.json"), str(source))
+                self.assertEqual(os.readlink(source), str(paths.operator_codex_auth()))
                 # The worker's ledger is bound per run with -c (slice 3b); its
                 # home holds trust only, so no ledger is baked in.
                 self.assertNotIn("mcp_servers", tomllib.loads((home / "config.toml").read_text()))

@@ -117,6 +117,7 @@ class IsolationTests(unittest.TestCase):
             "paths.runtime_root()": paths.runtime_root(),
             "paths.db_path()": paths.db_path(),
             "paths.codex_custody_root()": paths.codex_custody_root(),
+            "paths.operator_codex_auth()": paths.operator_codex_auth(),
             "supervisor.default_control_root()": supervisor.default_control_root(),
             "supervisor.control_root()": supervisor.control_root(),
         }

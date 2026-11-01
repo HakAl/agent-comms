@@ -36,7 +36,7 @@ class LauncherProvenanceTest(unittest.TestCase):
         self.store.init()
         self.args = types.SimpleNamespace(
             actor_id="alpha-codex-worker",
-            project_root=str(self.root),
+            project_root=str(self.root / "project"),
             codex_home=str(self.home),
             override_protected=None,
         )

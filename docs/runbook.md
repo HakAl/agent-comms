@@ -31,10 +31,10 @@ nothing and repairs nothing.
 | `registry` | `actors.json` loads and lists actors | the `setup` or `bootstrap` command it prints |
 | `ledger` | the ledger opens, its schema is known, one human and an architect exist | `setup`; upgrade the package for a newer schema |
 | `platform` | a certified pin exists for this platform and each native runtime | see Runtime pins in CONTRIBUTING |
-| `runtime:claude` | custody copy, digest, version, login | `install` command printed; `claude` login |
-| `runtime:codex`, `runtime:codex:auth` | custody copy and the shared login file | `agent-comms custody codex`; `codex login` |
-| `runtime:codex:home:<worker>` | each worker home and its link to the login | the printed `codex login` with that `CODEX_HOME` |
-| `runtime:codex:login:<lineage>` | a login that expired and refresh could not recover | the same `codex login` |
+| `runtime:claude` | custody copy, digest, version, login (the custody copy shares your Claude Code login) | `install` command printed; `claude auth login` |
+| `runtime:codex`, `runtime:codex:auth` | custody copy; the runtime's shared `auth.json` links to your own Codex login, which is a file Codex can share | `agent-comms custody codex`; `codex login`; `agent-comms bind-codex-login` (with `--replace` for a separate worker login from an earlier install, which warns rather than fails); unset a `CODEX_HOME` inside the runtime root; `cli_auth_credentials_store = "file"` when Codex keeps the login in the keyring |
+| `runtime:codex:home:<worker>` | each worker home and its link to the login | `codex login`; the `CODEX_HOME=<home>` form only for a home that keeps its own file |
+| `runtime:codex:login:<lineage>` | a login that expired and refresh could not recover (`expired`, `revoked`, or `reused` by another process) | the same `codex login` |
 | `monitor` | heartbeat present, fresh, and its pid alive | the monitor command |
 | `mcp:<architect>:<client>` | the seat each client records, and for Codex what it resolves | the `bind-seat` line printed; trust the project in Codex |
 | `admin_token` | `admin-token` present, mode 600 | see Operator credential |
@@ -407,13 +407,38 @@ involved anywhere in this cycle.
 `runtime:codex:home:<worker>`, `dispatch-status` prints a
 `codex-credential-dead` line, or a Codex dispatch fails with a login error.
 
-Logins cannot be refreshed ahead of time: a Codex token is refreshed after
-it expires, by the monitor, when dispatch reports it stale. When that
-refresh fails, dispatch to that worker stops with the reason, and `doctor`
-prints the login command for the home concerned, of the form
-`CODEX_HOME=<runtime root>/codex-homes/default/<worker> codex login`. Run
-it, then `doctor` again. Worker homes link to one shared login, so one login
-usually clears every worker of the team.
+Workers share your own Codex login: every worker home's `auth.json` links
+to `<runtime root>/codex-auth/auth.json`, which links to
+`$CODEX_HOME/auth.json` or `~/.codex/auth.json`. Logins cannot be refreshed
+ahead of time: a Codex token is refreshed after it expires, by the monitor,
+when dispatch reports it stale, and it refreshes your own login the way
+your interactive Codex would. Because your own Codex session may be
+refreshing the same token at that moment (a second refresh of one refresh
+token ends the login), the refresher waits a grace window after finding a
+lineage due (20 seconds, `AGENT_COMMS_CODEX_REFRESH_GRACE_SECONDS`) and
+reads the file again; when the token advanced meanwhile the outcome is
+`refreshed_by_other` and nothing runs. When a refresh fails, dispatch to
+that worker stops with the reason, and `doctor` prints `codex login`. Run
+it, then `doctor` again. One login clears every worker.
+
+The login is shared only with a worker whose project stays outside it:
+`setup`, `bootstrap`, onboarding, `provision-codex-home` and dispatch all
+refuse a project root that contains or sits inside your Codex home, the
+file its `auth.json` resolves to, the runtime root or the custody root
+(the project is the worker's sandbox write set). Move the project or
+`CODEX_HOME`, then re-register the worker.
+
+An install from before the shared login keeps its separate worker login
+until you switch: `doctor` warns `runtime:codex:auth` and names the
+command, which moves the old file aside (never deletes it). A file that
+another login writes at the shared path while the command runs is kept
+too; the command reports it instead of replacing it:
+
+```sh
+agent-comms bind-codex-login --replace
+```
+
+Without `--replace`, `bind-codex-login` only binds a missing link.
 
 To see which workers share a login, and to run one refresh pass yourself:
 

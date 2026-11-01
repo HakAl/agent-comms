@@ -106,7 +106,7 @@ class AdapterPreflightTest(_Base):
         spawn["env"]["CODEX_HOME"] = str(home)
         return DispatchContext(
             dispatch={"dispatch_id": "dispatch_20260802_120000_abcdef12", "policy_name": WORKER_DISPATCH_POLICY},
-            recipient={"id": "alpha-codex-worker", "runtime": "codex", "project_root": str(self.root), "spawn": spawn},
+            recipient={"id": "alpha-codex-worker", "runtime": "codex", "project_root": str(self.root / "project"), "spawn": spawn},
             message={"id": "m"},
             ttl_seconds=30,
             expected_close_by="2026-08-02T12:00:30+00:00",
@@ -144,6 +144,24 @@ class AdapterPreflightTest(_Base):
         home = self._good_home("noprofile")
         (home / "alpha-codex-worker.config.toml").unlink()
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.custody)}):
+            CodexAdapter()._preflight(self._ctx(home))
+
+    def test_project_inside_the_shared_login_refused_at_admission(self) -> None:
+        # A good managed home, but the operator's login now sits inside the
+        # worker's project (CODEX_HOME rebound after provisioning): no process.
+        from agent_comms.adapters._base import SpawnFailed
+
+        home = self._good_home("boundary")
+        context = self._ctx(home)
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.custody), "CODEX_HOME": str(self.root / "project" / ".codex")}), \
+                mock.patch.object(CodexAdapter, "_now_utc", return_value=NOW):
+            with self.assertRaises(SpawnFailed) as caught:
+                CodexAdapter()._preflight(context)
+        self.assertIn("project root", str(caught.exception))
+        self.assertIn("your Codex home", str(caught.exception))
+        # The project beside the custody root (the fixture's layout) passes.
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.custody)}), \
+                mock.patch.object(CodexAdapter, "_now_utc", return_value=NOW):
             CodexAdapter()._preflight(self._ctx(home))
 
     def test_invalid_auth_refused(self) -> None:
@@ -259,7 +277,7 @@ class KeepaliveTest(_Base):
             calls.append(home)
             Path(home, "auth.json").write_text(json.dumps({"last_refresh": FRESH}))
             return True
-        result = codex_refresh_driver.refresh(self.store, exec_runner=runner)
+        result = codex_refresh_driver.refresh(self.store, exec_runner=runner, sleep=lambda seconds: None)
         # Two distinct lineages: one shared (h1/h2) and one private (priv).
         self.assertEqual(result["lineages"], 2)
         self.assertEqual(result["lineages_refreshed"], 2, result)
@@ -521,7 +539,7 @@ class RefreshExitAndOpacityTest(_Base):
 
     def test_results_use_opaque_ordinals_not_auth_paths(self) -> None:
         self._two_private_homes()
-        res = codex_refresh_driver.refresh(self.store, exec_runner=self._rotate)
+        res = codex_refresh_driver.refresh(self.store, exec_runner=self._rotate, sleep=lambda seconds: None)
         self.assertTrue(res["ok"])
         self.assertEqual(res["failures"], 0)
         for entry in res["results"]:
@@ -531,7 +549,7 @@ class RefreshExitAndOpacityTest(_Base):
 
     def test_failed_runner_marks_not_ok(self) -> None:
         self._two_private_homes()
-        res = codex_refresh_driver.refresh(self.store, exec_runner=lambda h, b: False)
+        res = codex_refresh_driver.refresh(self.store, exec_runner=lambda h, b: False, sleep=lambda seconds: None)
         self.assertFalse(res["ok"])
         self.assertEqual(res["failures"], 2)
 
@@ -677,8 +695,55 @@ class ProductionScratchBoundaryTest(_Base):
         auth = Path(result["codex_home"]) / "auth.json"
         self.assertTrue(auth.is_symlink())
         self.assertFalse(auth.exists())
-        self.assertEqual(os.readlink(auth), str(runtime_auth.resolve()))
-        self.assertIn("codex login", stderr.getvalue())
+        # Two hops: the worker links to the runtime's shared file, which links
+        # to the operator's own login; the chain is not collapsed.
+        self.assertEqual(os.readlink(auth), str(runtime_auth))
+        self.assertEqual(os.readlink(runtime_auth), str(paths.operator_codex_auth()))
+        self.assertEqual(os.path.realpath(auth), os.path.realpath(paths.operator_codex_auth()))
+        self.assertIn("log in with: codex login", stderr.getvalue())
+
+    def test_canonical_onboarding_refuses_a_project_inside_the_shared_login(self) -> None:
+        # The login is shared only with a worker whose project stays outside
+        # it; onboarding takes an explicit project root, so it checks too.
+        repo = self._make_repo(self.root)
+        worktree_root = self.root / "wt-boundary"
+        worktree_root.mkdir()
+        custody = self.root / "prod-custody-boundary"
+        runtime_auth = self.root / "runtime-auth-boundary" / "auth.json"
+        store = Store(self.root / "prod-boundary.sqlite")
+        store._db.is_default_db_open = True
+        store.init()
+        store.register_agent_actor("team-z-architect", "team-z", "architect", "/srv/team-z", [])
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody), "CODEX_HOME": str(self.root / "team-z" / ".codex")}), \
+                mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(ValidationError) as caught:
+                onboard_worker(
+                    store, team="team-z", runtime="codex", actor_id="team-z-codex-worker",
+                    owner="team-z-architect",
+                    project_root=str(self.root / "team-z"), worktree_root=str(worktree_root), repo_root=repo,
+                )
+        self.assertIn("worker team-z-codex-worker", str(caught.exception))
+        self.assertIn("your Codex home", str(caught.exception))
+        self.assertFalse(runtime_auth.is_symlink() or runtime_auth.exists())
+        self.assertFalse((custody / "default" / "team-z-codex-worker").exists())
+
+    def test_canonical_provision_refuses_a_project_inside_the_shared_login(self) -> None:
+        custody = self.root / "prod-custody-boundary2"
+        runtime_auth = self.root / "runtime-auth-boundary2" / "auth.json"
+        store = Store(self.root / "prod-boundary2.sqlite")
+        store._db.is_default_db_open = True
+        store.init()
+        home = custody / "default" / "alpha-codex-worker"
+        project = self.root / "project-with-login"
+        args = types.SimpleNamespace(actor_id="alpha-codex-worker", project_root=str(project), codex_home=str(home), override_protected=None)
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody), "CODEX_HOME": str(project / ".codex")}), \
+                mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth):
+            with self.assertRaises(ValidationError) as caught:
+                provision_codex_home.handle(store, args)
+        self.assertIn("your Codex home", str(caught.exception))
+        self.assertFalse(runtime_auth.is_symlink() or runtime_auth.exists())
+        self.assertFalse(home.exists())
 
     def test_canonical_explicit_out_of_root_provision_refuses_before_mutation(self) -> None:
         custody = self.root / "prod-custody2"
@@ -720,7 +785,7 @@ class ProductionScratchBoundaryTest(_Base):
         store = Store(self.root / "explicit-c.sqlite")  # is_default_db_open False
         store.init()
         inside = custody / "default" / "alpha-codex-worker"
-        args = types.SimpleNamespace(actor_id="alpha-codex-worker", project_root=str(self.root), codex_home=str(inside), override_protected=None)
+        args = types.SimpleNamespace(actor_id="alpha-codex-worker", project_root=str(self.root / "project"), codex_home=str(inside), override_protected=None)
         stderr = io.StringIO()
         with mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(custody)}), \
                 mock.patch.object(paths, "runtime_codex_auth_source", return_value=runtime_auth), \
@@ -728,8 +793,9 @@ class ProductionScratchBoundaryTest(_Base):
             provision_codex_home.handle(store, args)
         self.assertNotIn("mcp_servers", tomllib.loads((inside / "config.toml").read_text()))
         self.assertTrue((inside / "auth.json").is_symlink())
-        self.assertEqual(os.readlink(inside / "auth.json"), str(runtime_auth.resolve()))
-        self.assertIn("codex login", stderr.getvalue())
+        self.assertEqual(os.readlink(inside / "auth.json"), str(runtime_auth))
+        self.assertEqual(os.readlink(runtime_auth), str(paths.operator_codex_auth()))
+        self.assertIn("log in with: codex login", stderr.getvalue())
         # A legacy home outside the custody root on the same ledger: legacy auth.
         outside = self.root / "legacy-home-c"
         args.codex_home = str(outside)

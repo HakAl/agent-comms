@@ -39,11 +39,15 @@ class RefreshTest(unittest.TestCase):
         self.home.mkdir()
         self.auth = self.home / "auth.json"
         self.key = os.path.realpath(self.auth)
+        self.sleeps: list[float] = []
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_refresh(self, runner=lambda home, binary: True):
+    def _sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+
+    def run_refresh(self, runner=lambda home, binary: True, *, sleep=None):
         with mock.patch("shutil.which", return_value="/abs/codex"):
             return codex_auth_refresh.refresh_if_due(
                 self.store,
@@ -53,6 +57,7 @@ class RefreshTest(unittest.TestCase):
                 lineage_ordinal=0,
                 exec_runner=runner,
                 now=NOW,
+                sleep=sleep or self._sleep,
             )
 
     def _dead_row(self):
@@ -128,7 +133,7 @@ class RefreshTest(unittest.TestCase):
                     self.run_refresh(lambda h, b: {"ok": False, "output": output})
                 throttled.assert_not_called()
 
-    def test_dead_unreadable_after_exec_and_reused_do_not_record(self):
+    def test_dead_unreadable_after_exec_and_unknown_output_do_not_record(self):
         from agent_comms.codex_auth_constants import REFRESH_TOKEN_EXPIRED_MESSAGE
 
         for deletes in (True, False):
@@ -142,9 +147,7 @@ class RefreshTest(unittest.TestCase):
                         self.auth.unlink()
                     return {
                         "ok": False,
-                        "output": REFRESH_TOKEN_EXPIRED_MESSAGE
-                        if deletes
-                        else "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+                        "output": REFRESH_TOKEN_EXPIRED_MESSAGE if deletes else "some transient failure",
                     }
 
                 with mock.patch.object(
@@ -170,6 +173,213 @@ class RefreshTest(unittest.TestCase):
                     page.call_args.args[3],
                     "lineage_ordinal=0\noutcome=exec_failed\nactor_count=1\nremaining_seconds=0",
                 )
+
+    def test_reused_refresh_token_is_a_dead_login(self):
+        # Codex 0.164.0: the refresh token was exchanged by another process
+        # first; Codex says to sign in again, so the lineage is dead like an
+        # expired or revoked one.
+        from agent_comms.codex_auth_constants import REFRESH_TOKEN_REUSED_MESSAGE
+
+        self._due_auth()
+        with mock.patch.object(self.store, "send_message", wraps=self.store.send_message) as page:
+            result = self.run_refresh(lambda h, b: {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE})
+        self.assertEqual(result, {"ok": False, "outcome": "exec_failed", "containment_failed": False, "dead_reason": "reused"})
+        row = self._dead_row()
+        self.assertEqual((row["dead_reason"], row["dead_at"]), ("reused", NOW.isoformat(timespec="seconds")))
+        self.assertEqual(row["dead_digest"], hashlib.sha256(self.auth.read_bytes()).hexdigest())
+        self.assertIn("dead_reason=reused", page.call_args.args[3])
+        self.assertEqual(codex_auth_refresh.dead_credentials(self.store)[0]["dead_reason"], "reused")
+
+    def test_reused_after_the_other_process_won_is_not_a_dead_login(self):
+        # The grace window passed with the file unchanged, so we ran codex; the
+        # operator's own session exchanged the refresh token while we did and
+        # saved its new login before ours came back "already used". That login
+        # is the live one: no death record on its digest, no page.
+        from agent_comms.codex_auth_constants import REFRESH_TOKEN_REUSED_MESSAGE
+
+        self._due_auth()
+        self._mark_dead()
+        fresh = json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)})
+
+        def other_process_wins(home, binary):
+            self.auth.write_text(fresh)
+            return {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE}
+
+        with mock.patch.object(self.store, "send_message", wraps=self.store.send_message) as page:
+            result = self.run_refresh(other_process_wins)
+        self.assertEqual(result, {"outcome": "refreshed_by_other", "ok": True})
+        self.assertEqual(self.sleeps, [codex_auth_refresh.REFRESH_GRACE_SECONDS])
+        page.assert_not_called()
+        row = self._dead_row()
+        self.assertEqual([row[k] for k in ("dead_reason", "dead_at", "dead_digest", "holder")], [None] * 4)
+        self.assertEqual(codex_auth_refresh.dead_credentials(self.store), [])
+        # The same message against an unchanged login is the dead one.
+        self._due_auth()
+        result = self.run_refresh(lambda h, b: {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE})
+        self.assertEqual(result["dead_reason"], "reused")
+        self.assertEqual(self._dead_row()["dead_digest"], hashlib.sha256(self.auth.read_bytes()).hexdigest())
+
+    def test_dead_digest_is_of_the_bytes_judged_unchanged_not_of_a_later_save(self):
+        # The post-exec read still sees the expired login (ours is the dead
+        # one), and the operator's session saves its new login right after
+        # that read. The digest recorded as dead is of the bytes we judged,
+        # so the new login never inherits the death record, and the next pass
+        # clears it.
+        from agent_comms.codex_auth_constants import REFRESH_TOKEN_REUSED_MESSAGE
+
+        self._due_auth()
+        old_bytes = self.auth.read_bytes()
+        fresh = json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)}).encode()
+        state = {"exec_done": False, "late_save": False}
+        original = codex_auth_refresh.read_auth_document
+
+        def read_then_the_other_process_saves(auth_path, *, sleep):
+            result = original(auth_path, sleep=sleep)
+            if state["exec_done"] and not state["late_save"]:
+                state["late_save"] = True
+                self.auth.write_bytes(fresh)
+            return result
+
+        def runner(home, binary):
+            state["exec_done"] = True
+            return {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE}
+
+        with mock.patch.object(codex_auth_refresh, "read_auth_document", read_then_the_other_process_saves), \
+                mock.patch.object(self.store, "send_message", wraps=self.store.send_message) as page:
+            result = self.run_refresh(runner)
+        self.assertEqual(result["outcome"], "exec_failed")
+        self.assertEqual(result["dead_reason"], "reused")
+        self.assertTrue(state["late_save"])
+        row = self._dead_row()
+        self.assertEqual(row["dead_digest"], hashlib.sha256(old_bytes).hexdigest())
+        self.assertNotEqual(row["dead_digest"], hashlib.sha256(fresh).hexdigest())
+        self.assertIn("dead_reason=reused", page.call_args.args[3])
+        # The next pass meets the new login: the death record goes, nothing is due.
+        self.assertEqual(self.run_refresh(lambda h, b: self.fail("no refresh of a fresh login")), {"outcome": "not_due", "ok": True})
+        self.assertIsNone(self._dead_row()["dead_digest"])
+        self.assertEqual(codex_auth_refresh.dead_credentials(self.store), [])
+
+    def test_grace_window_yields_to_the_other_refresher(self):
+        # The operator's own Codex shares the login: after the grace window the
+        # file has advanced, so nothing is executed and the outcome is not a
+        # refresh of our own.
+        self._due_auth()
+        self._mark_dead()
+        calls = []
+
+        def other_process_refreshes(seconds):
+            self.sleeps.append(seconds)
+            self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)}))
+
+        result = self.run_refresh(lambda h, b: calls.append(h) or True, sleep=other_process_refreshes)
+        self.assertEqual(result, {"outcome": "refreshed_by_other", "ok": True})
+        self.assertEqual(self.sleeps, [codex_auth_refresh.REFRESH_GRACE_SECONDS])
+        self.assertEqual(calls, [])
+        self.assertNotIn("refreshed_by_other", codex_auth_refresh.FAILURE_OUTCOMES)
+        row = self._dead_row()
+        self.assertEqual([row[k] for k in ("dead_reason", "dead_at", "dead_digest", "holder")], [None] * 4)
+        self.assertEqual(self.store.list_inbox(HUMAN), [])
+
+    def test_grace_window_then_refreshes_an_untouched_login(self):
+        self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) - 10)}))
+
+        def runner(h, b):
+            self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)}))
+            return True
+
+        with mock.patch.dict(os.environ, {codex_auth_refresh.REFRESH_GRACE_ENV: "7"}):
+            result = self.run_refresh(runner)
+        self.assertEqual(result, {"outcome": "refreshed", "ok": True})
+        self.assertEqual(self.sleeps, [7])
+        self.sleeps.clear()
+        self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) - 10)}))
+        with mock.patch.dict(os.environ, {codex_auth_refresh.REFRESH_GRACE_ENV: "0"}):
+            result = self.run_refresh(runner)
+        self.assertEqual(result["outcome"], "refreshed")
+        self.assertEqual(self.sleeps, [])
+
+    def test_grace_window_recheck_defers_to_a_worker_and_pages_garbage(self):
+        self._due_auth()
+        holding = iter((False, True))
+        with mock.patch.object(self.store._dispatch, "codex_lineage_holding", side_effect=lambda key: next(holding)):
+            result = self.run_refresh()
+        self.assertEqual(result["outcome"], "deferred_busy")
+        self.assertEqual(self.sleeps, [codex_auth_refresh.REFRESH_GRACE_SECONDS])
+        self.assertIsNotNone(self._dead_row()["first_deferred_at"])
+        self.sleeps.clear()
+
+        def other_process_breaks_it(seconds):
+            self.sleeps.append(seconds)
+            self.auth.write_text("")
+
+        result = self.run_refresh(sleep=other_process_breaks_it)
+        self.assertEqual(result["outcome"], "due_metadata_invalid")
+        # The grace sleep, then the bounded re-reads of the empty file.
+        self.assertEqual(self.sleeps, [codex_auth_refresh.REFRESH_GRACE_SECONDS] + [codex_auth_refresh.AUTH_READ_RETRY_SECONDS] * (codex_auth_refresh.AUTH_READ_ATTEMPTS - 1))
+
+    def test_readers_re_read_a_partial_file_a_bounded_number_of_times(self):
+        fresh = json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600), "last_refresh": NOW.isoformat()})
+        for partial in ("", "{\"access_token\": \"x.", b"\xff".decode("latin-1")):
+            with self.subTest(partial=partial):
+                self.auth.write_text(partial, encoding="latin-1")
+                sleeps = []
+
+                def finishes_the_save(seconds):
+                    sleeps.append(seconds)
+                    self.auth.write_text(fresh)
+
+                self.assertEqual(codex_auth_refresh.access_token_remaining_seconds(self.auth, now=NOW, sleep=finishes_the_save), 3600)
+                self.assertEqual(sleeps, [codex_auth_refresh.AUTH_READ_RETRY_SECONDS])
+                self.auth.write_text(partial, encoding="latin-1")
+                snapshot = codex_auth_refresh.codex_auth_snapshot(self.auth, now=NOW, sleep=finishes_the_save)
+                self.assertEqual((snapshot["read_status"], snapshot["ttl_seconds"]), ("ok", 3600))
+                self.assertEqual(snapshot["auth_digest"], hashlib.sha256(fresh.encode()).hexdigest())
+                self.auth.write_text(partial, encoding="latin-1")
+                self.assertEqual(codex_auth_refresh._metadata(self.auth, NOW, sleep=finishes_the_save), (False, (int(NOW.timestamp()) + 3600, NOW.isoformat())))
+        # Still garbage after the last attempt: invalid, with the attempts bounded.
+        self.auth.write_text("")
+        sleeps = []
+        self.assertIsNone(codex_auth_refresh.access_token_remaining_seconds(self.auth, now=NOW, sleep=sleeps.append))
+        self.assertEqual(len(sleeps), codex_auth_refresh.AUTH_READ_ATTEMPTS - 1)
+        snapshot = codex_auth_refresh.codex_auth_snapshot(self.auth, now=NOW, sleep=sleeps.append)
+        self.assertEqual(snapshot["read_status"], "not_json")
+        self.assertEqual(snapshot["auth_digest"], hashlib.sha256(b"").hexdigest())
+        self.assertEqual(codex_auth_refresh._metadata(self.auth, NOW, sleep=sleeps.append), (None, (None, None)))
+        # A missing file is not re-read: Codex saves in place, it never unlinks.
+        self.auth.unlink()
+        sleeps.clear()
+        self.assertEqual(codex_auth_refresh.codex_auth_snapshot(self.auth, now=NOW, sleep=sleeps.append)["read_status"], "missing")
+        self.assertEqual(sleeps, [])
+
+    def test_refresher_runs_the_custody_codex_when_certified_else_the_path_one(self):
+        from agent_comms import runtime_pins
+        from tests.codex_custody_support import fake_codex_bundle
+
+        versions = self.root / "custody"
+        env = fake_codex_bundle(versions)
+        binary = versions / runtime_pins.codex_pin().version / "bin" / "codex"
+        self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) - 10)}))
+        seen = []
+
+        def runner(home, used):
+            seen.append(used)
+            self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)}))
+            return True
+
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(self.run_refresh(runner)["outcome"], "refreshed")
+        self.assertEqual(seen, [str(binary)])
+        # Tampered custody copy: the PATH codex, as before.
+        binary.write_text("#!/bin/sh\nexit 1\n")
+        self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) - 10)}))
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(self.run_refresh(runner)["outcome"], "refreshed")
+        self.assertEqual(seen[-1], "/abs/codex")
+        # Uncertified platform: the PATH codex too, and none at all is binary_missing.
+        with mock.patch.object(runtime_pins, "codex_pin", side_effect=runtime_pins.PlatformNotCertified("nope")):
+            self.assertEqual(codex_auth_refresh.refresh_binary(), mock.ANY)
+            with mock.patch("shutil.which", return_value=None):
+                self.assertIsNone(codex_auth_refresh.refresh_binary())
 
     def test_dead_clear_fresh_rotated_due_busy_and_refreshed(self):
         from agent_comms.codex_auth_constants import REFRESH_TOKEN_INVALIDATED_MESSAGE
@@ -428,7 +638,7 @@ class RefreshTest(unittest.TestCase):
         with mock.patch("shutil.which", return_value=None):
             self.assertEqual(codex_auth_refresh.refresh_if_due(self.store, lineage_key=self.key,
                 codex_home=str(self.home), actor_count=1, lineage_ordinal=0,
-                exec_runner=lambda h,b: True, now=NOW)["outcome"], "binary_missing")
+                exec_runner=lambda h,b: True, now=NOW, sleep=self._sleep)["outcome"], "binary_missing")
         with mock.patch.dict(os.environ, {"AGENT_COMMS_OPERATOR_ACTOR": "unknown"}):
             with self.assertRaises(codex_auth_refresh.PageFailed):
                 codex_auth_refresh._page(self.store, 0, "verify_failed", 1, "new-key", NOW)

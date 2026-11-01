@@ -80,9 +80,10 @@ Claude Code at the pinned version, the runbook's worktree topology, and
 `doctor` clean on that seat (`make claude-seat` runs the same check
 locally). The 0.2.0 wheel predates the fix; the next release carries it.
 The two other defects the walkthrough found (the lockfile on a machine whose
-only Python is 3.15, the shared Codex login directory that `setup` does not
+only Python is 3.15, the shared Codex login directory that `setup` did not
 create) were worked around in the walkthrough and are open bugs, not
-blockers.
+blockers. The second is gone: workers now share the operator's own Codex
+login, so there is no agent-comms-specific login to create.
 
 ### Milestone 2: Linux
 

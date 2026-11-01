@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -238,3 +239,105 @@ def runtime_codex_auth_source() -> Path:
     credential. Distinct from the legacy repo-local ``codex_auth_source``.
     """
     return runtime_root() / "codex-auth" / "auth.json"
+
+
+CODEX_HOME_ENV = "CODEX_HOME"
+
+
+def operator_codex_home() -> Path:
+    """The operator's own ``CODEX_HOME``: the variable when set, else ``~/.codex``."""
+    raw = os.environ.get(CODEX_HOME_ENV)
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".codex"
+
+
+def operator_codex_auth() -> Path:
+    """The operator's own Codex login file, the one workers share.
+
+    Always a path, even before the first ``codex login`` writes it, so the
+    shared link can be installed first and the login completes it.
+    """
+    return operator_codex_home() / "auth.json"
+
+
+def operator_codex_auth_problem(path: Path | None = None) -> str | None:
+    """Why ``path`` (the operator's login file by default) cannot be shared.
+
+    A login file inside the runtime root or the custody root would make the
+    shared link point at agent-comms' own files (``CODEX_HOME`` set to the
+    shared directory, say), a loop that no login could complete. Checked as
+    written and resolved through symlinks, so the shared link itself (which
+    may already resolve elsewhere) and an aliased runtime root are caught.
+    """
+    path = operator_codex_auth() if path is None else path
+    forms = {Path(os.path.abspath(path)), Path(os.path.realpath(path))}
+    roots = (("the runtime root", runtime_root()), ("the Codex custody root", codex_custody_root()))
+    for name, root in roots:
+        root_forms = {Path(os.path.abspath(root)), Path(os.path.realpath(root))}
+        if any(form == base or form.is_relative_to(base) for form in forms for base in root_forms):
+            return (
+                f"{CODEX_HOME_ENV} puts the Codex login {path} inside {name} ({root}); "
+                "workers share your own login, so point it at your own Codex home"
+            )
+    return None
+
+
+def shared_login_boundary_problem(project_root: Path, auth: Path | None = None) -> str | None:
+    """Why a worker rooted at ``project_root`` cannot share the operator's login.
+
+    The project is a worker's sandbox write set, so it may not contain or sit
+    inside the operator's Codex home, the login file that home's ``auth.json``
+    resolves to (through symlinks, dangling or not: a renamed or relocated
+    target is still the credential), the runtime root or the custody root.
+    Every path is compared resolved. One check for setup, provisioning and
+    dispatch admission, so no entry path shares the login past the boundary.
+
+    ``auth`` is the login the worker will actually use (its own
+    ``auth.json`` chain at admission, the runtime's shared file when
+    provisioning), checked in addition to the ambient operator login: the
+    shared link may have been bound from another shell with another
+    ``CODEX_HOME``, or an older link kept, so the launcher's environment
+    does not say which file the worker reads.
+    """
+    root = Path(os.path.realpath(project_root))
+    candidates = [
+        ("your Codex home", operator_codex_home()),
+        ("your Codex login file", operator_codex_auth()),
+    ]
+    if auth is not None:
+        candidates.append(("the Codex login the worker shares", Path(auth)))
+    candidates += [
+        ("the agent-comms runtime root", runtime_root()),
+        ("the Codex custody root", codex_custody_root()),
+    ]
+    for name, path in candidates:
+        resolved = Path(os.path.realpath(path))
+        if root == resolved or root.is_relative_to(resolved) or resolved.is_relative_to(root):
+            return f"{root} contains or is inside {name} ({path}); choose a project directory outside it"
+    return None
+
+
+def codex_login_command(home_or_auth: Path) -> str:
+    """The login that fills ``home_or_auth``: a ``CODEX_HOME``, its ``auth.json``,
+    or a lineage key (the file a home's ``auth.json`` resolves to).
+
+    ``codex login`` when the path chains (through the shared link, dangling
+    or not) into the operator's own login; otherwise the explicit
+    ``CODEX_HOME=<home> codex login`` for a home that keeps its own file. A
+    lineage key under another name has no known home, so the remedy names the
+    file rather than inventing a home from it.
+    """
+    home_or_auth = Path(home_or_auth)
+    operator = os.path.realpath(operator_codex_auth())
+    if home_or_auth.name == "auth.json":
+        home, auth = home_or_auth.parent, home_or_auth
+    elif os.path.realpath(home_or_auth) == operator or home_or_auth.is_file():
+        home, auth = None, home_or_auth
+    else:
+        home, auth = home_or_auth, home_or_auth / "auth.json"
+    if os.path.realpath(auth) == operator:
+        return "codex login"
+    if home is None:
+        return f"log in to the Codex home whose auth.json links to {auth}: {CODEX_HOME_ENV}=<that home> codex login"
+    return f"{CODEX_HOME_ENV}={shlex.quote(str(home))} codex login"

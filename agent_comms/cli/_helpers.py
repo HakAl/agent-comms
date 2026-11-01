@@ -317,6 +317,13 @@ def bootstrap_store(
     # file's order (a sorted one, say) does not decide whether it bootstraps.
     entries = list(config.get("actors", {}).items())
     ordered = [item for item in entries if not _is_worker(item[1])] + [item for item in entries if _is_worker(item[1])]
+    if codex_custody:
+        # Workers share the operator's own login, so every Codex worker's
+        # project must stay outside it (an existing registry or a new
+        # CODEX_HOME can put it inside); refused before anything is registered.
+        for actor_id, entry in ordered:
+            if _is_worker(entry) and entry.get("runtime") == "codex" and entry.get("project_root"):
+                provisioning.refuse_shared_login_overlap(entry["project_root"], actor_id=actor_id)
     for actor_id, entry in ordered:
         kind = entry.get("kind", "agent")
         override_payload = None
@@ -340,6 +347,9 @@ def bootstrap_store(
                 raise ValidationError(f"owner is only valid for worker actor {actor_id}")
             codex_home = None
             if runtime == "codex" and codex_custody:
+                # Workers share the operator's own login: the runtime's shared
+                # file is a link to it, dangling until the first codex login.
+                provisioning.link_shared_codex_auth()
                 home = paths.provisioned_codex_home(actor_id)
                 provisioning.write_codex_home(
                     home,

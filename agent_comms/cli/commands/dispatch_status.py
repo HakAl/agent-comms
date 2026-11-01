@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from ... import paths
 from .._helpers import DegradedState, print_dispatch_table, print_json
 
 NAME = "dispatch-status"
@@ -48,7 +51,7 @@ def handle(store, args):
         for row in dead_credentials(store):
             print(
                 f"codex-credential-dead {row['lineage_key']} reason={row['dead_reason']} "
-                f"since={row['dead_at']}  remedy=run codex login for that CODEX_HOME"
+                f"since={row['dead_at']}  remedy={paths.codex_login_command(Path(row['lineage_key']))}"
             )
         for defect in defects:
             print(

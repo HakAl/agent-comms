@@ -336,7 +336,7 @@ class DispatchStatusCliCompactTest(DispatchStatusCliProjectionBase):
                 "insert into codex_refresh_claims(lineage_key,dead_reason,dead_at,dead_digest) values('lineage','expired','stamp','digest')"
             )
         rc, text = self._run([])
-        line = "codex-credential-dead lineage reason=expired since=stamp  remedy=run codex login for that CODEX_HOME"
+        line = "codex-credential-dead lineage reason=expired since=stamp  remedy=CODEX_HOME=lineage codex login"
         self.assertEqual(rc, 0)
         self.assertEqual(text, before + line + "\n")
         self.assertEqual(self._run(["--json"]), (0, json_before))

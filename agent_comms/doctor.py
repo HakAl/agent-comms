@@ -413,7 +413,7 @@ def run_doctor(
     checks.append(platform_check)
     for runtime in runtime_registry.registered():
         if runtime.name in runtimes:
-            checks.extend(runtime.doctor_checks(pins.get(runtime.name), snapshot, run=run, now=now, ledger=ledger))
+            checks.extend(runtime.doctor_checks(pins.get(runtime.name), snapshot, run=run, now=now, ledger=ledger, which=which))
         elif (skip := runtime.doctor_skip()) is not None:
             checks.append(skip)
     if snapshot is not None and snapshot.schema_version <= LEDGER_SCHEMA_VERSION:
