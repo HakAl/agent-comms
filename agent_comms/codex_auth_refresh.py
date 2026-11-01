@@ -419,6 +419,7 @@ def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int
     try:
         if store._dispatch.codex_lineage_holding(lineage_key):
             return deferred_busy()
+        latest = before
         grace = refresh_grace_seconds()
         if grace:
             # The login is shared with the operator's own Codex, whose session
@@ -434,6 +435,7 @@ def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int
                 with store._db.connection() as conn:
                     _clear_dead(conn, lineage_key)
                 return {"outcome": "refreshed_by_other", "ok": True}
+            latest = after
         binary = refresh_binary()
         if not binary:
             _page(store, lineage_ordinal, "binary_missing", actor_count, lineage_key, now, **urgency)
@@ -443,6 +445,17 @@ def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int
             isinstance(exec_result, dict) and exec_result.get("containment_failed")
         )
         exec_ok = bool(exec_result.get("ok")) if isinstance(exec_result, dict) else bool(exec_result)
+        if not exec_ok and not containment_failed:
+            # The grace window cannot serialize with the operator's own Codex:
+            # its exchange can win while ours runs (ours then fails
+            # ``reused``). The login that advanced is the live one, so no
+            # death record and no page attach to it; a failure against the
+            # unchanged login is the dead one.
+            post_due, post = _metadata(auth_path, now, sleep=sleep)
+            if post_due is False or _advanced(latest, post):
+                with store._db.connection() as conn:
+                    _clear_dead(conn, lineage_key)
+                return {"outcome": "refreshed_by_other", "ok": True}
         if not exec_ok:
             release_lease = not containment_failed
             dead_reason = classify_refresh_failure(

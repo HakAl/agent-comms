@@ -190,6 +190,35 @@ class RefreshTest(unittest.TestCase):
         self.assertIn("dead_reason=reused", page.call_args.args[3])
         self.assertEqual(codex_auth_refresh.dead_credentials(self.store)[0]["dead_reason"], "reused")
 
+    def test_reused_after_the_other_process_won_is_not_a_dead_login(self):
+        # The grace window passed with the file unchanged, so we ran codex; the
+        # operator's own session exchanged the refresh token while we did and
+        # saved its new login before ours came back "already used". That login
+        # is the live one: no death record on its digest, no page.
+        from agent_comms.codex_auth_constants import REFRESH_TOKEN_REUSED_MESSAGE
+
+        self._due_auth()
+        self._mark_dead()
+        fresh = json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)})
+
+        def other_process_wins(home, binary):
+            self.auth.write_text(fresh)
+            return {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE}
+
+        with mock.patch.object(self.store, "send_message", wraps=self.store.send_message) as page:
+            result = self.run_refresh(other_process_wins)
+        self.assertEqual(result, {"outcome": "refreshed_by_other", "ok": True})
+        self.assertEqual(self.sleeps, [codex_auth_refresh.REFRESH_GRACE_SECONDS])
+        page.assert_not_called()
+        row = self._dead_row()
+        self.assertEqual([row[k] for k in ("dead_reason", "dead_at", "dead_digest", "holder")], [None] * 4)
+        self.assertEqual(codex_auth_refresh.dead_credentials(self.store), [])
+        # The same message against an unchanged login is the dead one.
+        self._due_auth()
+        result = self.run_refresh(lambda h, b: {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE})
+        self.assertEqual(result["dead_reason"], "reused")
+        self.assertEqual(self._dead_row()["dead_digest"], hashlib.sha256(self.auth.read_bytes()).hexdigest())
+
     def test_grace_window_yields_to_the_other_refresher(self):
         # The operator's own Codex shares the login: after the grace window the
         # file has advanced, so nothing is executed and the outcome is not a

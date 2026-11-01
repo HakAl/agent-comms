@@ -56,14 +56,38 @@ def refuse_home_outside_custody_root(codex_home: Path) -> None:
         )
 
 
+def refuse_shared_login_overlap(project_root: str | Path, *, actor_id: str | None = None) -> None:
+    """Refuse to share the operator's login with a worker whose project root
+    contains or sits inside that login, the operator's Codex home, the runtime
+    root or the custody root. The same check ``setup`` applies, repeated at
+    every provisioning entry (bootstrap of an existing registry, onboarding,
+    provision-codex-home), because a registry or a ``CODEX_HOME`` can change
+    after setup."""
+    problem = paths.shared_login_boundary_problem(Path(project_root))
+    if problem:
+        who = f"worker {actor_id}: " if actor_id else ""
+        raise ValidationError(f"{who}project root {problem}")
+
+
 def _replace_with_symlink(target: Path, source: Path) -> None:
-    """Install ``target -> source`` atomically, over a symlink if one is there."""
+    """Install ``target -> source`` atomically inside a home agent-comms owns,
+    over a symlink if one is there."""
     tmp = target.with_name(f".auth.json.{os.getpid()}.{uuid.uuid4().hex}.new")
     try:
         tmp.symlink_to(source)
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _publish_symlink(link: Path, source: Path) -> bool:
+    """Create ``link -> source`` only if nothing is at ``link``; False when
+    something appeared there first (it is left untouched)."""
+    try:
+        link.symlink_to(source)
+    except FileExistsError:
+        return False
+    return True
 
 
 def link_shared_codex_auth(source: Path | None = None, *, replace: bool = False) -> dict:
@@ -75,8 +99,11 @@ def link_shared_codex_auth(source: Path | None = None, *, replace: bool = False)
     left alone (``already``). A link elsewhere (``elsewhere``) or a regular
     file, the separate worker login an earlier install made (``separate``),
     is kept unless ``replace``; a replaced regular file is moved aside as
-    ``auth.json.separate-<stamp>``, never deleted. A source inside the
-    runtime root or the custody root is refused before anything is written.
+    ``auth.json.separate-<stamp>``, never deleted. Publication is create-only:
+    whatever another process puts at the path between the inspection and the
+    link (a concurrent login or bind) is kept, and the call reports the
+    failed installation instead of replacing it. A source inside the runtime
+    root or the custody root is refused before anything is written.
     """
     source = paths.operator_codex_auth() if source is None else Path(source)
     problem = paths.operator_codex_auth_problem(source)
@@ -85,26 +112,44 @@ def link_shared_codex_auth(source: Path | None = None, *, replace: bool = False)
     source = Path(os.path.abspath(source))
     link = paths.runtime_codex_auth_source()
     result = {"link": str(link), "source": str(source), "source_present": source.is_file()}
+    current = None
+    aside = None
     if link.is_symlink():
         current = os.readlink(link)
         if os.path.realpath(link) == os.path.realpath(source):
             return {**result, "status": "already"}
         if not replace:
             return {**result, "status": "elsewhere", "current": current}
-        _replace_with_symlink(link, source)
-        return {**result, "status": "linked", "replaced": current}
-    if link.is_file():
+        aside = link.with_name(f"auth.json.link-{_aside_stamp()}")
+    elif link.is_file():
         if not replace:
             return {**result, "status": "separate"}
-        aside = link.with_name(f"auth.json.separate-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{uuid.uuid4().hex[:8]}")
-        os.rename(link, aside)
-        _replace_with_symlink(link, source)
-        return {**result, "status": "linked", "moved_aside": str(aside)}
-    if link.exists():
+        aside = link.with_name(f"auth.json.separate-{_aside_stamp()}")
+    elif link.exists():
         raise ValidationError(f"unexpected non-file at {link}; move it away and run agent-comms bind-codex-login")
+    if aside is not None:
+        # Move the old object aside first (a symlink or a file, whatever it is
+        # by now), so nothing is ever unlinked in place.
+        os.rename(link, aside)
     link.parent.mkdir(parents=True, exist_ok=True)
-    _replace_with_symlink(link, source)
-    return {**result, "status": "linked"}
+    if not _publish_symlink(link, source):
+        kept = f"; your previous file is kept at {aside}" if aside is not None and not aside.is_symlink() else ""
+        raise ValidationError(
+            f"{link} appeared while binding (another codex login or bind-codex-login running?); "
+            f"nothing was replaced{kept}; look at it, then rerun: agent-comms bind-codex-login"
+            + (" --replace" if replace else "")
+        )
+    if aside is None:
+        return {**result, "status": "linked"}
+    if aside.is_symlink():
+        # The link we moved aside: its target string is the record of it.
+        aside.unlink()
+        return {**result, "status": "linked", "replaced": current}
+    return {**result, "status": "linked", "moved_aside": str(aside)}
+
+
+def _aside_stamp() -> str:
+    return f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{uuid.uuid4().hex[:8]}"
 
 
 def render_codex_base_config(project_root: str) -> str:

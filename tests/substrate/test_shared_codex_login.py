@@ -21,8 +21,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_comms import cli, paths, provisioning
+from agent_comms import cli, paths, provisioning, setup
+from agent_comms.cli._helpers import bootstrap_store
 from agent_comms.schema import ValidationError
+from agent_comms.store import Store
 
 
 class _Scratch(unittest.TestCase):
@@ -91,6 +93,124 @@ class OperatorCodexAuthTest(_Scratch):
         (worker / "auth.json").write_text("{}")
         self.assertEqual(paths.codex_login_command(worker), f"CODEX_HOME={shlex.quote(str(worker))} codex login")
 
+    def test_login_command_for_a_lineage_key_under_another_name(self) -> None:
+        # The operator's auth.json is itself a link to a file under another
+        # name: the lineage key (realpath) is that file, and it is still the
+        # operator's login, present or dangling.
+        secrets = self.root / "secrets"
+        secrets.mkdir()
+        self.codex_home.mkdir()
+        self.operator_auth.symlink_to(secrets / "login.json")
+        self.assertEqual(paths.codex_login_command(secrets / "login.json"), "codex login")
+        (secrets / "login.json").write_text("{}")
+        self.assertEqual(paths.codex_login_command(secrets / "login.json"), "codex login")
+        self.assertEqual(paths.codex_login_command(self.operator_auth), "codex login")
+        # Another home's renamed file: no home can be inferred from a file
+        # name, so the remedy names the file, not a made-up CODEX_HOME.
+        other = self.root / "other" / "creds.json"
+        other.parent.mkdir()
+        other.write_text("{}")
+        remedy = paths.codex_login_command(other)
+        self.assertIn(str(other), remedy)
+        self.assertIn("CODEX_HOME=<that home> codex login", remedy)
+        self.assertNotIn(f"CODEX_HOME={shlex.quote(str(other))}", remedy)
+
+
+class SharedLoginBoundaryTest(_Scratch):
+    """The project root of a worker that shares the operator's login must stay
+    outside that login, however the login is reached and whoever provisions."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.custody = self.root / "custody"
+        env = mock.patch.dict(os.environ, {"AGENT_COMMS_CODEX_CUSTODY_ROOT": str(self.custody)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.project = self.root / "project"
+        self.project.mkdir()
+
+    def test_problem_names_the_login_file_a_symlinked_auth_resolves_to(self) -> None:
+        self.assertIsNone(paths.shared_login_boundary_problem(self.project))
+        # The home is elsewhere, but its auth.json points into the project.
+        self.codex_home.mkdir()
+        self.operator_auth.symlink_to(self.project / "credentials" / "login.json")
+        problem = paths.shared_login_boundary_problem(self.project) or ""
+        self.assertIn("your Codex login file", problem)
+        self.assertIn(str(self.operator_auth), problem)
+        with self.assertRaises(ValidationError) as caught:
+            setup.refuse_project_root_overlap(self.project)
+        self.assertIn("--project-root", str(caught.exception))
+        # Present or dangling, the target is the credential.
+        (self.project / "credentials").mkdir()
+        (self.project / "credentials" / "login.json").write_text("{}")
+        self.assertIn("your Codex login file", paths.shared_login_boundary_problem(self.project) or "")
+        # A project beside the target is fine.
+        self.assertIsNone(paths.shared_login_boundary_problem(self.root / "elsewhere"))
+
+    def test_problem_names_the_home_and_the_runtime_state(self) -> None:
+        for root, name in ((self.codex_home.parent, "your Codex home"), (self.codex_home / "sub", "your Codex home"),
+                           (self.runtime_root / "x", "runtime root"), (self.custody, "custody root")):
+            self.assertIn(name, paths.shared_login_boundary_problem(root) or "", root)
+
+    def _registry(self) -> Path:
+        config = self.root / "actors.json"
+        config.write_text(json.dumps({"actors": {
+            "01M36YTJV9XBW95S6ZWV47C4RG": {"kind": "human", "display_name": "alice"},
+            "alpha-architect": {"kind": "agent", "display_name": "alpha-architect", "team": "alpha", "role": "architect", "project_root": str(self.project), "capabilities": []},
+            "alpha-codex-worker": {"kind": "agent", "display_name": "alpha-codex-worker", "team": "alpha", "role": "worker", "owner": "alpha-architect", "runtime": "codex", "project_root": str(self.project), "capabilities": []},
+        }}))
+        return config
+
+    def test_bootstrap_of_an_existing_registry_refuses_a_login_inside_the_project(self) -> None:
+        # The registry predates the shared login; CODEX_HOME now sits inside
+        # the worker's project. Setup would refuse this; bootstrap must too.
+        config = self._registry()
+        store = Store(self.root / "explicit.sqlite")
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(self.project / "operator-codex")}):
+            with self.assertRaises(ValidationError) as caught:
+                bootstrap_store(store, config, codex_custody=True)
+        message = str(caught.exception)
+        self.assertIn("worker alpha-codex-worker", message)
+        self.assertIn("your Codex home", message)
+        self.assertFalse(self.link.is_symlink() or self.link.exists())
+        self.assertFalse((self.custody / "default" / "alpha-codex-worker").exists())
+        # With the login outside the project the same registry bootstraps.
+        bootstrap_store(store, config, codex_custody=True)
+        self.assertEqual(os.readlink(self.link), str(self.operator_auth))
+
+    def test_rebinding_a_login_inside_the_project_is_refused_at_admission(self) -> None:
+        # bind-codex-login takes no ledger, so it cannot see worker roots; the
+        # spawn preflight of a managed home is where a later CODEX_HOME inside
+        # the project is caught.
+        from tests.codex_custody_support import install_fake_codex_custody
+        from agent_comms.adapters import DispatchContext
+        from agent_comms.adapters._base import SpawnFailed
+        from agent_comms.adapters.codex import CodexAdapter
+        from agent_comms.store import WORKER_DISPATCH_POLICY
+
+        install_fake_codex_custody(self)
+        config = self._registry()
+        store = Store(self.root / "explicit.sqlite")
+        bootstrap_store(store, config, codex_custody=True)
+        actor = {a["id"]: a for a in store.list_actors()}["alpha-codex-worker"]
+        home = self.custody / "default" / "alpha-codex-worker"
+        self.assertTrue((home / "auth.json").is_symlink())
+        context = DispatchContext(
+            dispatch={"dispatch_id": "dispatch_20260802_120000_abcdef12", "policy_name": WORKER_DISPATCH_POLICY},
+            recipient={"id": "alpha-codex-worker", "runtime": "codex", "project_root": str(self.project), "spawn": actor["spawn"]},
+            message={"id": "m"},
+            ttl_seconds=30,
+            expected_close_by="2026-08-02T12:00:30+00:00",
+            db_path=str(store._db.db_path),
+        )
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(self.project / "operator-codex")}):
+            with self.assertRaises(SpawnFailed) as caught:
+                CodexAdapter()._preflight(context)
+        message = str(caught.exception)
+        self.assertIn("project root", message)
+        self.assertIn("your Codex home", message)
+        self.assertIn("re-register", message)
+
 
 class LinkSharedCodexAuthTest(_Scratch):
     def test_links_dangling_before_the_first_login_and_leaves_it_alone_after(self) -> None:
@@ -146,6 +266,51 @@ class LinkSharedCodexAuthTest(_Scratch):
         self.assertEqual(result["replaced"], str(elsewhere))
         self.assertNotIn("moved_aside", result)
         self.assertEqual(os.readlink(self.link), str(self.operator_auth))
+
+    def _login_appears_during_publication(self):
+        # Another process (a legacy codex login, a second bind) writes a
+        # regular file at the link between our inspection and our link.
+        link = self.link
+
+        def symlink_to(path, target, *args, **kwargs):
+            if Path(path) == link:
+                link.write_text('{"concurrent": true}')
+                raise FileExistsError(str(link))
+            return original(path, target, *args, **kwargs)
+
+        original = Path.symlink_to
+        return mock.patch.object(Path, "symlink_to", symlink_to)
+
+    def test_a_login_appearing_at_an_absent_link_is_kept(self) -> None:
+        with self._login_appears_during_publication():
+            with self.assertRaises(ValidationError) as caught:
+                provisioning.link_shared_codex_auth()
+        self.assertIn("appeared while binding", str(caught.exception))
+        self.assertTrue(self.link.is_file() and not self.link.is_symlink())
+        self.assertEqual(self.link.read_text(), '{"concurrent": true}')
+        self.assertEqual(sorted(p.name for p in self.link.parent.iterdir()), ["auth.json"])
+
+    def test_a_login_appearing_after_the_move_aside_keeps_both(self) -> None:
+        self.link.parent.mkdir(parents=True)
+        self.link.write_text('{"separate": true}')
+        with self._login_appears_during_publication():
+            with self.assertRaises(ValidationError) as caught:
+                provisioning.link_shared_codex_auth(replace=True)
+        message = str(caught.exception)
+        self.assertIn("appeared while binding", message)
+        self.assertIn("--replace", message)
+        asides = [p for p in self.link.parent.iterdir() if p.name.startswith("auth.json.separate-")]
+        self.assertEqual(len(asides), 1)
+        self.assertIn(str(asides[0]), message)
+        self.assertEqual(asides[0].read_text(), '{"separate": true}')
+        self.assertEqual(self.link.read_text(), '{"concurrent": true}')
+
+    def test_replacing_a_link_elsewhere_leaves_no_aside_behind(self) -> None:
+        self.link.parent.mkdir(parents=True)
+        self.link.symlink_to(self.root / "elsewhere" / "auth.json")
+        result = provisioning.link_shared_codex_auth(replace=True)
+        self.assertEqual(result["status"], "linked")
+        self.assertEqual(sorted(p.name for p in self.link.parent.iterdir()), ["auth.json"])
 
     def test_refuses_a_login_inside_the_runtime_root_before_writing(self) -> None:
         with mock.patch.dict(os.environ, {"CODEX_HOME": str(self.runtime_root / "codex-auth")}):

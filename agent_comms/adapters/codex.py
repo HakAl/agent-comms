@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import DispatchContext
-from ._base import ProcessSpawnAdapter
+from ._base import ProcessSpawnAdapter, SpawnFailed
 from .. import codex_binding, codex_hook, paths
 from ..codex_home import preflight_home_snapshot
 from ..codex_auth_refresh import codex_auth_snapshot
@@ -241,6 +241,15 @@ class CodexAdapter(ProcessSpawnAdapter):
             if not self._within(codex_home, custody_root):
                 raise self._auth_stale(
                     codex_home, "resolved home is outside the runtime custody root"
+                )
+            # The managed home shares the operator's login; admit the worker
+            # only while its project stays outside that login and the
+            # runtime state, whatever bound the login after provisioning.
+            problem = paths.shared_login_boundary_problem(Path(str(context.recipient["project_root"])))
+            if problem:
+                raise SpawnFailed(
+                    f"project root {problem}; CODEX_HOME={codex_home}; the worker shares your Codex login, "
+                    "so re-register it on a project outside that login"
                 )
             ok, why, snapshot = preflight_home_snapshot(
                 codex_home,

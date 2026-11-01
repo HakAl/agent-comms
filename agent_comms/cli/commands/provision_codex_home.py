@@ -76,7 +76,9 @@ def handle(store, args):
         enforce_custody_root = False
     if link_absent_source:
         # Custody-managed homes link to the runtime's shared file, which
-        # links to the operator's own login (bound here if not yet).
+        # links to the operator's own login (bound here if not yet); the
+        # project must stay outside that login.
+        provisioning.refuse_shared_login_overlap(expand_path_value(args.project_root), actor_id=args.actor_id)
         provisioning.link_shared_codex_auth()
     written = provisioning.write_codex_home(
         codex_home_path,

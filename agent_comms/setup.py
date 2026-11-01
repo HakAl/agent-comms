@@ -303,20 +303,14 @@ def bind_seat(
 
 def refuse_project_root_overlap(root: Path) -> None:
     """Refuse a resolved project root that contains or sits inside the
-    operator's Codex home (the shared login file would be in every worker's
-    sandbox write set), the runtime root or the custody root (a worker's
-    workspace would be runtime state)."""
-    for name, path in (
-        ("your Codex home", paths.operator_codex_home()),
-        ("the agent-comms runtime root", paths.runtime_root()),
-        ("the Codex custody root", paths.codex_custody_root()),
-    ):
-        resolved = Path(os.path.realpath(path))
-        if root == resolved or root.is_relative_to(resolved) or resolved.is_relative_to(root):
-            raise ValidationError(
-                f"--project-root {root} contains or is inside {name} ({path}); "
-                "choose a project directory outside it"
-            )
+    operator's Codex home or the login file it resolves to (the shared login
+    would be in every worker's sandbox write set), the runtime root or the
+    custody root (a worker's workspace would be runtime state). The same
+    check guards provisioning and dispatch admission
+    (``paths.shared_login_boundary_problem``)."""
+    problem = paths.shared_login_boundary_problem(root)
+    if problem:
+        raise ValidationError(f"--project-root {problem}")
 
 
 def run_setup(

@@ -260,8 +260,8 @@ class ActorConfigTest(unittest.TestCase):
                     {
                         "actors": {
                             "01M36YTJV9XBW95S6ZWV47C4RG": {"kind": "human", "display_name": "alice"},
-                            "alpha-architect": {"kind": "agent", "display_name": "alpha-architect", "team": "alpha", "role": "architect", "project_root": str(root), "capabilities": []},
-                            "alpha-codex-worker": {"kind": "agent", "display_name": "alpha-codex-worker", "team": "alpha", "role": "worker", "owner": "alpha-architect", "runtime": "codex", "project_root": str(root), "capabilities": []},
+                            "alpha-architect": {"kind": "agent", "display_name": "alpha-architect", "team": "alpha", "role": "architect", "project_root": str(root / "project"), "capabilities": []},
+                            "alpha-codex-worker": {"kind": "agent", "display_name": "alpha-codex-worker", "team": "alpha", "role": "worker", "owner": "alpha-architect", "runtime": "codex", "project_root": str(root / "project"), "capabilities": []},
                         }
                     }
                 )

@@ -421,9 +421,18 @@ reads the file again; when the token advanced meanwhile the outcome is
 that worker stops with the reason, and `doctor` prints `codex login`. Run
 it, then `doctor` again. One login clears every worker.
 
+The login is shared only with a worker whose project stays outside it:
+`setup`, `bootstrap`, onboarding, `provision-codex-home` and dispatch all
+refuse a project root that contains or sits inside your Codex home, the
+file its `auth.json` resolves to, the runtime root or the custody root
+(the project is the worker's sandbox write set). Move the project or
+`CODEX_HOME`, then re-register the worker.
+
 An install from before the shared login keeps its separate worker login
 until you switch: `doctor` warns `runtime:codex:auth` and names the
-command, which moves the old file aside (never deletes it):
+command, which moves the old file aside (never deletes it). A file that
+another login writes at the shared path while the command runs is kept
+too; the command reports it instead of replacing it:
 
 ```sh
 agent-comms bind-codex-login --replace
