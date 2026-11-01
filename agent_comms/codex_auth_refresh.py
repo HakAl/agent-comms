@@ -234,7 +234,20 @@ def _jwt_exp_is_nonnumeric(token: str) -> bool:
 
 
 def _metadata(auth_path: Path, now: datetime, *, sleep=time.sleep) -> tuple[bool | None, tuple[int | None, str | None]]:
-    status, _raw, data = read_auth_document(auth_path, sleep=sleep)
+    due, metadata, _digest = _metadata_and_digest(auth_path, now, sleep=sleep)
+    return due, metadata
+
+
+def _metadata_and_digest(auth_path: Path, now: datetime, *, sleep=time.sleep) -> tuple[bool | None, tuple[int | None, str | None], str | None]:
+    """One bounded read: the due verdict, the metadata, and the digest of the
+    very bytes that verdict describes (None when nothing could be read)."""
+    status, raw, data = read_auth_document(auth_path, sleep=sleep)
+    digest = hashlib.sha256(raw).hexdigest() if raw is not None else None
+    due, metadata = _metadata_of(status, data, now)
+    return due, metadata, digest
+
+
+def _metadata_of(status: str, data: object, now: datetime) -> tuple[bool | None, tuple[int | None, str | None]]:
     if status != "ok":
         return None, (None, None)
     if not isinstance(data, dict):
@@ -445,26 +458,25 @@ def refresh_if_due(store, *, lineage_key: str, codex_home: str, actor_count: int
             isinstance(exec_result, dict) and exec_result.get("containment_failed")
         )
         exec_ok = bool(exec_result.get("ok")) if isinstance(exec_result, dict) else bool(exec_result)
-        if not exec_ok and not containment_failed:
+        if not exec_ok:
             # The grace window cannot serialize with the operator's own Codex:
             # its exchange can win while ours runs (ours then fails
-            # ``reused``). The login that advanced is the live one, so no
-            # death record and no page attach to it; a failure against the
-            # unchanged login is the dead one.
-            post_due, post = _metadata(auth_path, now, sleep=sleep)
-            if post_due is False or _advanced(latest, post):
+            # ``reused``). One bounded read decides: a login that advanced is
+            # the live one, so no death record and no page attach to it; a
+            # login still unchanged is the dead one, and the digest recorded
+            # as dead is of those same bytes, never of a later save.
+            post_due, post, post_digest = _metadata_and_digest(auth_path, now, sleep=sleep)
+            if not containment_failed and (post_due is False or _advanced(latest, post)):
                 with store._db.connection() as conn:
                     _clear_dead(conn, lineage_key)
                 return {"outcome": "refreshed_by_other", "ok": True}
-        if not exec_ok:
             release_lease = not containment_failed
             dead_reason = classify_refresh_failure(
                 exec_result.get("output") if isinstance(exec_result, dict) else None
             )
             if dead_reason is not None:
-                try:
-                    digest = hashlib.sha256(auth_path.read_bytes()).hexdigest()
-                except OSError:
+                digest = post_digest
+                if digest is None:
                     dead_reason = None
                 else:
                     with store._db.connection() as conn:

@@ -292,15 +292,26 @@ def shared_login_boundary_problem(project_root: Path, auth: Path | None = None) 
     target is still the credential), the runtime root or the custody root.
     Every path is compared resolved. One check for setup, provisioning and
     dispatch admission, so no entry path shares the login past the boundary.
+
+    ``auth`` is the login the worker will actually use (its own
+    ``auth.json`` chain at admission, the runtime's shared file when
+    provisioning), checked in addition to the ambient operator login: the
+    shared link may have been bound from another shell with another
+    ``CODEX_HOME``, or an older link kept, so the launcher's environment
+    does not say which file the worker reads.
     """
     root = Path(os.path.realpath(project_root))
-    auth = operator_codex_auth() if auth is None else Path(auth)
-    for name, path in (
+    candidates = [
         ("your Codex home", operator_codex_home()),
-        ("your Codex login file", auth),
+        ("your Codex login file", operator_codex_auth()),
+    ]
+    if auth is not None:
+        candidates.append(("the Codex login the worker shares", Path(auth)))
+    candidates += [
         ("the agent-comms runtime root", runtime_root()),
         ("the Codex custody root", codex_custody_root()),
-    ):
+    ]
+    for name, path in candidates:
         resolved = Path(os.path.realpath(path))
         if root == resolved or root.is_relative_to(resolved) or resolved.is_relative_to(root):
             return f"{root} contains or is inside {name} ({path}); choose a project directory outside it"

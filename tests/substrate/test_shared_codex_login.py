@@ -210,6 +210,31 @@ class SharedLoginBoundaryTest(_Scratch):
         self.assertIn("project root", message)
         self.assertIn("your Codex home", message)
         self.assertIn("re-register", message)
+        # The shared link rebound from another shell, with a CODEX_HOME inside
+        # the project, and a fresh login there; this launcher's own CODEX_HOME
+        # is still the safe one. What the worker's auth.json chains into is
+        # what is checked, not the launcher's environment.
+        foreign = self.project / "operator-login" / "auth.json"
+        foreign.parent.mkdir()
+        foreign.write_text(json.dumps({"tokens": {}, "last_refresh": "2026-08-02T11:59:00+00:00"}))
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(foreign.parent)}):
+            self.assertEqual(provisioning.link_shared_codex_auth(replace=True)["status"], "linked")
+        self.assertEqual(os.path.realpath(home / "auth.json"), os.path.realpath(foreign))
+        self.assertEqual(paths.operator_codex_auth(), self.operator_auth)
+        with self.assertRaises(SpawnFailed) as caught:
+            CodexAdapter()._preflight(context)
+        self.assertIn("the Codex login the worker shares", str(caught.exception))
+        # Provisioning keeps a foreign link it does not replace, so it checks
+        # that credential too: the same registry no longer bootstraps.
+        with self.assertRaises(ValidationError) as caught:
+            bootstrap_store(Store(self.root / "second.sqlite"), config, codex_custody=True)
+        self.assertIn("the Codex login the worker shares", str(caught.exception))
+        # Rebound to the safe login, the worker is admitted again.
+        self.assertEqual(provisioning.link_shared_codex_auth(replace=True)["status"], "linked")
+        self.codex_home.mkdir(exist_ok=True)
+        self.operator_auth.write_text(json.dumps({"tokens": {}, "last_refresh": "2026-08-02T11:59:00+00:00"}))
+        with mock.patch.object(CodexAdapter, "_now_utc", return_value=__import__("datetime").datetime(2026, 8, 2, 12, 0, tzinfo=__import__("datetime").timezone.utc)):
+            self.assertIn("codex_auth", CodexAdapter()._preflight(context) or {})
 
 
 class LinkSharedCodexAuthTest(_Scratch):

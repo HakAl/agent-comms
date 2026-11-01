@@ -219,6 +219,46 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(result["dead_reason"], "reused")
         self.assertEqual(self._dead_row()["dead_digest"], hashlib.sha256(self.auth.read_bytes()).hexdigest())
 
+    def test_dead_digest_is_of_the_bytes_judged_unchanged_not_of_a_later_save(self):
+        # The post-exec read still sees the expired login (ours is the dead
+        # one), and the operator's session saves its new login right after
+        # that read. The digest recorded as dead is of the bytes we judged,
+        # so the new login never inherits the death record, and the next pass
+        # clears it.
+        from agent_comms.codex_auth_constants import REFRESH_TOKEN_REUSED_MESSAGE
+
+        self._due_auth()
+        old_bytes = self.auth.read_bytes()
+        fresh = json.dumps({"access_token": jwt(int(NOW.timestamp()) + 3600)}).encode()
+        state = {"exec_done": False, "late_save": False}
+        original = codex_auth_refresh.read_auth_document
+
+        def read_then_the_other_process_saves(auth_path, *, sleep):
+            result = original(auth_path, sleep=sleep)
+            if state["exec_done"] and not state["late_save"]:
+                state["late_save"] = True
+                self.auth.write_bytes(fresh)
+            return result
+
+        def runner(home, binary):
+            state["exec_done"] = True
+            return {"ok": False, "output": REFRESH_TOKEN_REUSED_MESSAGE}
+
+        with mock.patch.object(codex_auth_refresh, "read_auth_document", read_then_the_other_process_saves), \
+                mock.patch.object(self.store, "send_message", wraps=self.store.send_message) as page:
+            result = self.run_refresh(runner)
+        self.assertEqual(result["outcome"], "exec_failed")
+        self.assertEqual(result["dead_reason"], "reused")
+        self.assertTrue(state["late_save"])
+        row = self._dead_row()
+        self.assertEqual(row["dead_digest"], hashlib.sha256(old_bytes).hexdigest())
+        self.assertNotEqual(row["dead_digest"], hashlib.sha256(fresh).hexdigest())
+        self.assertIn("dead_reason=reused", page.call_args.args[3])
+        # The next pass meets the new login: the death record goes, nothing is due.
+        self.assertEqual(self.run_refresh(lambda h, b: self.fail("no refresh of a fresh login")), {"outcome": "not_due", "ok": True})
+        self.assertIsNone(self._dead_row()["dead_digest"])
+        self.assertEqual(codex_auth_refresh.dead_credentials(self.store), [])
+
     def test_grace_window_yields_to_the_other_refresher(self):
         # The operator's own Codex shares the login: after the grace window the
         # file has advanced, so nothing is executed and the outcome is not a

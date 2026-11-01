@@ -243,9 +243,12 @@ class CodexAdapter(ProcessSpawnAdapter):
                     codex_home, "resolved home is outside the runtime custody root"
                 )
             # The managed home shares the operator's login; admit the worker
-            # only while its project stays outside that login and the
-            # runtime state, whatever bound the login after provisioning.
-            problem = paths.shared_login_boundary_problem(Path(str(context.recipient["project_root"])))
+            # only while its project stays outside the login its own
+            # auth.json chain resolves to (whatever shell bound the shared
+            # link, with whatever CODEX_HOME) and the runtime state.
+            problem = paths.shared_login_boundary_problem(
+                Path(str(context.recipient["project_root"])), auth=codex_home / "auth.json"
+            )
             if problem:
                 raise SpawnFailed(
                     f"project root {problem}; CODEX_HOME={codex_home}; the worker shares your Codex login, "

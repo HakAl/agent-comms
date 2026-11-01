@@ -63,7 +63,9 @@ def refuse_shared_login_overlap(project_root: str | Path, *, actor_id: str | Non
     every provisioning entry (bootstrap of an existing registry, onboarding,
     provision-codex-home), because a registry or a ``CODEX_HOME`` can change
     after setup."""
-    problem = paths.shared_login_boundary_problem(Path(project_root))
+    # The runtime's shared file is what the worker will chain into; when an
+    # existing link or file is kept, that is the credential, not the ambient one.
+    problem = paths.shared_login_boundary_problem(Path(project_root), auth=paths.runtime_codex_auth_source())
     if problem:
         who = f"worker {actor_id}: " if actor_id else ""
         raise ValidationError(f"{who}project root {problem}")
