@@ -91,6 +91,7 @@ on GitHub, a finding is a leak report, not a block.
 | `make test` | The isolated suite with the pinned test extra. `PYTHON=3.11` selects an interpreter. | uv |
 | `make preverify` | A fresh clone of HEAD under `local/preverify/`, the suite on Python 3.11 and 3.14, then lint and hygiene inside the clone. Refuses a dirty tree unless `PREVERIFY_ARGS=--allow-dirty`. | uv, network for missing interpreters |
 | `make install-smoke` | Exports HEAD under `local/install-smoke/`, builds a wheel with `uv build`, deletes the export, installs the wheel with `uv tool install` into a tool directory and `HOME` whose paths contain a space, then from a directory outside the checkout: `agent-comms setup` with the fake runtime and no client seats, `agent-comms doctor` exiting 0 with no fixes, `agent-comms demo` ending closed/satisfied with a threaded reply and a clean `doctor` after it, a mailbox exchange through `agent-comms-mcp` over stdio, a dispatch to the fake worker, `agent-comms-monitor --once`, `agent-comms wait` for the reply, `dispatch-status` showing the closed row, and a final `agent-comms doctor` that must exit 3 with the exited once-only monitor as its only failing check. `agent-comms version` must report git fields `unknown`. The scratch root is removed unless `INSTALL_SMOKE_KEEP=1`. | uv, git |
+| `make claude-seat` | Not part of `make gate`. Under a scratch `HOME` and runtime root (`local/claude-seat/`, or `CLAUDE_SEAT_SCRATCH`), builds an integration checkout with a linked worktree, then from the worktree: `agent-comms setup` with the fake runtime and the claude client, `doctor` exiting 0 with the Claude seat check ok, `bind-seat` again rewriting nothing, `agent-comms-seat` starting its command without a warning, and `claude mcp get agent-comms` resolving the server. This is the check the 0.2.0 walkthrough could not get clean (ac-6k7); it runs the checkout's `.venv` against the real `claude` on `PATH` and needs no login. `CLAUDE_SEAT_REQUIRE_PIN=1` (set in CI) refuses a `claude` whose version or digest is not the pin's. The scratch directory is removed on pass and kept on failure. | uv, git, claude |
 
 Hygiene has two optional inputs. A maintainer may keep private word and
 fragment lists in `local/gates/private-words.txt` and
@@ -119,9 +120,13 @@ working, since the hook is installed there rather than by changing the
 config.
 
 The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint,
-the test matrix and install-smoke on every pull request and push to `main`. It is a mirror
-of the local gates on a fresh macOS runner, not a gate in front of the push:
-a failure there means something already public needs fixing. The test jobs
+the test matrix, install-smoke and claude-seat on every pull request and push
+to `main`. It is a mirror of the local gates on a fresh macOS runner, not a
+gate in front of the push: a failure there means something already public
+needs fixing. The claude-seat job installs Claude Code at the version pinned
+in `agent_comms/runtime_pins.json` with the official installer, so it also
+re-checks the pinned client's behavior on every change. The test and
+claude-seat jobs
 also prove the suite's isolation: `scripts/gates/leftovers.sh before` takes a
 snapshot of `HOME` and the checkout, and `leftovers.sh after` fails the job
 if the run added anything to either (bytecode caches excepted) or wrote under
