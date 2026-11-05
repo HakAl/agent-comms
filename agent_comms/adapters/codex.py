@@ -388,13 +388,6 @@ class CodexAdapter(ProcessSpawnAdapter):
         return snapshot
 
     @staticmethod
-    def _parse_last_refresh(value: str) -> datetime:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            raise ValueError("last_refresh must be timezone-aware")
-        return parsed.astimezone(timezone.utc)
-
-    @staticmethod
     def _now_utc() -> datetime:
         return datetime.now(timezone.utc)
 

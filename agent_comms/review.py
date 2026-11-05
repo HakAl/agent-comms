@@ -315,23 +315,28 @@ def command_status(args: argparse.Namespace) -> None:
         "cwd_shadow": False,
     }
     if expected is None:
-        print(json.dumps({"binding": binding, "diagnosis": "binding_unverified", "record": None}, sort_keys=True)); raise SystemExit(1)
+        print(json.dumps({"binding": binding, "diagnosis": "binding_unverified", "record": None}, sort_keys=True))
+        raise SystemExit(1)
     if expected != actual:
-        print(json.dumps({"binding": binding, "diagnosis": "wrong_store", "record": None}, sort_keys=True)); raise SystemExit(1)
+        print(json.dumps({"binding": binding, "diagnosis": "wrong_store", "record": None}, sort_keys=True))
+        raise SystemExit(1)
     path = review_paths(args.dispatch_id).json
     binding["record_path"] = str(path)
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        print(json.dumps({"binding": binding, "diagnosis": "record_not_found", "record": None}, sort_keys=True)); raise SystemExit(1)
+        print(json.dumps({"binding": binding, "diagnosis": "record_not_found", "record": None}, sort_keys=True))
+        raise SystemExit(1)
     try:
         record = json.loads(raw)
     except json.JSONDecodeError:
-        print(json.dumps({"binding": binding, "diagnosis": "record_malformed", "record": None}, sort_keys=True)); raise SystemExit(1)
+        print(json.dumps({"binding": binding, "diagnosis": "record_malformed", "record": None}, sort_keys=True))
+        raise SystemExit(1)
     try:
         validate_record(record)
     except ReviewError:
-        print(json.dumps({"binding": binding, "diagnosis": "record_invalid", "record": record}, sort_keys=True)); raise SystemExit(1)
+        print(json.dumps({"binding": binding, "diagnosis": "record_invalid", "record": record}, sort_keys=True))
+        raise SystemExit(1)
     diagnosis = "prior_schema_read_only" if record["schema_version"] == 1 else "ok"
     drift = dod_drift(record)
     dod_binding: str | dict[str, Any] = (

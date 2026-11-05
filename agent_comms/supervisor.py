@@ -41,9 +41,11 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
+
+from .clock import utc_now
+from .terminal_statuses import DISPATCH_TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +86,6 @@ _CONTROL_SOCKET_SUFFIX_BYTES = len("/run/s") + _RUN_SOCKET_SUFFIX_BYTES
 _SQLITE_TIMEOUT_SECONDS = 10.0
 _SQLITE_BUSY_TIMEOUT_MS = 5000
 
-DISPATCH_TERMINAL_STATUSES = frozenset({"closed", "dlq", "spawn_failed_message_landed", "cancelled"})
-
 READY_TOKEN = "ready"
 _MAX_CONTROL_LINE_BYTES = 65536
 
@@ -96,10 +96,6 @@ class SupervisorError(RuntimeError):
 
 class SunPathTooLong(SupervisorError):
     """The bound control-socket path would exceed the AF_UNIX byte limit."""
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +191,7 @@ def write_owner_marker(run_dir: Path, *, dispatch_id: str, run_token: str, wrapp
         "dispatch_id": dispatch_id,
         "run_token": run_token,
         "wrapper_pid": wrapper_pid,
-        "created_at": _utc_now(),
+        "created_at": utc_now(),
     }
     path = run_dir / _MARKER_NAME
     path.write_text(json.dumps(marker, sort_keys=True))
@@ -305,7 +301,7 @@ def record_worker_exit(
     """
     exit_obj = {
         "returncode": returncode,
-        "exited_at": _utc_now(),
+        "exited_at": utc_now(),
         "source": source,
         "run_token": run_token,
     }
@@ -336,29 +332,6 @@ def record_worker_exit(
 REAP_SOURCE_HALT_FINALIZE = "halt_finalize"
 REAP_SOURCE_BACKGROUND_REAP = "background_reap"
 REAP_EVIDENCE_SOURCES = frozenset({REAP_SOURCE_HALT_FINALIZE, REAP_SOURCE_BACKGROUND_REAP})
-
-
-def _complete_reaper_exit_evidence(existing: object) -> bool:
-    """Structural four-field contract for an existing ``$.reaper_exit``
-    object: integer return code (bools excluded), non-empty string
-    ``reaped_at``, non-empty string ``run_token``, and a ``source`` in the
-    bounded vocabulary. Anything less is malformed evidence and must take the
-    loud refusal path, never the replay path.
-    """
-    if not isinstance(existing, dict):
-        return False
-    returncode = existing.get("returncode")
-    reaped_at = existing.get("reaped_at")
-    run_token = existing.get("run_token")
-    return (
-        isinstance(returncode, int)
-        and not isinstance(returncode, bool)
-        and isinstance(reaped_at, str)
-        and bool(reaped_at)
-        and isinstance(run_token, str)
-        and bool(run_token)
-        and existing.get("source") in REAP_EVIDENCE_SOURCES
-    )
 
 
 # Revision 7 F2: the ONLY SQL object that qualifies a cancellation
@@ -507,7 +480,7 @@ def record_registered_wrapper_reap(
         "run_token": run_token,
         "returncode": returncode,
         "source": source,
-        "reaped_at": _utc_now(),
+        "reaped_at": utc_now(),
         "registered_wrapper_reaped": True,
         "native_process_group_drained": True,
         "owned_artifacts_absent": {
