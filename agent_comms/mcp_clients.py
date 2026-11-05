@@ -33,6 +33,7 @@ from pathlib import Path
 
 from . import codex_binding
 from .codex_binding import SERVER_NAME
+from .fsutil import atomic_write_text
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 Which = Callable[[str], "str | None"]
@@ -722,7 +723,7 @@ class CodexSeat:
                 # without one it reads only the directory it starts in.
                 notes.append(f"outside git, Codex reads the seat only when started in {target.project_root}, not a subdirectory")
             path.parent.mkdir(exist_ok=True)
-            _write_atomic(path, rendered)
+            atomic_write_text(path, rendered)
         except OSError as exc:
             return SeatResult(notes=notes, failure=f"writing {path}: {exc}")
         notes.append(f"wrote [mcp_servers.{SERVER_NAME}] in {path}")
@@ -779,18 +780,6 @@ def _add_exclude_line(exclude_file: Path, line: str) -> str:
     with exclude_file.open("a", encoding="utf-8") as handle:
         handle.write(f"{prefix}{line}\n")
     return f"added {line} to {exclude_file}"
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.new")
-    try:
-        with tmp.open("w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 SEATS: dict[str, ClaudeSeat | CodexSeat] = {"claude": ClaudeSeat(), "codex": CodexSeat()}

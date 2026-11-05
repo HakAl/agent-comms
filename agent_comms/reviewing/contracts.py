@@ -9,13 +9,12 @@ facade. This module is a leaf: it depends only on the standard library,
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from agent_comms import delta_manifest
+from agent_comms import delta_manifest, fsutil
 
 
 SCHEMA_VERSION = 2
@@ -137,11 +136,7 @@ def is_evidence_only(criterion: dict[str, Any]) -> bool:
 
 def file_sha256(path: Path, context: str) -> str:
     try:
-        digest = hashlib.sha256()
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        return fsutil.file_sha256(path)
     except OSError as exc:
         raise ReviewError(f"{context}: cannot read evidence log {path}: {exc}") from exc
 
