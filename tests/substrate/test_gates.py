@@ -519,23 +519,33 @@ class InstallSmokeScriptTests(unittest.TestCase):
         # machine it runs on. The check is the script's embedded Python block,
         # run here against `agent-comms version` payloads without a wheel.
         script = (GATES / "install-smoke.sh").read_text()
-        match = re.search(r'\npython3 - "\$UV_TOOL_DIR" <<\'PY\'[^\n]*\n(.*?)\nPY\n', script, re.S)
+        match = re.search(r'\npython3 - "\$UV_TOOL_DIR" "\$expected_pins" <<\'PY\'[^\n]*\n(.*?)\nPY\n', script, re.S)
         self.assertIsNotNone(match, "version check block not found in install-smoke.sh")
         check = match.group(1)
         tool_dir = self.repo / "tool"
+        manifest = {
+            "schema": 2,
+            "runtimes": {
+                "codex": {"platforms": {"darwin-arm64": {"version": "0.157.0"}}, "boundary": "exact"},
+                "claude": {"platforms": {"darwin-arm64": {"version": "2.1.195"}}, "boundary": "exact"},
+            },
+        }
+        empty_manifest = {"schema": 2, "runtimes": {}}
+        expected_pins = self.repo / "expected-runtime-pins.json"
+        expected_pins.write_text(json.dumps(manifest))
         base = {
             "repo_root": str(tool_dir / "agent-comms" / "lib" / "agent_comms"),
             "git_commit": "unknown",
             "git_branch": "unknown",
             "git_describe": "unknown",
             "git_head_state": "unknown",
-            "certified_runtimes": {"schema": 2, "runtimes": {}},
+            "certified_runtimes": manifest,
         }
 
         def run(**fields: object) -> subprocess.CompletedProcess:
             (self.repo / "version.json").write_text(json.dumps({**base, **fields}))
             return subprocess.run(
-                [sys.executable, "-", str(tool_dir)],
+                [sys.executable, "-", str(tool_dir), str(expected_pins)],
                 input=check,
                 cwd=self.repo,
                 capture_output=True,
@@ -546,8 +556,8 @@ class InstallSmokeScriptTests(unittest.TestCase):
         certified = run(platform="darwin-arm64", platform_pins={"claude": "2.1.195", "codex": "0.157.0"})
         self.assertEqual(certified.returncode, 0, certified.stderr)
 
-        # Neither pin for this platform with the manifest present: not certified
-        # here, which the smoke reports and skips rather than fails.
+        # The intact manifest lists neither runtime for this platform: not
+        # certified here, which the smoke reports and skips rather than fails.
         unlisted = run(platform="unlisted-arch", platform_pins={"claude": None, "codex": None})
         self.assertEqual(unlisted.returncode, 0, unlisted.stderr)
         self.assertIn("SKIP install-smoke pin check: no certified pin for unlisted-arch", unlisted.stderr)
@@ -555,8 +565,38 @@ class InstallSmokeScriptTests(unittest.TestCase):
 
         half = run(platform="darwin-arm64", platform_pins={"claude": None, "codex": "0.157.0"})
         self.assertEqual(half.returncode, 1, half.stderr)
-        self.assertIn("lacks claude for darwin-arm64", half.stderr)
+        self.assertIn("lacks claude for darwin-arm64: the manifest certifies 2.1.195", half.stderr)
         self.assertNotIn("lacks codex", half.stderr)
+
+        # Negative controls for the skip: a listed platform whose projection is
+        # null, a manifest that is not the build's, a manifest without runtime
+        # tables, and a projection that disagrees with the manifest all fail.
+        null_listed = run(platform="darwin-arm64", platform_pins={"claude": None, "codex": None})
+        self.assertEqual(null_listed.returncode, 1, null_listed.stderr)
+        self.assertIn("lacks codex for darwin-arm64", null_listed.stderr)
+        self.assertIn("lacks claude for darwin-arm64", null_listed.stderr)
+        self.assertNotIn("SKIP", null_listed.stderr)
+
+        foreign = run(
+            platform="unlisted-arch",
+            platform_pins={"claude": None, "codex": None},
+            certified_runtimes={**manifest, "schema": 3},
+        )
+        self.assertEqual(foreign.returncode, 1, foreign.stderr)
+        self.assertIn("differs from the build's runtime_pins.json", foreign.stderr)
+        self.assertNotIn("SKIP", foreign.stderr)
+
+        expected_pins.write_text(json.dumps(empty_manifest))
+        no_tables = run(platform="darwin-arm64", platform_pins={}, certified_runtimes=empty_manifest)
+        self.assertEqual(no_tables.returncode, 1, no_tables.stderr)
+        self.assertIn("no codex platform table", no_tables.stderr)
+        self.assertIn("no claude platform table", no_tables.stderr)
+        self.assertNotIn("SKIP", no_tables.stderr)
+        expected_pins.write_text(json.dumps(manifest))
+
+        disagree = run(platform="darwin-arm64", platform_pins={"claude": "2.1.195", "codex": "0.1.0"})
+        self.assertEqual(disagree.returncode, 1, disagree.stderr)
+        self.assertIn("reports codex='0.1.0' for darwin-arm64, the manifest says '0.157.0'", disagree.stderr)
 
         stale = run()
         self.assertEqual(stale.returncode, 1, stale.stderr)

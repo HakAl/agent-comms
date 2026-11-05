@@ -69,9 +69,18 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uv sync --frozen --extra test
+      - name: Snapshot HOME and the checkout
+        run: sh scripts/gates/leftovers.sh before
+      # Each measurement runs even when an earlier one fails, so one run
+      # reports all of them.
       - run: make hygiene
       - run: make lint
+        if: ${{ !cancelled() }}
       - run: make test
+        if: ${{ !cancelled() }}
+      - name: Nothing left in HOME or the checkout
+        run: sh scripts/gates/leftovers.sh after
+        if: ${{ !cancelled() }}
 
   install-smoke:
     name: install-smoke (Python ${{ matrix.python }})

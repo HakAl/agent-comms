@@ -102,6 +102,10 @@ set -- "$root"/wheels/agent_comms-*.whl
 wheel=$1
 [ "$#" -eq 1 ] && [ -f "$wheel" ] || fail "expected one wheel under $root/wheels, found: $*"
 info "built $(basename "$wheel") from $sha ($source)"
+# The build's own pin manifest, kept so the installed copy can be checked
+# against it after the source export is gone.
+expected_pins="$root/expected-runtime-pins.json"
+cp "$root/src/agent_comms/runtime_pins.json" "$expected_pins" || fail "no runtime_pins.json in the export"
 
 # 2. Delete the source tree; the install must not depend on it.
 rm -rf "$root/src"
@@ -147,7 +151,7 @@ mkdir -p "$PROJECT_A_ROOT"
 cd "$work"
 
 "$bin/agent-comms" version >version.json
-python3 - "$UV_TOOL_DIR" <<'PY' || fail "version does not describe an install without a checkout"
+python3 - "$UV_TOOL_DIR" "$expected_pins" <<'PY' || fail "version does not describe an install without a checkout"
 import json, os, sys
 info = json.load(open("version.json"))
 tool_dir = os.path.realpath(sys.argv[1])
@@ -158,20 +162,35 @@ if not repo_root.startswith(tool_dir + os.sep):
 for key in ("git_commit", "git_branch", "git_describe", "git_head_state"):
     if info.get(key) != "unknown":
         problems.append(f"{key}={info.get(key)!r}, expected 'unknown'")
-if not info.get("certified_runtimes"):
+# The installed manifest must be the one the build shipped, whole, with a
+# platform table per runtime; the projection `agent-comms version` reports
+# must agree with it. Only then is "no entry for this platform" a fact
+# about the machine (not certified yet, ac-ssl.4) rather than a broken wheel.
+manifest = info.get("certified_runtimes")
+expected_manifest = json.load(open(sys.argv[2]))
+if not manifest:
     problems.append("certified_runtimes is empty: the pins did not ship in the wheel")
+elif manifest != expected_manifest:
+    problems.append("certified_runtimes differs from the build's runtime_pins.json")
 platform = info.get("platform")
 pins = info.get("platform_pins") or {}
 if not platform:
     problems.append("platform is missing from version")
-missing = [runtime for runtime in ("codex", "claude") if not pins.get(runtime)]
-if info.get("certified_runtimes") and platform and len(missing) == 2:
-    # The manifest shipped but names no pin for this platform at all: the
-    # wheel is whole, the machine is just not certified yet (Linux, ac-ssl.4).
+expected = {}
+for runtime in ("codex", "claude"):
+    table = ((manifest or {}).get("runtimes") or {}).get(runtime, {}).get("platforms")
+    if not table:
+        problems.append(f"certified_runtimes has no {runtime} platform table")
+        continue
+    expected[runtime] = (table.get(platform) or {}).get("version")
+    if pins.get(runtime) != expected[runtime]:
+        problems.append(
+            f"platform_pins lacks {runtime} for {platform}: the manifest certifies {expected[runtime]}"
+            if expected[runtime] and not pins.get(runtime)
+            else f"platform_pins reports {runtime}={pins.get(runtime)!r} for {platform}, the manifest says {expected[runtime]!r}"
+        )
+if not problems and platform and len(expected) == 2 and not any(expected.values()):
     print(f"SKIP install-smoke pin check: no certified pin for {platform}", file=sys.stderr)
-else:
-    for runtime in missing:
-        problems.append(f"platform_pins lacks {runtime} for {platform}: the wheel carries no certified pin for this machine")
 if problems:
     sys.exit("FAIL install-smoke: " + "; ".join(problems))
 PY
