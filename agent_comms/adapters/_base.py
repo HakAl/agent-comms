@@ -549,33 +549,6 @@ class ProcessSpawnAdapter:
             )
         self._cleanup_zdotdir_for_handle(spawn_handle)
 
-    def owned_zdotdir_parent(self, spawn_handle: str) -> Path:
-        """Revision 7 F4: resolve THIS run's owned ZDOTDIR parent strictly from
-        the exact ``spawn_handle -> zdotdir`` association this adapter instance
-        recorded at spawn.
-
-        Read-only accessor over the private map. It is NOT a public / MCP /
-        admin surface. It requires exactly one mapping for the exact handle and
-        validates the owned-parent naming boundary (``agent-comms-zdotdir-*``);
-        a missing handle or a mapping whose parent violates that boundary FAILS
-        LOUDLY. It never globs the shared temp root, uses recency, or a
-        before/after ownership delta -- so unrelated historical actor-named
-        directories can neither satisfy nor poison the current-run barrier.
-        """
-        zdotdir = self._zdotdirs.get(spawn_handle)
-        if zdotdir is None:
-            raise LookupError(
-                f"no owned zdotdir mapping for spawn handle {spawn_handle!r}; "
-                "current-run ownership cannot be resolved"
-            )
-        parent = Path(zdotdir).parent
-        if not parent.name.startswith("agent-comms-zdotdir-"):
-            raise ValueError(
-                f"resolved zdotdir parent {parent.name!r} violates the owned-parent "
-                "naming boundary for the current run"
-            )
-        return parent
-
     def _cleanup_zdotdir_for_handle(self, spawn_handle: str) -> None:
         zdotdir = self._zdotdirs.pop(spawn_handle, None)
         if zdotdir is not None:

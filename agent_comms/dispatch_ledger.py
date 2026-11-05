@@ -14,6 +14,7 @@ from uuid import uuid4
 from .adapters import DispatchContext, DispatchStart, RuntimeAdapter
 from .actors import ActorRegistry
 from .clock import utc_now
+from .terminal_statuses import DISPATCH_TERMINAL_STATUSES
 from .code_identity import StaleModuleError, require_fresh_module
 from . import codex_auth_refresh
 from .reviewing import intents as review_intents
@@ -40,7 +41,6 @@ LINEAGE_FAIL_CLOSED_PAGED_KEY = "auth_lineage_fail_closed_paged_at"
 # stage-2 test; keep the two in lockstep. Recognizing ``cancelled`` here is
 # owner/lifecycle recognition ONLY: it does not by itself authorize janitor
 # deletion, which now requires the supervisor's positive same-run evidence gate.
-DISPATCH_TERMINAL_STATUSES = frozenset({"closed", "dlq", "spawn_failed_message_landed", "cancelled"})
 
 # Same-run exit predicate for a terminal CAS. The CAS must prove the row it is
 # about to DLQ still carries exit evidence for the *specific* authenticated run

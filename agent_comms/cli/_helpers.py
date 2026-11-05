@@ -7,10 +7,14 @@ import os
 import string
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .. import paths
 from ..schema import ValidationError
 from ..spawn import render_spawn
+
+if TYPE_CHECKING:
+    from ..store import Store
 
 # None means the runtime root's admin-token, resolved at call time; tests
 # patch in a path.
@@ -53,15 +57,6 @@ def protected_actor_notice(protection: dict) -> None:
         f"protected actor notice: dispatch target {protection['id']} team={protection['team']}",
         file=sys.stderr,
     )
-
-
-def parse_json_list(value: str) -> list:
-    if not value:
-        return []
-    parsed = json.loads(value)
-    if not isinstance(parsed, list):
-        raise argparse.ArgumentTypeError("value must be a JSON list")
-    return parsed
 
 
 def parse_json_object(value: str) -> dict:

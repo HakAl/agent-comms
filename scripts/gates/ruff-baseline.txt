@@ -1,8 +1,4 @@
 # count	path	rule; regenerate with `make lint-baseline`
-4	agent_comms/cli/__init__.py	F401
-1	agent_comms/cli/_helpers.py	F821
-4	agent_comms/payload.py	F821
-5	agent_comms/review.py	E702
 1	tests/cells/test_cell_claude.py	F401
 3	tests/cells/test_negative_sweep.py	E402
 1	tests/cells/test_ttl_runtime_death.py	F401

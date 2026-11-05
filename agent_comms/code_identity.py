@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 30
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "ce98458fdcc1345bac12e62d0376a5ddaad576d9df75dc7553a090c8f8411136"
+    "9123ec9638b3b1ecd7b6d59597c2b1335a630bd7e179e0dd79c4a05278ed5c41"
 )
 
 
@@ -57,6 +57,7 @@ INCLUDED_EXPLICIT = frozenset(
         "agent_comms/spawn.py",
         "agent_comms/store.py",
         "agent_comms/supervisor.py",
+        "agent_comms/terminal_statuses.py",
         "agent_comms/timeout_wrapper.py",
         "agent_comms/worker_usage.py",
     }
@@ -105,6 +106,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/spawn.py",
         "agent_comms/store.py",
         "agent_comms/supervisor.py",
+        "agent_comms/terminal_statuses.py",
     }
 )
 CONTRACT_NEUTRAL_REASONS = {

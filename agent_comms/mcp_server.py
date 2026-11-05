@@ -117,12 +117,17 @@ def create_server(db_path: str | None = None, actor_id: str | None = None, *, db
         ) -> dict:
             """Dispatch an own-team worker under the v1 bounded worker policy.
 
-            Supply exactly one logical body: inline ``body`` (bounded) or a
-            repository-relative ``body_file`` resolved under this producer's
-            registered project root, with a required ``payload_origin`` of
-            authored_brief, generated_artifact, or verbatim_source. The
-            source root comes only from the authenticated producer
-            registration, never from request JSON or the process CWD.
+            Supply exactly one logical body, in one of two forms.
+
+            Inline: ``body`` (bounded). Do not send ``payload_origin`` with an
+            inline body; the call is rejected.
+
+            File: ``body_file``, a repository-relative path resolved under this
+            producer's registered project root, together with ``payload_origin``
+            (required with ``body_file``, one of authored_brief,
+            generated_artifact, verbatim_source). The source root comes only
+            from the authenticated producer registration, never from request
+            JSON or the process CWD.
             """
             return store.dispatch_agent(
                 producer_actor_id=actor_id,

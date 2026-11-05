@@ -984,7 +984,7 @@ def publish_final(
                 shard_fd,
                 leaf_name,
                 cause=attach_exc,
-                unlink_failed=lambda err: (
+                unlink_failed=lambda err, attach_exc=attach_exc: (
                     f"published blob for digest {capture.sha256} could not be confirmed "
                     f"attached to the canonical payload store ({attach_exc}); unlink of the "
                     f"newly created blob from the detached shard also failed ({err}), so "
@@ -992,7 +992,7 @@ def publish_final(
                     "canonical hierarchy, it may lie outside the reach of `agent-comms "
                     "payload-audit`"
                 ),
-                fsync_failed=lambda err: (
+                fsync_failed=lambda err, attach_exc=attach_exc: (
                     f"published blob for digest {capture.sha256} could not be confirmed "
                     f"attached to the canonical payload store ({attach_exc}); the newly "
                     f"created blob was unlinked from the detached shard but the cleanup "
@@ -1165,13 +1165,13 @@ def _finalize_published_blob(
             shard_fd,
             leaf_name,
             cause=exc,
-            unlink_failed=lambda err: (
+            unlink_failed=lambda err, exc=exc: (
                 f"could not make payload blob durable ({exc.strerror}) and unlink of the "
                 f"newly created blob for digest {sha256_hex} also failed "
                 f"({err}); orphan residue remains measurable via "
                 "`agent-comms payload-audit`"
             ),
-            fsync_failed=lambda err: (
+            fsync_failed=lambda err, exc=exc: (
                 f"could not make payload blob durable ({exc.strerror}); the newly created "
                 f"blob for digest {sha256_hex} was unlinked but the cleanup fsync of "
                 f"its directory failed ({err}), so the unlink is not "

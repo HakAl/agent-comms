@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,15 +25,6 @@ STATUSES = {"sent", "read", "acknowledged", "closed", "cancelled"}
 
 class ValidationError(ValueError):
     """Raised when caller input does not match the relay contract."""
-
-
-@dataclass(frozen=True)
-class AgentConfig:
-    agent_id: str
-    team: str
-    role: str
-    project_root: Path
-    capabilities: tuple[str, ...]
 
 
 def require_non_empty(value: str, field: str) -> str:
