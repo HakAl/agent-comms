@@ -122,7 +122,7 @@ class CodexCustodyPathTest(unittest.TestCase):
                     call()
 
     def test_unlisted_platform_fails_closed_before_any_path(self) -> None:
-        with mock.patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+        with mock.patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
             for call in (runtime_pins.codex_bundle_path, runtime_pins.codex_binary_path):
                 with self.subTest(call=call), self.assertRaises(runtime_pins.PlatformNotCertified):
                     call()
@@ -208,8 +208,8 @@ class FillCustodyTest(unittest.TestCase):
         import io
         import json
 
-        with mock.patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
-            with self.assertRaisesRegex(CustodyError, "no certified pin for linux-x86_64"):
+        with mock.patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
+            with self.assertRaisesRegex(CustodyError, "no certified pin for unlisted-arch"):
                 fill_codex_custody(self.source)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):

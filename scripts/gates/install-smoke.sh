@@ -102,6 +102,10 @@ set -- "$root"/wheels/agent_comms-*.whl
 wheel=$1
 [ "$#" -eq 1 ] && [ -f "$wheel" ] || fail "expected one wheel under $root/wheels, found: $*"
 info "built $(basename "$wheel") from $sha ($source)"
+# The build's own pin manifest, kept so the installed copy can be checked
+# against it after the source export is gone.
+expected_pins="$root/expected-runtime-pins.json"
+cp "$root/src/agent_comms/runtime_pins.json" "$expected_pins" || fail "no runtime_pins.json in the export"
 
 # 2. Delete the source tree; the install must not depend on it.
 rm -rf "$root/src"
@@ -129,8 +133,10 @@ mkdir -p "$HOME/.agent-comms" "$space/ledger dir"
 # that never reaches READY.
 export AGENT_COMMS_SUPERVISOR_ROOT="$root/s"
 socket_path_length=$(printf '%s' "$AGENT_COMMS_SUPERVISOR_ROOT/0123456789abcdef0123456789abcdef/s" | wc -c | tr -d ' ')
-[ "$socket_path_length" -le 103 ] \
-  || fail "supervisor socket path would be $socket_path_length bytes (limit 103); run from a checkout at a shorter path"
+sun_path_max=$(sed -n 's/^SUN_PATH_MAX_BYTES = \([0-9]*\)$/\1/p' agent_comms/supervisor.py)
+[ -n "$sun_path_max" ] || fail "could not read SUN_PATH_MAX_BYTES from agent_comms/supervisor.py"
+[ "$socket_path_length" -le "$sun_path_max" ] \
+  || fail "supervisor socket path would be $socket_path_length bytes (limit $sun_path_max); run from a checkout at a shorter path"
 uv tool install -q "$wheel" || fail "uv tool install failed"
 for name in agent-comms agent-comms-mcp agent-comms-monitor agent-comms-seat; do
   [ -x "$UV_TOOL_BIN_DIR/$name" ] || fail "$name was not installed under $UV_TOOL_BIN_DIR"
@@ -145,7 +151,7 @@ mkdir -p "$PROJECT_A_ROOT"
 cd "$work"
 
 "$bin/agent-comms" version >version.json
-python3 - "$UV_TOOL_DIR" <<'PY' || fail "version does not describe an install without a checkout"
+python3 - "$UV_TOOL_DIR" "$expected_pins" <<'PY' || fail "version does not describe an install without a checkout"
 import json, os, sys
 info = json.load(open("version.json"))
 tool_dir = os.path.realpath(sys.argv[1])
@@ -156,19 +162,39 @@ if not repo_root.startswith(tool_dir + os.sep):
 for key in ("git_commit", "git_branch", "git_describe", "git_head_state"):
     if info.get(key) != "unknown":
         problems.append(f"{key}={info.get(key)!r}, expected 'unknown'")
-if not info.get("certified_runtimes"):
+# The installed manifest must be the one the build shipped, whole, with a
+# platform table per runtime; the projection `agent-comms version` reports
+# must agree with it. Only then is "no entry for this platform" a fact
+# about the machine (not certified yet, ac-ssl.4) rather than a broken wheel.
+manifest = info.get("certified_runtimes")
+expected_manifest = json.load(open(sys.argv[2]))
+if not manifest:
     problems.append("certified_runtimes is empty: the pins did not ship in the wheel")
+elif manifest != expected_manifest:
+    problems.append("certified_runtimes differs from the build's runtime_pins.json")
 platform = info.get("platform")
 pins = info.get("platform_pins") or {}
 if not platform:
     problems.append("platform is missing from version")
+expected = {}
 for runtime in ("codex", "claude"):
-    if not pins.get(runtime):
-        problems.append(f"platform_pins lacks {runtime} for {platform}: the wheel carries no certified pin for this machine")
+    table = ((manifest or {}).get("runtimes") or {}).get(runtime, {}).get("platforms")
+    if not table:
+        problems.append(f"certified_runtimes has no {runtime} platform table")
+        continue
+    expected[runtime] = (table.get(platform) or {}).get("version")
+    if pins.get(runtime) != expected[runtime]:
+        problems.append(
+            f"platform_pins lacks {runtime} for {platform}: the manifest certifies {expected[runtime]}"
+            if expected[runtime] and not pins.get(runtime)
+            else f"platform_pins reports {runtime}={pins.get(runtime)!r} for {platform}, the manifest says {expected[runtime]!r}"
+        )
+if not problems and platform and len(expected) == 2 and not any(expected.values()):
+    print(f"SKIP install-smoke pin check: no certified pin for {platform}", file=sys.stderr)
 if problems:
     sys.exit("FAIL install-smoke: " + "; ".join(problems))
 PY
-info "version: repo_root under the tool venv, git fields unknown, pins present for this platform"
+info "version: repo_root under the tool venv, git fields unknown, pins present for this platform (or skipped as uncertified)"
 
 "$bin/agent-comms" setup --project-root "$PROJECT_A_ROOT" --team team-a --runtimes fake --clients "" \
   --human alice --human-id "$human" --yes >setup.json || fail "setup failed: $(cat setup.json)"

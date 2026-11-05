@@ -11,6 +11,7 @@ containment sweep below covers every ``codex exec`` child it starts.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -28,7 +29,7 @@ def _default_process_enumerator(*, parent_pid=None, group_id=None):
     """Return ``(pid, pgid)`` pairs selected by parent or process group."""
     flag, value = ("-P", parent_pid) if parent_pid is not None else ("-g", group_id)
     result = subprocess.run(
-        ["/usr/bin/pgrep", flag, str(value)], capture_output=True, text=True,
+        [shutil.which("pgrep") or "/usr/bin/pgrep", flag, str(value)], capture_output=True, text=True,
         check=False,
     )
     if result.returncode == 1:

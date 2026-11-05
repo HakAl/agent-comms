@@ -89,8 +89,15 @@ login, so there is no agent-comms-specific login to create.
 
 1. **Service manager.** The monitor runs under systemd user units as well as
    launchd, behind one interface.
-2. **Remove macOS assumptions.** No reliance on `/private/tmp`, `/bin/pax`,
-   `PlistBuddy`, or Homebrew paths.
+2. **Remove macOS assumptions.** The inventory before this milestone found
+   these: test temp paths were hardcoded to the macOS private temp directory
+   (now derived from `tempfile`); the shell startup hardening test needs
+   `/bin/zsh` (skipped elsewhere); the control-socket path ceiling stays at
+   103 bytes on every platform as a deliberate invariant; `pgrep` is looked
+   up on PATH; the release script accepts `sha256sum` where `shasum` is
+   absent. No launchd code exists yet, so the service manager above is new
+   work, not a port. Still open: Linux runtime pins and the hermetic tests
+   that resolve pins on the host (the `linux-probe` CI job lists them).
 3. **CI on Linux.** The same suite runs on Linux.
 4. **Repeat the milestone 1 walkthrough** on a clean Linux machine.
 

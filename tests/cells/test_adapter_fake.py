@@ -111,7 +111,7 @@ class FakeAdapterTest(unittest.TestCase):
         self.assertNotIn(supervisor.default_control_root(), control_socket.parents)
 
     def test_fake_adapter_worker_replies_closes_trigger_and_halt_is_noop(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
             root = Path(temp_dir)
             with self.isolated_real_spawn(root) as (_registry, control_root):
                 db_path = root / "agent-comms.sqlite"
@@ -167,7 +167,7 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertEqual(ledger["status"], "closed")
 
     def test_fake_worker_dies_before_close_goes_to_dlq_and_pages_human(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
             root = Path(temp_dir)
             with self.isolated_real_spawn(root) as (_registry, control_root):
                 db_path = root / "agent-comms.sqlite"
@@ -215,7 +215,7 @@ class FakeAdapterTest(unittest.TestCase):
         supervisor's own deadline kill is). The worker exits at once, so its
         exit may land before or after the start commit; either way the
         dispatch ends ``worker_exited_before_close``."""
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
             root = Path(temp_dir)
             with self.isolated_real_spawn(root) as (_registry, control_root):
                 db_path = root / "agent-comms.sqlite"

@@ -26,7 +26,7 @@ from agent_comms.runtime_pins import PlatformNotCertified, RuntimePin
 PLATFORM_KEY_RE = re.compile(r"^(darwin|linux)-[a-z0-9_]+$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-UNLISTED = "linux-x86_64"
+UNLISTED = "unlisted-arch"
 RELEASE_PLATFORM = "darwin-arm64"
 
 

@@ -147,7 +147,7 @@ class McpStdioTest(unittest.TestCase):
         env = os.environ.copy()
         env.pop("WAKE_POLICY", None)
         env.pop("WAKE_POLICY_VERSION", None)
-        env["PYTHONPYCACHEPREFIX"] = "/private/tmp/agent-comms-pycache"
+        env["PYTHONPYCACHEPREFIX"] = os.path.join(tempfile.gettempdir(), "agent-comms-pycache")
         return env
 
     def write_actor_config(self, root: Path) -> Path:

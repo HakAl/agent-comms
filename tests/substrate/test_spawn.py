@@ -238,9 +238,9 @@ class RenderSpawnTest(unittest.TestCase):
         recipient = dict(self.actors["alpha-fake-worker"])
         context = _context(recipient, self.tmp / "agent-comms.sqlite")
         adapter = FakeAdapter()
-        with mock.patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+        with mock.patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
             self.assertEqual(adapter._format_arg("{actor_id}", context), "alpha-fake-worker")
-            with self.assertRaisesRegex(runtime_pins.PlatformNotCertified, "linux-x86_64"):
+            with self.assertRaisesRegex(runtime_pins.PlatformNotCertified, "unlisted-arch"):
                 adapter._format_arg("{claude_binary}", context)
             with self.assertRaisesRegex(RuntimeError, "unsupported spawn placeholder"):
                 adapter._format_arg("{no_such_placeholder}", context)
@@ -248,13 +248,13 @@ class RenderSpawnTest(unittest.TestCase):
     def test_claude_preflight_fails_closed_on_unlisted_platform_before_disk(self) -> None:
         recipient = dict(self.actors["alpha-claude-worker"])
         recipient["spawn"] = render_spawn("claude", "alpha-claude-worker")
-        with mock.patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+        with mock.patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
             with mock.patch.object(runtime_pins, "claude_versions_dir") as versions_dir:
                 with self.assertRaises(runtime_pins.PlatformNotCertified) as raised:
                     ClaudeAdapter()._preflight(_context(recipient, self.tmp / "agent-comms.sqlite"))
         versions_dir.assert_not_called()
         message = str(raised.exception)
-        self.assertIn("claude has no certified pin for linux-x86_64", message)
+        self.assertIn("claude has no certified pin for unlisted-arch", message)
         self.assertIn("(certified: ", message)
         self.assertIn("recover with:", message)
 

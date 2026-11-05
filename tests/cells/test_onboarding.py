@@ -62,7 +62,7 @@ def _assert_no_onboard_mutation(test: unittest.TestCase, store: Store, actor_id:
 
 class OnboardWorkerTest(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmpdir = tempfile.TemporaryDirectory(dir="/private/tmp")
+        self._tmpdir = tempfile.TemporaryDirectory(dir=tests.isolation.cert_scratch_base())
         self.tmp = Path(self._tmpdir.name)
         self.control_root = self.tmp / "s"
         self._owned_registry = supervisor.ReaperRegistry()
