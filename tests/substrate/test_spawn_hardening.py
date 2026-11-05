@@ -544,6 +544,7 @@ class SpawnHardeningTest(unittest.TestCase):
         self.assertNotIn("HOME", env)
         self.assertEqual(env["TERM"], "xterm")
 
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "no /bin/zsh on this host")
     def test_f3_zdotdir_blocks_parent_home_zshenv_secret_rederivation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

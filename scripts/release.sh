@@ -38,7 +38,13 @@ fail() { echo "FAIL release: $*" >&2; exit 1; }
 # substitution, where a failure inside is invisible to set -e, so every call
 # is `x=$(digest f) || exit 1`.
 digest() {
-  sum=$(shasum -a 256 "$1") || { echo "FAIL release: shasum failed on $1" >&2; return 1; }
+  if command -v shasum >/dev/null 2>&1; then
+    sum=$(shasum -a 256 "$1") || { echo "FAIL release: shasum failed on $1" >&2; return 1; }
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sum=$(sha256sum "$1") || { echo "FAIL release: sha256sum failed on $1" >&2; return 1; }
+  else
+    echo "FAIL release: neither shasum nor sha256sum is on PATH" >&2; return 1
+  fi
   sum=${sum%% *}
   if [ ${#sum} -ne 64 ]; then echo "FAIL release: no sha256 digest for $1" >&2; return 1; fi
   case "$sum" in *[!0-9a-f]*) echo "FAIL release: no sha256 digest for $1" >&2; return 1 ;; esac

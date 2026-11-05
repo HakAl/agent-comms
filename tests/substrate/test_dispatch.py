@@ -42,7 +42,7 @@ def operator_env(root: Path, token: str = "operator-secret") -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["AGENT_COMMS_ADMIN_TOKEN"] = token
-    env["PYTHONPYCACHEPREFIX"] = "/private/tmp/agent-comms-pycache"
+    env["PYTHONPYCACHEPREFIX"] = os.path.join(tempfile.gettempdir(), "agent-comms-pycache")
     return env
 
 

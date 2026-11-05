@@ -98,10 +98,10 @@ class ReleaseVersionTest(unittest.TestCase):
         # ac-4ao.3: `agent-comms version` must say whether this machine is
         # certified on every platform, so the per-platform answer is read
         # from the manifest as data, never through the raising resolver.
-        with patch.object(runtime_pins, "current_platform", return_value="linux-x86_64"):
+        with patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
             with patch.object(runtime_pins, "pin_for", side_effect=AssertionError("resolver used")):
                 info = release_info()
-        self.assertEqual(info["platform"], "linux-x86_64")
+        self.assertEqual(info["platform"], "unlisted-arch")
         self.assertEqual(info["platform_pins"], {"claude": None, "codex": None})
         self.assertEqual(info["certified_runtimes"], runtime_pins.load_runtime_pins())
 

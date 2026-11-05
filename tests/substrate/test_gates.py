@@ -546,10 +546,12 @@ class InstallSmokeScriptTests(unittest.TestCase):
         certified = run(platform="darwin-arm64", platform_pins={"claude": "2.1.195", "codex": "0.157.0"})
         self.assertEqual(certified.returncode, 0, certified.stderr)
 
-        unlisted = run(platform="linux-x86_64", platform_pins={"claude": None, "codex": None})
-        self.assertEqual(unlisted.returncode, 1, unlisted.stderr)
-        self.assertIn("platform_pins lacks codex for linux-x86_64", unlisted.stderr)
-        self.assertIn("platform_pins lacks claude for linux-x86_64", unlisted.stderr)
+        # Neither pin for this platform with the manifest present: not certified
+        # here, which the smoke reports and skips rather than fails.
+        unlisted = run(platform="unlisted-arch", platform_pins={"claude": None, "codex": None})
+        self.assertEqual(unlisted.returncode, 0, unlisted.stderr)
+        self.assertIn("SKIP install-smoke pin check: no certified pin for unlisted-arch", unlisted.stderr)
+        self.assertNotIn("platform_pins lacks", unlisted.stderr)
 
         half = run(platform="darwin-arm64", platform_pins={"claude": None, "codex": "0.157.0"})
         self.assertEqual(half.returncode, 1, half.stderr)

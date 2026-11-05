@@ -54,6 +54,25 @@ jobs:
       - name: Nothing left in HOME or the checkout
         run: sh scripts/gates/leftovers.sh after
 
+  # Throwaway measurement for Milestone 2: how much of the suite runs on Linux
+  # today. Failures are expected (no Linux runtime pins, ac-ssl.4) and do not
+  # block; the job becomes a real gate in ac-ssl.3.
+  linux-probe:
+    name: linux-probe (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      UV_PYTHON: "3.14"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --frozen --extra test
+      - run: make hygiene
+      - run: make lint
+      - run: make test
+
   install-smoke:
     name: install-smoke (Python ${{ matrix.python }})
     runs-on: macos-latest
@@ -87,7 +106,7 @@ jobs:
       - run: uv sync --frozen --extra test
       - name: Install Claude Code at the pinned version
         run: |
-          version=$(python3 -c 'import json; print(json.load(open("agent_comms/runtime_pins.json"))["runtimes"]["claude"]["platforms"]["darwin-arm64"]["version"])')
+          version=$(python3 -c 'import json, platform, sys; key = f"{sys.platform}-{platform.machine().lower()}"; print(json.load(open("agent_comms/runtime_pins.json"))["runtimes"]["claude"]["platforms"][key]["version"])')
           curl -fsSL https://claude.ai/install.sh | bash -s "$version"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Snapshot HOME and the checkout

@@ -103,6 +103,11 @@ class IsolationTests(unittest.TestCase):
                 f"{name} still resolves inside the real home: {value}",
             )
 
+    def test_sun_path_limit_matches_the_supervisor(self) -> None:
+        # isolation.py repeats the limit so the guard can size scratch paths
+        # before agent_comms is imported; the two must not drift apart.
+        self.assertEqual(isolation.SUN_PATH_MAX_BYTES, supervisor.SUN_PATH_MAX_BYTES)
+
     def test_this_process_is_isolated(self) -> None:
         if os.environ.get(isolation.LIVE_HOME_ENV) == "1":
             self.skipTest("operator opted into the live home")

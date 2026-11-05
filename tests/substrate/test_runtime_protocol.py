@@ -1,17 +1,26 @@
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import ast
+import contextlib
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from agent_comms import doctor, paths, runtimes
+from agent_comms import doctor, paths, runtime_pins, runtimes
+from agent_comms import setup as setup_module
 from agent_comms.adapters.registry import ADAPTERS_BY_RUNTIME, adapter_for
 from agent_comms.spawn import ALLOWED_RUNTIMES, render_spawn
 from tests.substrate.test_setup import HUMAN, _Scratch
 
 FIXTURES = Path(__file__).parent / "fixtures"
+# The setup/doctor snapshots were recorded with this platform key; capture()
+# pins it so they compare on any host. Regenerate with
+# AGENT_COMMS_TEST_WRITE_SNAPSHOTS=1 (see fixtures/README.md).
+SNAPSHOT_PLATFORM = "darwin-arm64"
+WRITE_SNAPSHOTS = os.environ.get("AGENT_COMMS_TEST_WRITE_SNAPSHOTS") == "1"
 SOURCE = Path(__file__).resolve().parents[2] / "agent_comms"
 NAMES = ("claude", "codex", "fake")
 # Modules that look runtimes up instead of naming them (ac-4ao.10 slice 4).
@@ -81,8 +90,12 @@ class SetupDoctorIdentityTest(_Scratch):
     """Setup and doctor report what 1d3577f reported, with every runtime registered."""
 
     def capture(self, runtimes: str) -> dict:
-        rc, result = self.setup("--runtimes", runtimes, "--clients", "claude,codex", "--human", "alice", "--human-id", HUMAN)
-        report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
+        # setup and doctor bind current_platform by name at import; patch each.
+        with contextlib.ExitStack() as stack:
+            for module in (runtime_pins, setup_module, doctor):
+                stack.enter_context(mock.patch.object(module, "current_platform", return_value=SNAPSHOT_PLATFORM))
+            rc, result = self.setup("--runtimes", runtimes, "--clients", "claude,codex", "--human", "alice", "--human-id", HUMAN)
+            report = doctor.run_doctor(db_path=self.db, db_explicit=True, which=self.clients.which, run=self.clients.run)
         text = json.dumps({"rc": rc, "setup": result, "doctor": report})
         for path, label in (
             (paths.runtime_root(), "<RUNTIME_ROOT>"),
@@ -93,14 +106,20 @@ class SetupDoctorIdentityTest(_Scratch):
             text = text.replace(json.dumps(str(path))[1:-1], label)
         return json.loads(text)
 
+    def assert_matches_snapshot(self, fixture: str, runtimes: str) -> None:
+        actual = self.capture(runtimes)
+        path = FIXTURES / fixture
+        if WRITE_SNAPSHOTS:
+            path.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
+        expected = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(json.dumps(actual), json.dumps(expected))
+
     def test_setup_and_doctor_match_the_snapshot_with_every_runtime(self) -> None:
-        expected = json.loads((FIXTURES / "runtime_setup_doctor_snapshot.json").read_text(encoding="utf-8"))
-        self.assertEqual(json.dumps(self.capture("claude,codex,fake")), json.dumps(expected))
+        self.assert_matches_snapshot("runtime_setup_doctor_snapshot.json", "claude,codex,fake")
 
     def test_setup_and_doctor_match_the_snapshot_with_only_fake(self) -> None:
         """The absent-runtime rows: provision_absent and doctor_skip."""
-        expected = json.loads((FIXTURES / "runtime_setup_doctor_fake_snapshot.json").read_text(encoding="utf-8"))
-        self.assertEqual(json.dumps(self.capture("fake")), json.dumps(expected))
+        self.assert_matches_snapshot("runtime_setup_doctor_fake_snapshot.json", "fake")
 
 
 if __name__ == "__main__":

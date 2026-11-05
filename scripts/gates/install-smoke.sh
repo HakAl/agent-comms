@@ -129,8 +129,10 @@ mkdir -p "$HOME/.agent-comms" "$space/ledger dir"
 # that never reaches READY.
 export AGENT_COMMS_SUPERVISOR_ROOT="$root/s"
 socket_path_length=$(printf '%s' "$AGENT_COMMS_SUPERVISOR_ROOT/0123456789abcdef0123456789abcdef/s" | wc -c | tr -d ' ')
-[ "$socket_path_length" -le 103 ] \
-  || fail "supervisor socket path would be $socket_path_length bytes (limit 103); run from a checkout at a shorter path"
+sun_path_max=$(sed -n 's/^SUN_PATH_MAX_BYTES = \([0-9]*\)$/\1/p' agent_comms/supervisor.py)
+[ -n "$sun_path_max" ] || fail "could not read SUN_PATH_MAX_BYTES from agent_comms/supervisor.py"
+[ "$socket_path_length" -le "$sun_path_max" ] \
+  || fail "supervisor socket path would be $socket_path_length bytes (limit $sun_path_max); run from a checkout at a shorter path"
 uv tool install -q "$wheel" || fail "uv tool install failed"
 for name in agent-comms agent-comms-mcp agent-comms-monitor agent-comms-seat; do
   [ -x "$UV_TOOL_BIN_DIR/$name" ] || fail "$name was not installed under $UV_TOOL_BIN_DIR"
@@ -162,13 +164,18 @@ platform = info.get("platform")
 pins = info.get("platform_pins") or {}
 if not platform:
     problems.append("platform is missing from version")
-for runtime in ("codex", "claude"):
-    if not pins.get(runtime):
+missing = [runtime for runtime in ("codex", "claude") if not pins.get(runtime)]
+if info.get("certified_runtimes") and platform and len(missing) == 2:
+    # The manifest shipped but names no pin for this platform at all: the
+    # wheel is whole, the machine is just not certified yet (Linux, ac-ssl.4).
+    print(f"SKIP install-smoke pin check: no certified pin for {platform}", file=sys.stderr)
+else:
+    for runtime in missing:
         problems.append(f"platform_pins lacks {runtime} for {platform}: the wheel carries no certified pin for this machine")
 if problems:
     sys.exit("FAIL install-smoke: " + "; ".join(problems))
 PY
-info "version: repo_root under the tool venv, git fields unknown, pins present for this platform"
+info "version: repo_root under the tool venv, git fields unknown, pins present for this platform (or skipped as uncertified)"
 
 "$bin/agent-comms" setup --project-root "$PROJECT_A_ROOT" --team team-a --runtimes fake --clients "" \
   --human alice --human-id "$human" --yes >setup.json || fail "setup failed: $(cat setup.json)"
