@@ -5,7 +5,6 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 import unittest

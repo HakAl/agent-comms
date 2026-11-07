@@ -1,7 +1,6 @@
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import hashlib
-import json
 import os
 import subprocess
 import sys

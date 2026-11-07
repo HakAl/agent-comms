@@ -51,13 +51,13 @@ _BIND_SKIP = (
     "fixture proof runs in the certification environment. Recorded as "
     "environmental evidence, not a passing skip."
 )
-from agent_comms.runtime_pins import (
+from agent_comms.runtime_pins import (  # noqa: E402  # deliberately after the bind probe
     CLAUDE_PINNED_SHA256_ENV,
     claude_pin,
     CLAUDE_VERSIONS_DIR_ENV,
 )
-from agent_comms.schema import ValidationError
-from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from agent_comms.schema import ValidationError  # noqa: E402  # deliberately after the bind probe
+from agent_comms.store import Store, WORKER_DISPATCH_POLICY  # noqa: E402  # deliberately after the bind probe
 
 ROOT = Path(__file__).resolve().parents[2]
 HUMAN_ID = "01M36YTJV9XBW95S6ZWV47C4RG"

@@ -379,7 +379,7 @@ class OperatorValidationTest(MonitorBase):
     def test_only_supplied_human_sends_and_receives_with_multiple_humans(self) -> None:
         self.store.register_actor(OTHER_HUMAN_ID, "human", "pat")
         adapter = UnconfirmedAdapter()
-        started = self._pending_past_deadline(adapter)
+        self._pending_past_deadline(adapter)
 
         self.store.reconcile_dispatches(lambda _r: adapter, human_actor_id=HUMAN_ID)
 

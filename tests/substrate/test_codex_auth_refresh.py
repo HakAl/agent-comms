@@ -580,11 +580,16 @@ class RefreshTest(unittest.TestCase):
     def test_missing_dangling_and_directory_are_invalid(self):
         for kind in ("missing", "dangling", "directory"):
             with self.subTest(kind=kind):
-                if self.auth.is_symlink(): self.auth.unlink()
-                elif self.auth.is_dir(): self.auth.rmdir()
-                elif self.auth.exists(): self.auth.unlink()
-                if kind == "dangling": self.auth.symlink_to(self.root / "absent")
-                if kind == "directory": self.auth.mkdir()
+                if self.auth.is_symlink():
+                    self.auth.unlink()
+                elif self.auth.is_dir():
+                    self.auth.rmdir()
+                elif self.auth.exists():
+                    self.auth.unlink()
+                if kind == "dangling":
+                    self.auth.symlink_to(self.root / "absent")
+                if kind == "directory":
+                    self.auth.mkdir()
                 result = self.run_refresh()
                 self.assertEqual(result["outcome"], "due_metadata_invalid")
 
@@ -599,11 +604,13 @@ class RefreshTest(unittest.TestCase):
         with self.store.connection() as conn:
             conn.execute("update codex_refresh_claims set claimed_at=?", ((NOW - timedelta(hours=2)).isoformat(),))
         def rotate(home, binary):
-            self.auth.write_text(json.dumps({"last_refresh": NOW.isoformat()})); return True
+            self.auth.write_text(json.dumps({"last_refresh": NOW.isoformat()}))
+            return True
         self.assertEqual(self.run_refresh(rotate)["outcome"], "refreshed")
         with self.store.connection() as conn:
             row = conn.execute("select * from codex_refresh_claims").fetchone()
-            self.assertIsNone(row["holder"]); self.assertIsNone(row["claimed_at"])
+            self.assertIsNone(row["holder"])
+            self.assertIsNone(row["claimed_at"])
 
     def test_null_holder_row_does_not_contend_and_deferral_state_persists(self):
         self.auth.write_text(json.dumps({"last_refresh": (NOW - timedelta(days=8)).isoformat()}))
@@ -699,7 +706,8 @@ class RefreshTest(unittest.TestCase):
         self.assertNotIn("age_seconds=", body)
         with self.store.connection() as conn:
             row = conn.execute("select first_deferred_at,last_page_at from codex_refresh_claims").fetchone()
-            self.assertIsNotNone(row[0]); self.assertIsNotNone(row[1])
+            self.assertIsNotNone(row[0])
+            self.assertIsNotNone(row[1])
         self.auth.write_text(json.dumps({"access_token": jwt(int(NOW.timestamp()) + 129600)}))
         self.assertEqual(self.run_refresh()["outcome"], "not_due")
         with self.store.connection() as conn:
@@ -756,7 +764,8 @@ class RefreshTest(unittest.TestCase):
         self.auth.write_text(json.dumps({"last_refresh": (NOW - timedelta(days=8)).isoformat()}))
         insert("unrelated", self.key + "-other")
         def rotate(home, binary):
-            self.auth.write_text(json.dumps({"last_refresh": NOW.isoformat()})); return True
+            self.auth.write_text(json.dumps({"last_refresh": NOW.isoformat()}))
+            return True
         self.assertEqual(self.run_refresh(rotate)["outcome"], "refreshed")
         self.auth.write_text(json.dumps({"last_refresh": (NOW - timedelta(days=8)).isoformat()}))
         insert("related", self.key)
@@ -851,7 +860,8 @@ class KeepaliveShapeTest(unittest.TestCase):
              mock.patch.object(codex_refresh_driver, "group_by_lineage", return_value={"a": actors[:1]}), \
              mock.patch.object(codex_refresh_driver, "refresh_if_due", side_effect=codex_auth_refresh.PageFailed()):
             failed = codex_refresh_driver.refresh(store)
-        self.assertFalse(failed["ok"]); self.assertIs(failed["page_failed"], True)
+        self.assertFalse(failed["ok"])
+        self.assertIs(failed["page_failed"], True)
 
 
 class MigrationTest(unittest.TestCase):
@@ -889,7 +899,8 @@ class MigrationTest(unittest.TestCase):
     def test_fresh_idempotent_and_user_version_at_declared_floor(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "x.sqlite"
-            Database(path).init(); Database(path).init()
+            Database(path).init()
+            Database(path).init()
             with sqlite3.connect(path) as conn:
                 self.assertEqual(conn.execute("pragma user_version").fetchone()[0], LEDGER_SCHEMA_VERSION)
                 self.assertEqual(conn.execute("select count(*) from sqlite_master where name='codex_refresh_claims'").fetchone()[0], 1)

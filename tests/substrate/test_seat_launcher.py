@@ -38,27 +38,37 @@ class SeatLauncherTests(unittest.TestCase):
 
     def test_l1_exec_env_argv_and_warn(self):
         proc = self.run_launcher("some-actor", "--", sys.executable, str(self.probe), "--flag=x", "-v")
-        self.assertEqual(proc.returncode, 0); self.assertIn("warning", proc.stderr)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("warning", proc.stderr)
         got = json.loads(self.result.read_text())
         self.assertEqual(got["argv"], [str(self.probe), "--flag=x", "-v"])
         self.assertEqual(got["env"], {"AGENT_COMMS_ACTOR_ID":"some-actor", "AGENT_COMMS_LAUNCH_KIND":"architect_interactive", "AGENT_COMMS_INSTALL_ROOT":INSTALL_ROOT})
 
     def test_l2_optional_separator(self):
         proc = self.run_launcher("some-actor", sys.executable, str(self.probe), "x")
-        self.assertEqual(proc.returncode, 0); self.assertEqual(json.loads(self.result.read_text())["argv"][-1], "x")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(json.loads(self.result.read_text())["argv"][-1], "x")
 
     def test_l3_bad_usage(self):
         for args in [(), ("",), ("some-actor",)]:
             with self.subTest(args=args):
-                proc = self.run_launcher(*args); self.assertEqual(proc.returncode, 2); self.assertIn("usage:", proc.stderr)
+                proc = self.run_launcher(*args)
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("usage:", proc.stderr)
 
     def test_l4_match(self):
         self.write_config(self.path, [["--actor-id", "some-actor"]])
-        proc = self.run_launcher("some-actor", sys.executable, str(self.probe)); self.assertEqual(proc.returncode, 0); self.assertNotIn("warning", proc.stderr)
+        proc = self.run_launcher("some-actor", sys.executable, str(self.probe))
+        self.assertEqual(proc.returncode, 0)
+        self.assertNotIn("warning", proc.stderr)
 
     def test_l5_mismatch(self):
         self.write_config(self.path, [["--actor-id", "other-actor"]])
-        proc = self.run_launcher("some-actor", sys.executable, str(self.probe)); self.assertEqual(proc.returncode, 3); self.assertIn("some-actor", proc.stderr); self.assertIn("other-actor", proc.stderr); self.assertIn(str(self.config), proc.stderr)
+        proc = self.run_launcher("some-actor", sys.executable, str(self.probe))
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn("some-actor", proc.stderr)
+        self.assertIn("other-actor", proc.stderr)
+        self.assertIn(str(self.config), proc.stderr)
 
     def test_l6_conflict(self):
         self.write_config(self.path, [["--actor-id", "a"], ["--actor-id", "b"]])
@@ -66,10 +76,15 @@ class SeatLauncherTests(unittest.TestCase):
 
     def test_l7_duplicate(self):
         self.write_config(self.path, [["--actor-id", "a", "--actor-id", "a"]])
-        proc = self.run_launcher("a", sys.executable, str(self.probe)); self.assertEqual(proc.returncode, 3); self.assertIn("malformed=True", proc.stderr)
+        proc = self.run_launcher("a", sys.executable, str(self.probe))
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn("malformed=True", proc.stderr)
 
     def test_l8_symlink_realpath(self):
-        real = self.path / "real"; real.mkdir(); link = self.path / "link"; link.symlink_to(real, target_is_directory=True)
+        real = self.path / "real"
+        real.mkdir()
+        link = self.path / "link"
+        link.symlink_to(real, target_is_directory=True)
         self.write_config(real, [["--actor-id", "other"]])
         self.assertEqual(self.run_launcher("wanted", sys.executable, str(self.probe), cwd=link).returncode, 3)
 
@@ -119,11 +134,15 @@ class SeatLauncherTests(unittest.TestCase):
 
     def test_l9_unparseable(self):
         self.config.write_text("{")
-        proc = self.run_launcher("a", sys.executable, str(self.probe)); self.assertEqual(proc.returncode, 0); self.assertIn("parse", proc.stderr)
+        proc = self.run_launcher("a", sys.executable, str(self.probe))
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("parse", proc.stderr)
 
     def test_l10_trailing_flag(self):
         self.write_config(self.path, [["x", "--actor-id"]])
-        proc = self.run_launcher("a", sys.executable, str(self.probe)); self.assertEqual(proc.returncode, 3); self.assertIn("malformed=True", proc.stderr)
+        proc = self.run_launcher("a", sys.executable, str(self.probe))
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn("malformed=True", proc.stderr)
 
     def test_l11_runtime_not_found(self):
         missing = self.path / "nonexistent-runtime"
@@ -135,4 +154,5 @@ class SeatLauncherTests(unittest.TestCase):
         self.assertNotIn("Traceback", proc.stderr)
 
 
-if __name__ == "__main__": unittest.main()
+if __name__ == "__main__":
+    unittest.main()

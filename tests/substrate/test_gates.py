@@ -639,10 +639,11 @@ class LintBaselineTests(unittest.TestCase):
             lines = [line for line in path.read_text().splitlines() if not line.startswith("#")]
             self.assertEqual(lines[0].split("\t")[1], "a.py")
 
-    def test_current_tree_baseline_matches_the_committed_file(self) -> None:
+    def test_current_tree_baseline_is_empty(self) -> None:
+        # The debt was paid down to zero; the committed baseline must stay
+        # empty so that any new finding fails `make lint`.
         baseline = self.lint.load_baseline(GATES / "ruff-baseline.txt")
-        self.assertTrue(baseline)
-        self.assertNotIn(("tests/substrate/test_gates.py", "F401"), baseline)
+        self.assertEqual(baseline, {})
 
 
 class WorkflowPinTests(unittest.TestCase):

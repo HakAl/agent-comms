@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -32,7 +31,8 @@ class ResultSchemaTest(unittest.TestCase):
     def test_delta_manifest_raw_z_counts_metadata_not_pathnames(self) -> None:
         old = b"0" * 40
         new = b"1" * 40
-        metadata = lambda status: b":100644 100644 " + old + b" " + new + b" " + status
+        def metadata(status):
+            return b":100644 100644 " + old + b" " + new + b" " + status
         manifest = (
             metadata(b"A") + b"\0D-leading\0"
             + metadata(b"A") + b"\0D-second\0"
