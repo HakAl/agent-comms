@@ -11,7 +11,6 @@ from __future__ import annotations
 import tests.isolation  # noqa: F401
 
 import ast
-import re
 import unittest
 from pathlib import Path
 
@@ -153,7 +152,35 @@ def top_level_names(source: str) -> set[str]:
     return names
 
 
-FACADE_PATCH = re.compile(r'patch\.object\(\s*supervisor\s*,|["\']agent_comms\.supervisor\.[A-Za-z_]+["\']')
+def facade_patches(source: str) -> list[int]:
+    """Line numbers of calls that patch a name on the facade ``agent_comms.supervisor``.
+
+    Walks the AST, so the multiline ``patch.object(\n    supervisor,\n    "name")``
+    spelling is seen too. Two forms count: ``patch.object(supervisor, ...)`` with
+    the bare module as the target, and ``patch("agent_comms.supervisor.<name>")``.
+    Patching ``supervisor.os`` / ``supervisor.socket`` is the stdlib module itself
+    and stays allowed, as does patching ``supervising.<module>``.
+    """
+    found: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        is_patch_object = isinstance(func, ast.Attribute) and func.attr == "object" and (
+            (isinstance(func.value, ast.Attribute) and func.value.attr == "patch")
+            or (isinstance(func.value, ast.Name) and func.value.id == "patch")
+        )
+        is_patch = (isinstance(func, ast.Attribute) and func.attr == "patch") or (
+            isinstance(func, ast.Name) and func.id == "patch"
+        )
+        target = node.args[0]
+        if is_patch_object and isinstance(target, ast.Name) and target.id == "supervisor":
+            found.append(node.lineno)
+        elif is_patch and isinstance(target, ast.Constant) and isinstance(target.value, str):
+            parts = target.value.split(".")
+            if parts[:2] == ["agent_comms", "supervisor"] and len(parts) == 3:
+                found.append(node.lineno)
+    return found
 
 
 class SupervisingLayeringTest(unittest.TestCase):
@@ -209,10 +236,17 @@ class SupervisingLayeringTest(unittest.TestCase):
         for path in sorted(tests_root.rglob("*.py")):
             if path == Path(__file__).resolve():
                 continue
-            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                if FACADE_PATCH.search(line):
-                    offenders.append(f"{path.relative_to(tests_root)}:{lineno}")
+            for lineno in facade_patches(path.read_text(encoding="utf-8")):
+                offenders.append(f"{path.relative_to(tests_root)}:{lineno}")
         self.assertEqual(offenders, [])
-        self.assertTrue(FACADE_PATCH.search('mock.patch.object(supervisor, "janitor_sweep")'))
-        self.assertTrue(FACADE_PATCH.search('mock.patch("agent_comms.supervisor.janitor_sweep")'))
-        self.assertFalse(FACADE_PATCH.search('mock.patch.object(supervising.janitor, "janitor_sweep")'))
+        # Positive controls, including the repository's multiline spelling.
+        self.assertEqual(facade_patches('mock.patch.object(supervisor, "janitor_sweep")\n'), [1])
+        self.assertEqual(facade_patches('with mock.patch.object(\n    supervisor,\n    "request_halt", return_value=None\n):\n    pass\n'), [1])
+        self.assertEqual(facade_patches('patch.object(supervisor, "janitor_sweep")\n'), [1])
+        self.assertEqual(facade_patches('mock.patch("agent_comms.supervisor.janitor_sweep")\n'), [1])
+        self.assertEqual(facade_patches('patch(\n    "agent_comms.supervisor.janitor_sweep",\n    return_value=[],\n)\n'), [1])
+        # Allowed: the owning module, the stdlib modules reached through the facade, reads.
+        self.assertEqual(facade_patches('mock.patch.object(supervising.janitor, "janitor_sweep")\n'), [])
+        self.assertEqual(facade_patches('mock.patch.object(supervisor.os, "getpgid")\n'), [])
+        self.assertEqual(facade_patches('mock.patch("agent_comms.supervisor.socket.socket")\n'), [])
+        self.assertEqual(facade_patches('x = supervisor.janitor_sweep\n'), [])
