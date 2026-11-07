@@ -58,11 +58,11 @@ must use the real home, such as the probe of the real protected supervisor
 root. Set it from your own shell, never from an agent.
 The guard refuses either of the last two unless every target on the command
 line is under `tests/cells`, so the substrate suite never runs against a
-real home. Without a login the cell tests skip. Other tests skip when the
-host lacks what they need: a certified pin for the platform, `git` or
-`codex` on `PATH`, `/bin/zsh`, a passwd database, a new enough SQLite, or an
-`AF_UNIX` bind the OS sandbox denies (the reason names the missing piece).
-A skip is reported as a skip, never as a pass.
+real home. Without a login the cell tests skip. Other skip reasons include
+a missing certified pin for the platform, no `git` or `codex` on `PATH`, no
+`/bin/zsh`, no passwd database, an old SQLite, an `AF_UNIX` bind the OS
+sandbox denies, or running as root; the skip message names the cause. A
+skip is reported as a skip, never as a pass.
 
 The full suite exercises an MCP client subprocess; it does not require a
 Claude/Codex account. Do not delete or reset live data to make tests pass.
