@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, supervisor
+from agent_comms import supervising
 from agent_comms.adapters.fake import FakeAdapter
 from agent_comms.onboarding import onboard_worker
 from agent_comms.schema import ValidationError
@@ -67,9 +68,9 @@ class OnboardWorkerTest(unittest.TestCase):
         self.control_root = self.tmp / "s"
         self._owned_registry = supervisor.ReaperRegistry()
         self._fixture_cleaned = False
-        with supervisor._REGISTRY_LOCK:
-            self._prior_registry = supervisor._REGISTRY
-            supervisor._REGISTRY = self._owned_registry
+        with supervising.reaper._REGISTRY_LOCK:
+            self._prior_registry = supervising.reaper._REGISTRY
+            supervising.reaper._REGISTRY = self._owned_registry
         self._control_root_patch = mock.patch.dict(
             "os.environ", {supervisor.CONTROL_ROOT_ENV: str(self.control_root)}
         )
@@ -108,15 +109,15 @@ class OnboardWorkerTest(unittest.TestCase):
             self._owned_registry.stop()
             registry_was_owned = False
             try:
-                with supervisor._REGISTRY_LOCK:
-                    registry_was_owned = supervisor._REGISTRY is self._owned_registry
+                with supervising.reaper._REGISTRY_LOCK:
+                    registry_was_owned = supervising.reaper._REGISTRY is self._owned_registry
                     if registry_was_owned:
-                        supervisor._REGISTRY = self._prior_registry
+                        supervising.reaper._REGISTRY = self._prior_registry
             finally:
                 self._control_root_patch.stop()
                 self._tmpdir.cleanup()
             self.assertTrue(registry_was_owned)
-        self.assertIs(supervisor._REGISTRY, self._prior_registry)
+        self.assertIs(supervising.reaper._REGISTRY, self._prior_registry)
 
     def test_onboard_fake_worker_dispatch_replies_and_closes(self) -> None:
         actor_id = "alpha-onboard-fake-worker"

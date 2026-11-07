@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext, DispatchStart
 from agent_comms.adapters._base import ProcessSpawnAdapter, SpawnFailed
 from agent_comms.policies import CompiledPolicy, compile_policy
@@ -50,9 +51,9 @@ def _supervised_ready(pid: int = 4321, capture: dict | None = None):
             capture["child_command"] = [str(part) for part in child_command]
         return _fake_spawn(pid)
 
-    with mock.patch.object(supervisor, "spawn_supervised", side_effect=_spawn) as spawn, mock.patch.object(
-        supervisor, "reaper_registry", return_value=mock.MagicMock()
-    ), mock.patch.object(supervisor, "janitor_sweep", return_value=[]):
+    with mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=_spawn) as spawn, mock.patch.object(
+        supervising.reaper, "reaper_registry", return_value=mock.MagicMock()
+    ), mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]):
         yield spawn
 
 
@@ -99,9 +100,9 @@ def _supervised_launch(*, seed_ledger: bool = False, record_exit: int | None = N
             )
         return _fake_spawn(proc.pid, popen=proc)
 
-    with mock.patch.object(supervisor, "spawn_supervised", side_effect=_spawn) as spawn, mock.patch.object(
-        supervisor, "reaper_registry", return_value=mock.MagicMock()
-    ), mock.patch.object(supervisor, "janitor_sweep", return_value=[]):
+    with mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=_spawn) as spawn, mock.patch.object(
+        supervising.reaper, "reaper_registry", return_value=mock.MagicMock()
+    ), mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]):
         yield spawn
 
 
@@ -226,7 +227,7 @@ class SpawnHardeningTest(unittest.TestCase):
         # temp DB (see ``test_f1_raise_path_never_scans_default_control_root``).
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
             with mock.patch("subprocess.Popen", side_effect=popen), mock.patch.object(
-                supervisor, "janitor_sweep", return_value=[]
+                supervising.janitor, "janitor_sweep", return_value=[]
             ):
                 with self.assertRaises(RuntimeError):
                     TestAdapter().dispatch(_context(Path(temp_dir)))
@@ -259,7 +260,7 @@ class SpawnHardeningTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
             with mock.patch("subprocess.Popen", side_effect=popen), mock.patch.object(
-                supervisor, "janitor_sweep", return_value=[]
+                supervising.janitor, "janitor_sweep", return_value=[]
             ), mock.patch("os.scandir", side_effect=guard_scandir):
                 with self.assertRaises(RuntimeError):
                     TestAdapter().dispatch(_context(Path(temp_dir)))
@@ -352,12 +353,12 @@ class SpawnHardeningTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(paths, "REPO_ROOT", Path(temp_dir)):
             with self.assertRaises(SpawnFailed) as raised:
                 with mock.patch.object(
-                    supervisor,
+                    supervising.spawn,
                     "spawn_supervised",
                     side_effect=supervisor.SupervisorError("bootstrap read failed before READY: broken pipe"),
                 ), mock.patch.object(
-                    supervisor, "reaper_registry", return_value=mock.MagicMock()
-                ), mock.patch.object(supervisor, "janitor_sweep", return_value=[]):
+                    supervising.reaper, "reaper_registry", return_value=mock.MagicMock()
+                ), mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]):
                     TestAdapter().dispatch(_context(Path(temp_dir), spawn=_spawn("raise SystemExit(17)")))
 
         message = str(raised.exception)

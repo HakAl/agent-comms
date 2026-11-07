@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import supervisor
+from agent_comms import supervising
 from agent_comms.adapters._base import ProcessSpawnAdapter, SupervisorUnreachable
 from agent_comms.store import Store
 
@@ -533,7 +534,7 @@ class ControlServerTest(SupervisorTestBase):
                 snapshot["child_dead"] = sup.child.poll() is not None
             return real_send(conn, payload)
 
-        with mock.patch.object(supervisor, "_send_json", capturing_send):
+        with mock.patch.object(supervising.protocol, "_send_json", capturing_send):
             resp = self._roundtrip(
                 sup,
                 {"protocol_version": supervisor.PROTOCOL_VERSION, "run_token": sup.payload.run_token, "op": "HALT"},
@@ -548,7 +549,7 @@ class ControlServerTest(SupervisorTestBase):
 
     def test_halt_refused_on_group_residue_does_not_confirm(self) -> None:
         sup = self._supervisor_with_child()
-        with mock.patch.object(supervisor, "process_group_empty", return_value=False):
+        with mock.patch.object(supervising.process, "process_group_empty", return_value=False):
             resp = self._roundtrip(
                 sup,
                 {"protocol_version": supervisor.PROTOCOL_VERSION, "run_token": sup.payload.run_token, "op": "HALT"},
@@ -563,7 +564,7 @@ class ControlServerTest(SupervisorTestBase):
 
     def test_halt_refused_on_exit_persistence_failure(self) -> None:
         sup = self._supervisor_with_child()
-        with mock.patch.object(supervisor, "record_worker_exit", return_value=False):
+        with mock.patch.object(supervising.evidence, "record_worker_exit", return_value=False):
             resp = self._roundtrip(
                 sup,
                 {"protocol_version": supervisor.PROTOCOL_VERSION, "run_token": sup.payload.run_token, "op": "HALT"},
@@ -605,10 +606,10 @@ class ControlServerTest(SupervisorTestBase):
             events.append("wait:cleanup")
             return real_cleanup(*a, **k)
 
-        with mock.patch.object(supervisor, "terminate_process_tree", ev_terminate), \
-            mock.patch.object(supervisor, "process_group_empty", ev_group), \
-            mock.patch.object(supervisor, "record_worker_exit", ev_record), \
-            mock.patch.object(supervisor, "cleanup_run_dir", ev_cleanup):
+        with mock.patch.object(supervising.process, "terminate_process_tree", ev_terminate), \
+            mock.patch.object(supervising.process, "process_group_empty", ev_group), \
+            mock.patch.object(supervising.evidence, "record_worker_exit", ev_record), \
+            mock.patch.object(supervising.paths, "cleanup_run_dir", ev_cleanup):
             confirmed, _rc, _err = sup._perform_halt()
         self.assertTrue(confirmed)
         self.assertEqual(events, ["wait:terminate", "wait:group", "sql:enter", "sql:exit", "wait:cleanup"])
@@ -919,7 +920,7 @@ class BootstrapHandshakeFailureTest(SupervisorTestBase):
     def test_send_oserror_becomes_supervisor_error_and_tears_down(self) -> None:
         popen = self._fake_wrapper()
         with mock.patch("subprocess.Popen", return_value=popen), mock.patch.object(
-            supervisor, "_send_json", side_effect=BrokenPipeError("broken pipe")
+            supervising.protocol, "_send_json", side_effect=BrokenPipeError("broken pipe")
         ):
             with self.assertRaises(supervisor.SupervisorError) as ctx:
                 self._spawn()
@@ -932,9 +933,9 @@ class BootstrapHandshakeFailureTest(SupervisorTestBase):
     def test_read_oserror_becomes_supervisor_error(self) -> None:
         popen = self._fake_wrapper()
         with mock.patch("subprocess.Popen", return_value=popen), mock.patch.object(
-            supervisor, "_send_json"
+            supervising.protocol, "_send_json"
         ), mock.patch.object(
-            supervisor, "_read_line", side_effect=ConnectionResetError("reset")
+            supervising.protocol, "_read_line", side_effect=ConnectionResetError("reset")
         ):
             with self.assertRaises(supervisor.SupervisorError) as ctx:
                 self._spawn()
@@ -945,8 +946,8 @@ class BootstrapHandshakeFailureTest(SupervisorTestBase):
     def test_malformed_json_ready_becomes_supervisor_error(self) -> None:
         popen = self._fake_wrapper()
         with mock.patch("subprocess.Popen", return_value=popen), mock.patch.object(
-            supervisor, "_send_json"
-        ), mock.patch.object(supervisor, "_read_line", return_value=b"not-json{"):
+            supervising.protocol, "_send_json"
+        ), mock.patch.object(supervising.protocol, "_read_line", return_value=b"not-json{"):
             with self.assertRaises(supervisor.SupervisorError) as ctx:
                 self._spawn()
         self.assertIn("not valid JSON", str(ctx.exception))
@@ -1414,9 +1415,9 @@ class ProcessGroupRaceTest(SupervisorTestBase):
             seen["pgid"] = pgid
             return False
 
-        with mock.patch.object(supervisor, "terminate_process_tree", return_value=0), \
+        with mock.patch.object(supervising.process, "terminate_process_tree", return_value=0), \
             mock.patch.object(supervisor.os, "getpgid", side_effect=ProcessLookupError), \
-            mock.patch.object(supervisor, "process_group_empty", fake_group_empty):
+            mock.patch.object(supervising.process, "process_group_empty", fake_group_empty):
             confirmed, _returncode, error = sup._perform_halt()
         self.assertFalse(confirmed)
         self.assertIn("group", error)
@@ -1768,7 +1769,7 @@ class ReaperSingleOwnerTest(SupervisorTestBase):
         fake_client = mock.Mock()  # connect/settimeout/close are no-op mocks
         boom = RuntimeError("unexpected wrapper-wait failure")
         with mock.patch.object(supervisor.socket, "socket", return_value=fake_client), \
-            mock.patch.object(supervisor, "_halt_over_connection", side_effect=boom):
+            mock.patch.object(supervising.protocol, "_halt_over_connection", side_effect=boom):
             with self.assertRaises(RuntimeError):
                 supervisor.request_halt(
                     "unused-socket-path", token, connect_timeout=0.5, io_timeout=0.5, registry=registry
@@ -1929,7 +1930,7 @@ class RegisteredWrapperReapEvidenceTest(SupervisorTestBase):
             supervisor.record_worker_exit(str(self.db_path), self.dispatch_id, token, returncode=0, source="halt")
         )
         with mock.patch.object(
-            supervisor,
+            supervising.evidence,
             "record_registered_wrapper_reap",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
@@ -1964,7 +1965,7 @@ class RegisteredWrapperReapEvidenceTest(SupervisorTestBase):
             events.append(("persist", registry.find_by_run_token(token) is not None))
             return real_record(*args, **kwargs)
 
-        with mock.patch.object(supervisor, "record_registered_wrapper_reap", spying_record):
+        with mock.patch.object(supervising.evidence, "record_registered_wrapper_reap", spying_record):
             finalized = registry.finalize_claimed(claimed)
         self.assertTrue(finalized)
         self.assertEqual(
@@ -2265,7 +2266,7 @@ class HaltCleanupConfirmationTest(SupervisorTestBase):
             Path(z).rmdir()
             return Path(z).parent
 
-        with mock.patch.object(supervisor, "_cleanup_zdotdir", leaky_zdotdir):
+        with mock.patch.object(supervising.zdotdir, "_cleanup_zdotdir", leaky_zdotdir):
             ok = sup._halt_cleanup()
         self.assertFalse(ok, "residual owned ZDOTDIR parent must refuse confirmation")
         self.assertFalse(run_dir.exists())  # run dir + socket removed (isolates the control)
@@ -2285,7 +2286,7 @@ class HaltCleanupConfirmationTest(SupervisorTestBase):
         # Control: the run-directory gate holds for the confirmation path alongside
         # the socket and ZDOTDIR-parent gates.
         sup, run_dir, _socket_path, _zparent, _zdotdir = self._sup_with_dirs()
-        with mock.patch.object(supervisor, "cleanup_run_dir", lambda rd: None):
+        with mock.patch.object(supervising.paths, "cleanup_run_dir", lambda rd: None):
             ok = sup._halt_cleanup()
         self.assertFalse(ok, "residual run directory must refuse confirmation")
         self.assertTrue(run_dir.exists())
@@ -2542,7 +2543,7 @@ class RevisionSevenReaperRegistryOrderTest(SupervisorTestBase):
             )
             return real_record(*args, **kwargs)
 
-        with mock.patch.object(supervisor, "record_registered_wrapper_reap", spying_record):
+        with mock.patch.object(supervising.evidence, "record_registered_wrapper_reap", spying_record):
             reaped = registry.reap_ready()
         self.assertIn("h", reaped)
         # Cleanup + fresh absence verification must PRECEDE persistence, and
@@ -2604,7 +2605,7 @@ class RevisionSevenReaperRegistryOrderTest(SupervisorTestBase):
             registry2, "h2", d2, child_pgid=self._drained_child_pgid()
         )
         with mock.patch.object(
-            supervisor, "record_registered_wrapper_reap",
+            supervising.evidence, "record_registered_wrapper_reap",
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ):
             self.assertEqual(registry2.reap_ready(), [])
@@ -2627,7 +2628,7 @@ class RevisionSevenReaperRegistryOrderTest(SupervisorTestBase):
             registry, "h", self.dispatch_id, child_pgid=self._drained_child_pgid()
         )
         with mock.patch.object(
-            supervisor, "cleanup_run_dir", side_effect=OSError(16, "resource busy")
+            supervising.paths, "cleanup_run_dir", side_effect=OSError(16, "resource busy")
         ):
             self.assertEqual(
                 registry.reap_ready(), [],
@@ -2668,7 +2669,7 @@ class RevisionSevenReaperRegistryOrderTest(SupervisorTestBase):
                 raise OSError(16, "resource busy")
             return real_cleanup(path)
 
-        with mock.patch.object(supervisor, "cleanup_run_dir", side_effect=flaky_cleanup):
+        with mock.patch.object(supervising.paths, "cleanup_run_dir", side_effect=flaky_cleanup):
             token, _entry, run_dir, _socket, zparent = self._register_drainable(
                 registry, "h", self.dispatch_id, child_pgid=self._drained_child_pgid()
             )
@@ -2814,7 +2815,7 @@ class RevisionSevenF2BypassTest(unittest.TestCase):
             "control_socket": "sock",
             "worker_exit": {"run_token": self.TOKEN, "returncode": 0},
         }
-        with mock.patch.object(supervisor, "request_halt", return_value=unconfirmed):
+        with mock.patch.object(supervising.protocol, "request_halt", return_value=unconfirmed):
             with self.assertRaises(SupervisorUnreachable):
                 adapter._authenticated_halt("h-neg", "sock", self.TOKEN, observed)
         self.assertTrue(parent.exists(), "owned ZDOTDIR must survive an unconfirmed HALT")
@@ -2829,7 +2830,7 @@ class RevisionSevenF2BypassTest(unittest.TestCase):
             "control_socket": "sock",
             "reaper_exit": self._complete_proof(),
         }
-        with mock.patch.object(supervisor, "request_halt", return_value=unconfirmed):
+        with mock.patch.object(supervising.protocol, "request_halt", return_value=unconfirmed):
             adapter2._authenticated_halt("h-pos", "sock", self.TOKEN, observed_ok)
         self.assertFalse(parent2.exists(), "confirmed HALT must clean the owned ZDOTDIR")
         self.assertNotIn("h-pos", adapter2._zdotdirs)

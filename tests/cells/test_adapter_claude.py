@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, runtime_pins, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.policies import compile_policy, scoped_env
@@ -102,9 +103,9 @@ class ClaudeAdapterTest(unittest.TestCase):
             registry = mock.MagicMock()
             with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}), \
                  mock.patch.object(paths, "dispatch_log_path", return_value=root / "worker.log"), \
-                 mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-                 mock.patch.object(supervisor, "reaper_registry", return_value=registry), \
-                 mock.patch.object(supervisor, "spawn_supervised", return_value=_ready_spawn(4321)):
+                 mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+                 mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry), \
+                 mock.patch.object(supervising.spawn, "spawn_supervised", return_value=_ready_spawn(4321)):
                 result = adapter.dispatch(context)
 
             # The stable handle carries the wrapper pid; READY records the control
@@ -116,7 +117,7 @@ class ClaudeAdapterTest(unittest.TestCase):
             self.assertEqual(result.observed_values["run_token"], RUN_TOKEN)
 
             with mock.patch.object(
-                supervisor,
+                supervising.protocol,
                 "request_halt",
                 return_value=supervisor.ControlResult(ok=True, state="halted", returncode=0),
             ) as halt:

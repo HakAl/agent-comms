@@ -40,7 +40,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import doctor, mcp_clients, paths, supervisor
+from . import doctor, mcp_clients, paths, supervising
 from . import runtimes as runtime_registry
 from .actor_config import bootstrap_store, load_actor_config
 from .fsutil import atomic_write_text
@@ -327,7 +327,7 @@ def run_setup(
     # The ledger path is persisted in client configs that run from other
     # directories, so it is absolute from here on.
     db_path = Path(os.path.abspath(os.path.expanduser(str(db_path))))
-    too_long = supervisor.control_root_problem()
+    too_long = supervising.paths.control_root_problem()
     if too_long:
         raise ValidationError(too_long)
 

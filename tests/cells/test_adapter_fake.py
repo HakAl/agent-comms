@@ -14,6 +14,7 @@ from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.fake import FakeAdapter
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 from agent_comms import supervisor
+from agent_comms import supervising
 from tests.isolation import cert_scratch_base
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,9 +75,9 @@ class FakeAdapterTest(unittest.TestCase):
     def isolated_real_spawn(self, root: Path):
         control_root = root / "s"
         owned_registry = supervisor.ReaperRegistry()
-        with supervisor._REGISTRY_LOCK:
-            prior_registry = supervisor._REGISTRY
-            supervisor._REGISTRY = owned_registry
+        with supervising.reaper._REGISTRY_LOCK:
+            prior_registry = supervising.reaper._REGISTRY
+            supervising.reaper._REGISTRY = owned_registry
         try:
             with mock.patch.dict(
                 os.environ,
@@ -98,10 +99,10 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertFalse(control_root.exists() and any(control_root.iterdir()))
             finally:
                 owned_registry.stop()
-                with supervisor._REGISTRY_LOCK:
-                    self.assertIs(supervisor._REGISTRY, owned_registry)
-                    supervisor._REGISTRY = prior_registry
-            self.assertIs(supervisor._REGISTRY, prior_registry)
+                with supervising.reaper._REGISTRY_LOCK:
+                    self.assertIs(supervising.reaper._REGISTRY, owned_registry)
+                    supervising.reaper._REGISTRY = prior_registry
+            self.assertIs(supervising.reaper._REGISTRY, prior_registry)
 
     def assert_test_control_root(self, started: dict, control_root: Path) -> None:
         observed = started["observed_values"]

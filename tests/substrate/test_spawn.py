@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, runtime_pins, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.claude import (
     ClaudeAdapter,
@@ -110,9 +111,9 @@ def _supervised_capture(captured: dict, pid: int = 4321):
             run_dir=f"/nonexistent/run/s/{run_token}",
         )
 
-    with mock.patch.object(supervisor, "spawn_supervised", side_effect=_spawn) as spawn, mock.patch.object(
-        supervisor, "reaper_registry", return_value=mock.MagicMock()
-    ), mock.patch.object(supervisor, "janitor_sweep", return_value=[]):
+    with mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=_spawn) as spawn, mock.patch.object(
+        supervising.reaper, "reaper_registry", return_value=mock.MagicMock()
+    ), mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]):
         yield spawn
 
 

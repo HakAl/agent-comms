@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import CodexAdapter
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
@@ -107,10 +108,10 @@ class CodexAdapterTest(unittest.TestCase):
                 # seam launches the child with (the seam production uses); no
                 # AF_UNIX bind is needed to prove the adapter wiring.
                 with mock.patch.object(paths, "dispatch_log_path", return_value=root / "worker.log"), \
-                     mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-                     mock.patch.object(supervisor, "reaper_registry", return_value=registry), \
+                     mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+                     mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry), \
                      mock.patch.object(
-                         supervisor, "spawn_supervised", return_value=_ready_spawn(4300 + index)
+                         supervising.spawn, "spawn_supervised", return_value=_ready_spawn(4300 + index)
                      ) as spawn:
                     adapter.dispatch(context)
                 spawn_envs.append((str(codex_home), spawn.call_args.kwargs["env"]))
@@ -260,9 +261,9 @@ class CodexAdapterTest(unittest.TestCase):
 
             registry = mock.MagicMock()
             with mock.patch.object(paths, "dispatch_log_path", return_value=root / "worker.log"), \
-                 mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-                 mock.patch.object(supervisor, "reaper_registry", return_value=registry), \
-                 mock.patch.object(supervisor, "spawn_supervised", return_value=_ready_spawn(4321)):
+                 mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+                 mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry), \
+                 mock.patch.object(supervising.spawn, "spawn_supervised", return_value=_ready_spawn(4321)):
                 result = adapter.dispatch(context)
 
             # The stable handle carries the wrapper pid; READY records the control
@@ -274,7 +275,7 @@ class CodexAdapterTest(unittest.TestCase):
             self.assertEqual(result.observed_values["run_token"], RUN_TOKEN)
 
             with mock.patch.object(
-                supervisor,
+                supervising.protocol,
                 "request_halt",
                 return_value=supervisor.ControlResult(ok=True, state="halted", returncode=0),
             ) as halt:

@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 30
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "db6c5efb97a3055ec85960128a54b8bfa9942bc1ed03bd7730bb0dde4b84d6e4"
+    "6b639af6ad0b4cfd171391e937b50afdd7862fd08f7a8aff467574674bf815f3"
 )
 
 
@@ -70,6 +70,7 @@ INCLUDED_GLOBS = (
     "agent_comms/policies/*.py",
     "agent_comms/hooks/*.py",
     "agent_comms/runtimes/*.py",
+    "agent_comms/supervising/*.py",
 )
 CONTRACT_GOVERNING = frozenset(
     {
@@ -112,6 +113,16 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/spawn.py",
         "agent_comms/store.py",
         "agent_comms/supervisor.py",
+        "agent_comms/supervising/__init__.py",
+        "agent_comms/supervising/evidence.py",
+        "agent_comms/supervising/janitor.py",
+        "agent_comms/supervising/paths.py",
+        "agent_comms/supervising/process.py",
+        "agent_comms/supervising/protocol.py",
+        "agent_comms/supervising/reaper.py",
+        "agent_comms/supervising/server.py",
+        "agent_comms/supervising/spawn.py",
+        "agent_comms/supervising/zdotdir.py",
         "agent_comms/terminal_statuses.py",
     }
 )
