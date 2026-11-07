@@ -25,6 +25,7 @@ from .mailbox import Mailbox
 from . import paths
 from .policies import WORKER_DISPATCH_POLICY_VERSION
 from .schema import ValidationError
+from . import settlement_plan
 
 LOG = logging.getLogger(__name__)
 WORKER_DISPATCH_POLICY = "worker_dispatch_readwrite_bounded"
@@ -2656,8 +2657,6 @@ class DispatchLedger:
         returns the literal execution command. The secret is used ONLY as the
         HMAC key: it is never returned, printed, or persisted.
         """
-        from .cli import settlement_plan  # deferred: avoids a cli<->store import cycle
-
         # No init(): a dry-run must not create or migrate anything. An absent
         # ledger is a clean refusal that leaves the filesystem untouched.
         if not self._db.db_path.exists():
@@ -2742,8 +2741,6 @@ class DispatchLedger:
         verified secret is used ONLY as the HMAC key; it is never returned,
         persisted, or surfaced in an error.
         """
-        from .cli import settlement_plan  # deferred: avoids a cli<->store import cycle
-
         # Validate the ENTIRE plan (release acknowledgement, structure, strict
         # encoding, signature, canonical JSON, and actor/dispatch binding) BEFORE
         # any Database initialization or connection, so a missing acknowledgement

@@ -7,6 +7,7 @@ import sys
 
 from . import runtimes
 from .policies import compile_policy
+from .protection import require_unprotected_or_override
 from .schema import ValidationError
 from .store import WORKER_DISPATCH_POLICY
 
@@ -102,8 +103,6 @@ def rerender_spawns(
     override_protected=None,
 ) -> dict:
     """Plan and optionally apply the operator's bounded template update."""
-    from .cli._helpers import require_unprotected_or_override
-
     if (actor_id is None) == (runtime is None):
         raise ValidationError(f"select one actor or --runtime {' or '.join(_rerenderable())}")
     if runtime is not None and runtime not in _rerenderable():

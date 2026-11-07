@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from . import paths, provisioning
+from .protection import require_unprotected_or_override
 from .schema import ValidationError, identity_to_path_segment
 from .spawn import render_spawn
 from .store import Store
@@ -185,8 +186,6 @@ def _preflight(
     repo_root: Path,
     override_protected: str | None,
 ) -> dict | None:
-    from .cli._helpers import require_unprotected_or_override
-
     override_payload = None
     if any(actor["id"] == actor_id for actor in store.list_actors()):
         protection = store.actor_protection(actor_id)

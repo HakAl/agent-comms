@@ -22,8 +22,9 @@ covered. Expiry is exactly five minutes after issue.
 
 This module is pure and stdlib-only. It performs no I/O, reads no clock, and
 makes no DB decision; callers pass ``issued_at`` / ``nonce`` / ``now`` and the
-admin credential explicitly. Classified off the dispatch spawn path via the
-existing ``agent_comms/cli/**`` contract-surface exclusion.
+admin credential explicitly. It is CONTRACT_GOVERNING: ``dispatch_ledger``
+calls ``verify_plan``, ``plan_is_expired`` and ``plan_fingerprint`` to gate a
+ledger state transition, so this primitive decides ledger behavior.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from ..schema import ValidationError
+from .schema import ValidationError
 
 PLAN_VERSION = "v1"
 

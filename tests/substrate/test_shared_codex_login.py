@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import cli, paths, provisioning, setup
-from agent_comms.cli._helpers import bootstrap_store
+from agent_comms.actor_config import bootstrap_store
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store
 

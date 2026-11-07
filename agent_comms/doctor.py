@@ -43,7 +43,7 @@ from .checks import (  # noqa: F401 - doctor's names for callers and tests
     sh,
 )
 from .actors import OPERATOR_ACTOR_ENV
-from .cli._helpers import load_actor_config
+from .actor_config import load_actor_config
 from .db import LEDGER_SCHEMA_VERSION, Database
 from .dispatch_ledger import DISPATCH_TERMINAL_STATUSES
 from .monitor import heartbeat_is_fresh

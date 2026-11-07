@@ -27,7 +27,7 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import re
 import unittest
 
-from agent_comms.cli import settlement_plan as sp
+from agent_comms import settlement_plan as sp
 from agent_comms.schema import ValidationError
 
 SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

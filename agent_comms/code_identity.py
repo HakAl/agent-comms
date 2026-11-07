@@ -19,7 +19,7 @@ CONTRACT_VERSION: int = 30
 # a CONTRACT_GOVERNING file refreshes CONTRACT_SURFACE_DIGEST (the canonical
 # contract_surface_digest() over that surface) and keeps the version.
 CONTRACT_SURFACE_DIGEST = (
-    "c5fb8cba2e2518b30ad123de069fbb21f6ea9d929659294297192868c1fbe8f3"
+    "db6c5efb97a3055ec85960128a54b8bfa9942bc1ed03bd7730bb0dde4b84d6e4"
 )
 
 
@@ -49,12 +49,14 @@ INCLUDED_EXPLICIT = frozenset(
         "agent_comms/param_leak.py",
         "agent_comms/paths.py",
         "agent_comms/payload.py",
+        "agent_comms/protection.py",
         "agent_comms/reviewing/git_evidence.py",
         "agent_comms/reviewing/intents.py",
         "agent_comms/reviewing/reply_snapshots.py",
         "agent_comms/runtime_pins.json",
         "agent_comms/runtime_pins.py",
         "agent_comms/schema.py",
+        "agent_comms/settlement_plan.py",
         "agent_comms/spawn.py",
         "agent_comms/store.py",
         "agent_comms/supervisor.py",
@@ -95,6 +97,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/param_leak.py",
         "agent_comms/paths.py",
         "agent_comms/payload.py",
+        "agent_comms/protection.py",
         "agent_comms/policies/__init__.py",
         "agent_comms/reviewing/git_evidence.py",
         "agent_comms/reviewing/intents.py",
@@ -105,6 +108,7 @@ CONTRACT_GOVERNING = frozenset(
         "agent_comms/runtimes/claude.py",
         "agent_comms/runtimes/codex.py",
         "agent_comms/schema.py",
+        "agent_comms/settlement_plan.py",
         "agent_comms/spawn.py",
         "agent_comms/store.py",
         "agent_comms/supervisor.py",
@@ -124,6 +128,7 @@ CONTRACT_NEUTRAL_REASONS = {
 }
 EXCLUDED_WITH_REASON = {
     "agent_comms/cli/**": "admin and operator CLI surface; after DEFAULT_DB decoupling it is not server-imported",
+    "agent_comms/actor_config.py": "registry loading and actor bootstrap for setup, doctor and the operator CLI; off the dispatch spawn path",
     "agent_comms/custody.py": "operator CLI helper that fills runtime custody; dispatch verifies through governed runtime_pins, off the dispatch spawn path",
     "agent_comms/codex_refresh_driver.py": "post-expiry auth refresh pass started by the monitor, off the dispatch spawn path",
     "agent_comms/monitor.py": "separate cron/operator reconciliation process, off the dispatch spawn path",
