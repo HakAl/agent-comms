@@ -190,7 +190,7 @@ class CodexLineageConcurrencyTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {
             "AGENT_COMMS_CODEX_SPAWN_FRESHNESS_MARGIN_SECONDS": "100",
         }):
-            row = self._dispatch("worker-a", "unsatisfiable", ttl=604699)
+            self._dispatch("worker-a", "unsatisfiable", ttl=604699)
         adapter = Adapter()
         with mock.patch.dict(
             "os.environ",
@@ -270,7 +270,7 @@ class CodexLineageConcurrencyTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {
             "AGENT_COMMS_CODEX_SPAWN_FRESHNESS_MARGIN_SECONDS": "100",
         }):
-            row = self._dispatch("worker-a", "divergent", ttl=604699)
+            self._dispatch("worker-a", "divergent", ttl=604699)
         adapter = Adapter()
         with mock.patch.dict(
             "os.environ",
@@ -290,7 +290,7 @@ class CodexLineageConcurrencyTest(unittest.TestCase):
         self.assertEqual(len(self.store.list_inbox("arch")), 1)
 
     def test_active_refresh_lease_holds_then_release_promotes(self):
-        queued = self._dispatch("worker-a", "lease")
+        self._dispatch("worker-a", "lease")
         with self.store.connection() as conn:
             key = conn.execute("select auth_lineage_key from dispatch_ledger").fetchone()[0]
             conn.execute("insert into codex_refresh_claims(lineage_key,holder,claimed_at) values(?,?,?)",

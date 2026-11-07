@@ -71,7 +71,6 @@ from pathlib import Path
 from agent_comms import schema
 from agent_comms.dispatch_ledger import (
     CANCELLATION_AUTHORITIES,
-    CANCELLATION_REASON_MAX,
     DISPATCH_TERMINAL_STATUSES,
     SETTLEMENT_FAILURE_REASON,
     SETTLEMENT_KEY,
@@ -621,7 +620,6 @@ class MonitorSupervisorTerminalizationJoinTest(_StoreBase):
         false_bool["native_process_group_drained"] = False
         bool_version = _complete_proof(run_token)
         bool_version["proof_version"] = True
-        worker_exit_only = None  # no reaper_exit at all; a bare worker_exit is insufficient
 
         cases = {
             "wrong_token": {"reaper_exit": wrong_token},

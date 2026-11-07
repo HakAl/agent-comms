@@ -3,7 +3,6 @@ from __future__ import annotations
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import contextlib
-import json
 import os
 import shlex
 import subprocess

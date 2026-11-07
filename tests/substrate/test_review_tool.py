@@ -17,12 +17,10 @@ import types
 import unittest
 import hashlib
 import fcntl
-import threading
-import time
 from pathlib import Path
 from unittest import mock
 
-from agent_comms import delta_manifest, mailbox, review
+from agent_comms import delta_manifest, review
 from agent_comms.reviewing import (
     approval,
     checks,
@@ -3147,7 +3145,9 @@ raise SystemExit(review.main([
     def evidence_clean(self, dispatch_id: str = "D-ev", *, required: bool = False, legacy: str = "") -> Path:
         dod = self.evidence_dod(required=required, legacy=legacy)
         if required:
-            self.align_integration(); self.to_dispatched(dispatch_id, dod=dod); self.work_commit(f"{dispatch_id}\n")
+            self.align_integration()
+            self.to_dispatched(dispatch_id, dod=dod)
+            self.work_commit(f"{dispatch_id}\n")
             self.run_review("mark-executed", "--dispatch-id", dispatch_id)
             self.run_review("gates", "--dispatch-id", dispatch_id, "--check", "green", "--skip", "runtime-cert", "--reason", "external cert", "--risk", "bound below")
             self.run_review("clean", "--dispatch-id", dispatch_id)
@@ -3160,17 +3160,26 @@ raise SystemExit(review.main([
         self.evidence_clean("D-ev1")
         with mock.patch.object(approval, "read_tty_confirmation") as tty:
             rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev1", "--key", str(key))
-        self.assertNotEqual(rc, 0); self.assertIn("runtime", err); self.assertIn("missing evidence payload", err); tty.assert_not_called()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("runtime", err)
+        self.assertIn("missing evidence payload", err)
+        tty.assert_not_called()
 
     def test_evidence_t2_required_true_skip_does_not_bind(self) -> None:
-        key = self.enable_approval_signing(); self.evidence_clean("D-ev2", required=True)
+        key = self.enable_approval_signing()
+        self.evidence_clean("D-ev2", required=True)
         with mock.patch.object(approval, "read_tty_confirmation") as tty:
             rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev2", "--key", str(key))
-        self.assertNotEqual(rc, 0); self.assertIn("missing evidence payload", err); tty.assert_not_called()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("missing evidence payload", err)
+        tty.assert_not_called()
 
     def test_evidence_t3_attach_hash_and_approve(self) -> None:
-        key = self.enable_approval_signing(); self.evidence_clean("D-ev3"); log = self.evidence_log()
-        rc, _out, err = self.attach_evidence("D-ev3", log); self.assertEqual(rc, 0, err)
+        key = self.enable_approval_signing()
+        self.evidence_clean("D-ev3")
+        log = self.evidence_log()
+        rc, _out, err = self.attach_evidence("D-ev3", log)
+        self.assertEqual(rc, 0, err)
         payload = self.record("D-ev3")["dod"][1]["evidence_payload"]
         self.assertEqual(
             payload["log_sha256"], review.hashlib.sha256(log.read_bytes()).hexdigest()
@@ -3181,63 +3190,104 @@ raise SystemExit(review.main([
             self.run_review("approve", "--dispatch-id", "D-ev3", "--key", str(key))
 
     def test_evidence_t4_tamper_refuses_with_both_digests(self) -> None:
-        key = self.enable_approval_signing(); self.evidence_clean("D-ev4"); log = self.evidence_log(); self.attach_evidence("D-ev4", log)
-        expected = self.record("D-ev4")["dod"][1]["evidence_payload"]["log_sha256"]; log.write_text("tampered\n", encoding="utf-8")
+        key = self.enable_approval_signing()
+        self.evidence_clean("D-ev4")
+        log = self.evidence_log()
+        self.attach_evidence("D-ev4", log)
+        expected = self.record("D-ev4")["dod"][1]["evidence_payload"]["log_sha256"]
+        log.write_text("tampered\n", encoding="utf-8")
         measured = review.hashlib.sha256(log.read_bytes()).hexdigest()
         rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev4", "--key", str(key))
-        self.assertNotEqual(rc, 0); self.assertIn(expected, err); self.assertIn(measured, err)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(expected, err)
+        self.assertIn(measured, err)
 
     def test_evidence_t5_removed_log_refuses(self) -> None:
-        key = self.enable_approval_signing(); self.evidence_clean("D-ev5"); log = self.evidence_log(); self.attach_evidence("D-ev5", log); log.unlink()
+        key = self.enable_approval_signing()
+        self.evidence_clean("D-ev5")
+        log = self.evidence_log()
+        self.attach_evidence("D-ev5", log)
+        log.unlink()
         rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev5", "--key", str(key))
-        self.assertNotEqual(rc, 0); self.assertIn(f"evidence log missing {log.resolve()}", err)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(f"evidence log missing {log.resolve()}", err)
 
     def test_evidence_t6_input_refusals_are_typed(self) -> None:
-        self.evidence_clean("D-ev6"); head = self.record("D-ev6")["reviewed_head"]
+        self.evidence_clean("D-ev6")
+        head = self.record("D-ev6")["reviewed_head"]
         cases = [("--log", str(self.root / "missing")), ("--runtime-version", " "), ("--counts", " "), ("--head", "BAD")]
         for flag, value in cases:
             argv = ["evidence", "--dispatch-id", "D-ev6", "--criterion-id", "runtime", "--log", str(self.evidence_log()), "--runtime-version", "v", "--counts", "c", "--head", head]
             argv[argv.index(flag) + 1] = value
             rc, _out, err = self.run_review_capture(*argv)
-            self.assertNotEqual(rc, 0); self.assertIn(flag, err); self.assertNotIn("Traceback", err)
+            self.assertNotEqual(rc, 0)
+            self.assertIn(flag, err)
+            self.assertNotIn("Traceback", err)
         unreadable = self.evidence_log()
         with mock.patch.object(review.os, "access", return_value=False):
             rc, _out, err = self.attach_evidence("D-ev6", unreadable)
-        self.assertNotEqual(rc, 0); self.assertIn("--log", err); self.assertNotIn("Traceback", err)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--log", err)
+        self.assertNotIn("Traceback", err)
         with mock.patch.object(Path, "open", side_effect=PermissionError("denied")):
             with self.assertRaisesRegex(review.ReviewError, "cannot read evidence log"):
                 review.file_sha256(unreadable, "test")
 
     def test_evidence_t7_unknown_and_executable_targets_refuse(self) -> None:
-        self.evidence_clean("D-ev7"); log = self.evidence_log()
+        self.evidence_clean("D-ev7")
+        log = self.evidence_log()
         for criterion, needles in (("missing", ("runtime",)), ("unit", ("executable check_ids", "evidence-only check_ids"))):
             rc, _out, err = self.attach_evidence("D-ev7", log, criterion_id=criterion)
             self.assertNotEqual(rc, 0)
-            for needle in needles: self.assertIn(needle, err)
+            for needle in needles:
+                self.assertIn(needle, err)
 
     def test_evidence_t8_state_gate(self) -> None:
-        self.open_review("D-ev8", dod=self.evidence_dod()); log = self.evidence_log(); head = "a" * 40
+        self.open_review("D-ev8", dod=self.evidence_dod())
+        log = self.evidence_log()
+        head = "a" * 40
         for state in ("drafted_brief", "brief_reviewed", "dispatched"):
-            record = self.record("D-ev8"); record["state"] = state; record["reviewed_head"] = head; self.write_record(record, "D-ev8")
-            rc, _out, err = self.attach_evidence("D-ev8", log); self.assertNotEqual(rc, 0); self.assertIn("partial execution evidence", err)
+            record = self.record("D-ev8")
+            record["state"] = state
+            record["reviewed_head"] = head
+            self.write_record(record, "D-ev8")
+            rc, _out, err = self.attach_evidence("D-ev8", log)
+            self.assertNotEqual(rc, 0)
+            self.assertIn("partial execution evidence", err)
         self.to_clean_with_work("D-ev8-bound", text="evidence state fixture\n",
                                 dod=self.evidence_dod(), checks=("green",))
         for state in ("executed", "execution_reviewed", "review_clean"):
-            record = self.record("D-ev8-bound"); record["state"] = state; self.write_record(record, "D-ev8-bound")
-            rc, _out, err = self.attach_evidence("D-ev8-bound", log); self.assertEqual(rc, 0, err)
+            record = self.record("D-ev8-bound")
+            record["state"] = state
+            self.write_record(record, "D-ev8-bound")
+            rc, _out, err = self.attach_evidence("D-ev8-bound", log)
+            self.assertEqual(rc, 0, err)
 
     def test_evidence_t9_reattach_preserves_detached_history(self) -> None:
-        self.evidence_clean("D-ev9"); first = self.evidence_log("first\n"); second = self.evidence_log("second\n")
-        self.attach_evidence("D-ev9", first); old = dict(self.record("D-ev9")["dod"][1]["evidence_payload"]); self.attach_evidence("D-ev9", second)
+        self.evidence_clean("D-ev9")
+        first = self.evidence_log("first\n")
+        second = self.evidence_log("second\n")
+        self.attach_evidence("D-ev9", first)
+        old = dict(self.record("D-ev9")["dod"][1]["evidence_payload"])
+        self.attach_evidence("D-ev9", second)
         events = [e for e in self.record("D-ev9")["history"] if e["event"] == "evidence"]
-        self.assertEqual(len(events), 2); self.assertEqual(events[0]["payload"], old); self.assertNotEqual(events[1]["payload"], old)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["payload"], old)
+        self.assertNotEqual(events[1]["payload"], old)
 
     def test_evidence_t10_head_validation_precedes_record_io_and_wrong_head_refuses(self) -> None:
-        log = self.evidence_log(); missing_lock = self.review_root / "NO-RECORD.lock"
+        log = self.evidence_log()
+        missing_lock = self.review_root / "NO-RECORD.lock"
         rc, _out, err = self.run_review_capture("evidence", "--dispatch-id", "NO-RECORD", "--criterion-id", "runtime", "--log", str(log), "--runtime-version", "v", "--counts", "c", "--head", "BAD")
-        self.assertNotEqual(rc, 0); self.assertIn("--head", err); self.assertFalse(missing_lock.exists())
-        self.evidence_clean("D-ev10"); wrong = self.git("rev-parse", "HEAD~1")
-        rc, _out, err = self.attach_evidence("D-ev10", log, head=wrong); self.assertNotEqual(rc, 0); self.assertIn(wrong, err); self.assertIn(self.record("D-ev10")["reviewed_head"], err)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--head", err)
+        self.assertFalse(missing_lock.exists())
+        self.evidence_clean("D-ev10")
+        wrong = self.git("rev-parse", "HEAD~1")
+        rc, _out, err = self.attach_evidence("D-ev10", log, head=wrong)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(wrong, err)
+        self.assertIn(self.record("D-ev10")["reviewed_head"], err)
 
     def test_evidence_t11_executable_only_approves_without_payload(self) -> None:
         key = self.enable_approval_signing()
@@ -3250,14 +3300,19 @@ raise SystemExit(review.main([
             self.run_review("approve", "--dispatch-id", "D-ev11", "--key", str(key))
 
     def test_evidence_t12_legacy_string_ignored_and_untouched(self) -> None:
-        key = self.enable_approval_signing(); self.evidence_clean("D-ev12", legacy="human says green")
-        rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev12", "--key", str(key)); self.assertNotEqual(rc, 0)
-        self.attach_evidence("D-ev12", self.evidence_log()); self.assertEqual(self.record("D-ev12")["dod"][1]["evidence"], "human says green")
+        key = self.enable_approval_signing()
+        self.evidence_clean("D-ev12", legacy="human says green")
+        rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev12", "--key", str(key))
+        self.assertNotEqual(rc, 0)
+        self.attach_evidence("D-ev12", self.evidence_log())
+        self.assertEqual(self.record("D-ev12")["dod"][1]["evidence"], "human says green")
 
     def test_evidence_t13_system_python_malformed_head(self) -> None:
         checkout = Path(__file__).resolve().parents[2]
         proc = subprocess.run([sys.executable, "-m", "agent_comms.review", "evidence", "--dispatch-id", "NO-EVIDENCE-T13", "--criterion-id", "x", "--log", str(self.evidence_log()), "--runtime-version", "v", "--counts", "c", "--head", "BAD"], cwd=checkout, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(proc.returncode, 1); self.assertIn("review: error:", proc.stderr); self.assertIn("--head", proc.stderr)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("review: error:", proc.stderr)
+        self.assertIn("--head", proc.stderr)
         self.assertFalse((checkout / "local" / "dispatch" / "reviews" / "NO-EVIDENCE-T13.lock").exists())
 
     def test_evidence_t14_gate_merge_reverifies_tamper_and_accepts_untampered(
@@ -3280,17 +3335,27 @@ raise SystemExit(review.main([
         self.assertEqual(self.record("D-ev14")["state"], "merge_eligible")
 
     def test_evidence_t15_open_unknown_enum_leaves_no_artifacts(self) -> None:
-        dod = self.root / "bad-dod.json"; dod.write_text(json.dumps([{"id": "custom", "check_id": "custom-cert"}]), encoding="utf-8")
+        dod = self.root / "bad-dod.json"
+        dod.write_text(json.dumps([{"id": "custom", "check_id": "custom-cert"}]), encoding="utf-8")
         rc, _out, err = self.run_review_capture("open", "--dispatch-id", "D-ev15", "--brief", str(self.brief), "--dod", str(dod), "--repo", str(self.repo))
         self.assertNotEqual(rc, 0)
-        for needle in ("custom", "custom-cert", "executable check_ids", "evidence-only check_ids"): self.assertIn(needle, err)
-        self.assertFalse((self.review_root / "D-ev15.json").exists()); self.assertFalse((self.review_root / "D-ev15.lock").exists())
+        for needle in ("custom", "custom-cert", "executable check_ids", "evidence-only check_ids"):
+            self.assertIn(needle, err)
+        self.assertFalse((self.review_root / "D-ev15.json").exists())
+        self.assertFalse((self.review_root / "D-ev15.lock").exists())
 
     def test_evidence_t16_open_accepts_mixed_enums(self) -> None:
-        self.open_review("D-ev16", dod=self.evidence_dod()); self.assertEqual([c["check_id"] for c in self.record("D-ev16")["dod"]], ["green", "runtime-cert"])
+        self.open_review("D-ev16", dod=self.evidence_dod())
+        self.assertEqual([c["check_id"] for c in self.record("D-ev16")["dod"]], ["green", "runtime-cert"])
 
     def test_evidence_t17_stale_payload_head_refuses_approve_and_gate_merge(self) -> None:
-        self.evidence_clean("D-ev17"); self.attach_evidence("D-ev17", self.evidence_log()); record = self.record("D-ev17"); old = record["reviewed_head"]; new = "f" * 40; record["reviewed_head"] = new; self.write_record(record, "D-ev17")
+        self.evidence_clean("D-ev17")
+        self.attach_evidence("D-ev17", self.evidence_log())
+        record = self.record("D-ev17")
+        old = record["reviewed_head"]
+        new = "f" * 40
+        record["reviewed_head"] = new
+        self.write_record(record, "D-ev17")
         rc, _out, err = self.run_review_capture("approve", "--dispatch-id", "D-ev17")
         self.assertNotEqual(rc, 0)
         self.assertIn(old, err)
@@ -5172,9 +5237,10 @@ raise SystemExit(review.main([
         self.assertEqual(
             self.record("A2")["state"], "dispatched"
         )
-        mutant = lambda _manifest: (
-            14, {"M": 2, "A": 4, "D": 4, "r": 2, "T": 1, "t": 1}
-        )
+        def mutant(_manifest):
+            return (
+                14, {"M": 2, "A": 4, "D": 4, "r": 2, "T": 1, "t": 1}
+            )
         with mock.patch.object(delta_manifest, "parse_raw_z_manifest", mutant):
             rc, _, stderr = self._run_review_raw(
                 "mark-executed", "--dispatch-id", "A2"
@@ -5203,7 +5269,6 @@ raise SystemExit(review.main([
             for index in range(0, len(tokens), 2)
         }
         self.assertEqual(actual_paths, expected_paths)
-        closeout = self.record("A3")
         rc, _, stderr = self._run_review_raw(
             "mark-executed", "--dispatch-id", "A3"
         )

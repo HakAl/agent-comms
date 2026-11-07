@@ -27,7 +27,6 @@ import unittest
 from pathlib import Path
 
 from agent_comms.adapters import DispatchContext, DispatchStart
-from agent_comms.dispatch_ledger import ConcurrencyError
 from agent_comms.store import Store
 
 
