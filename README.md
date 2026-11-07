@@ -34,7 +34,9 @@ process. Humans and scripts use the `agent-comms` CLI.
 - **Gates.** `make gate` runs hygiene, lint, the isolated test suite, a
   fresh-clone preverify and an install smoke test of the wheel. `make hooks`
   installs a pre-push hook that runs hygiene and lint on the commits about
-  to be published. CI mirrors the same checks on macOS.
+  to be published. CI runs hygiene, lint, the suite and the install smoke
+  test on macOS (preverify stays local: CI already is a fresh clone), plus
+  the `make claude-seat` check and an informational Linux probe.
 
 Release 0.2.0 was walked through on a clean Mac against milestone 1 of
 [the roadmap](docs/ROADMAP.md) (macOS); the commands and results are in
@@ -84,12 +86,16 @@ be exercised by a test or by the install smoke test
 make test
 ```
 
-Every test process runs in a scratch home and never touches `~/.agent-comms`.
-Tests that need a real runtime login are skipped and reported as skipped.
-`make gate` runs every check a push must pass, and `make hooks` installs
-the pre-push hook that enforces hygiene and lint at push time. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the gates, and how to report a
-failure.
+Every test process runs in a scratch home and never touches `~/.agent-comms`;
+how the guard works, and its switches, are in
+[CONTRIBUTING.md](CONTRIBUTING.md#development-setup-and-tests). A test that
+needs something the host lacks (a runtime login, a certified pin for the
+platform, a tool such as `git` or `codex` on `PATH`, `/bin/zsh`, or an
+`AF_UNIX` bind the sandbox denies) is skipped and reported as skipped, never
+counted as passing. `make gate` runs every check a push must pass, and
+`make hooks` installs the pre-push hook that enforces hygiene and lint at
+push time. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the gates, and
+how to report a failure.
 
 ## License
 

@@ -11,7 +11,8 @@ outside this repository is a prerequisite.
 
 ## Development setup and tests
 
-Use Python 3.11 or newer, Git, and `uv`. From a development checkout:
+Use CPython 3.11 or 3.14 (the tested interpreters; other versions below),
+Git, and `uv`. From a development checkout:
 
 ```sh
 uv sync --extra test
@@ -57,14 +58,17 @@ must use the real home, such as the probe of the real protected supervisor
 root. Set it from your own shell, never from an agent.
 The guard refuses either of the last two unless every target on the command
 line is under `tests/cells`, so the substrate suite never runs against a
-real home. Without a login the cell tests skip, and a skip is reported as a
-skip, never as a pass.
+real home. Without a login the cell tests skip. Other skip reasons include
+a missing certified pin for the platform, no `git` or `codex` on `PATH`, no
+`/bin/zsh`, no passwd database, an old SQLite, an `AF_UNIX` bind the OS
+sandbox denies, or running as root; the skip message names the cause. A
+skip is reported as a skip, never as a pass.
 
 The full suite exercises an MCP client subprocess; it does not require a
 Claude/Codex account. Do not delete or reset live data to make tests pass.
 
 The docs are under test too. `tests/substrate/test_docs_commands.py` reads
-every fenced `sh` block in README.md, CONTRIBUTING.md, AGENTS.md and
+every fenced `sh` or `bash` block in README.md, CONTRIBUTING.md, AGENTS.md and
 `docs/*.md`, parses each `agent-comms`, `agent-comms-mcp`,
 `agent-comms-monitor` and `agent-comms-seat` command against the real
 parser (and the command's preflight rules), and requires its command path
@@ -121,9 +125,13 @@ config.
 
 The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint,
 the test matrix, install-smoke and claude-seat on every pull request and push
-to `main`. It is a mirror of the local gates on a fresh macOS runner, not a
-gate in front of the push: a failure there means something already public
-needs fixing. The claude-seat job installs Claude Code at the version pinned
+to `main`. It is a mirror of the local gates on a fresh macOS runner (minus
+preverify, since CI already is a fresh clone), not a gate in front of the
+push: a failure there means something already public needs fixing. A
+`linux-probe` job runs hygiene, lint and the suite on Ubuntu with
+`continue-on-error`; it measures what Linux support still needs (the
+roadmap's milestone 2), and its red result does not fail the run. The
+claude-seat job installs Claude Code at the version pinned
 in `agent_comms/runtime_pins.json` with the official installer, so it also
 re-checks the pinned client's behavior on every change. The test and
 claude-seat jobs

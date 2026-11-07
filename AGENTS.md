@@ -72,8 +72,10 @@ Record facts and paths, not reasoning. Recheck them after resuming.
 ## Repository rules
 
 - Tests use stdlib `unittest` and temporary directories only: never the real
-  home directory, a real mailbox, or the source tree. Tests that need real
-  runtime logins are skipped and reported as skipped, never counted as passing.
+  home directory, a real mailbox, or the source tree. Tests that need what
+  the host lacks (a runtime login, a certified platform pin, a tool on
+  `PATH`, a sandbox permission) are skipped and reported as skipped, never
+  counted as passing.
 - Keep dependencies minimal; justify any new one.
 - Nothing may depend on a maintainer's private checkout, paths, actors,
   credentials, or runtime state. Keep secrets and personal configuration out
