@@ -3,22 +3,20 @@
 Owns the repo-local review paths, the UTC timestamp, the atomic JSON/text
 writes, the record read, the summary serialization, the persistence step, the
 brief-drift revert transaction, the record lock, and the state guard. It
-depends only on the standard library, ``agent_comms.paths``, and the
-``agent_comms.reviewing`` contracts and brief policy leaves.
+depends only on the standard library, ``agent_comms.paths``,
+``agent_comms.fsutil``, and the ``agent_comms.reviewing`` contracts and brief
+policy leaves.
 """
 
 from __future__ import annotations
 
-import contextlib
 import fcntl
 import json
-import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-from agent_comms import paths
+from agent_comms import fsutil, paths
 from agent_comms.reviewing.contracts import (
     PRE_APPROVAL_STATES,
     Paths,
@@ -55,36 +53,14 @@ def review_paths(dispatch_id: str) -> Paths:
 
 
 def atomic_write_json(path: Path, record: dict[str, Any]) -> None:
+    """The record write: creates the parent, then the package's fsynced replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(record, fh, indent=2, sort_keys=True)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
+    fsutil.atomic_write_json(path, record)
 
 
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
+    fsutil.atomic_write_text(path, text)
 
 
 def read_record(dispatch_id: str) -> dict[str, Any]:

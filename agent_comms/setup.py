@@ -43,6 +43,7 @@ from pathlib import Path
 from . import doctor, mcp_clients, paths, supervisor
 from . import runtimes as runtime_registry
 from .cli._helpers import bootstrap_store, load_actor_config
+from .fsutil import atomic_write_text
 from .runtime_pins import PlatformNotCertified, current_platform, pin_for
 from .schema import ValidationError, validate_actor_id_for_kind
 from .spawn import ALLOWED_RUNTIMES
@@ -114,15 +115,6 @@ def detect_runtimes(which: Callable[[str], str | None] = shutil.which) -> list[s
 def console_ask(prompt: str, default: str) -> str:
     answer = input(f"{prompt} [{default}]: ").strip()
     return answer or default
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.new")
-    try:
-        tmp.write_text(text)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def _seed_from_live_ledger(store: Store, db_path: Path) -> None:
@@ -288,7 +280,7 @@ def bind_seat(
     ledger = doctor.LedgerRef(db_path, db_explicit)
     applied, pending = apply_seats(target, states, ledger, which=which, run=run)
     record_seat(document, architect, client, states[client].holder)
-    _write_atomic(config_path, json.dumps(document, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(config_path, json.dumps(document, indent=2, sort_keys=True) + "\n")
     return {
         "ok": not pending,
         "architect": architect,
@@ -483,7 +475,7 @@ def run_setup(
     rendered = json.dumps(document, indent=2, sort_keys=True) + "\n"
     _dry_run_bootstrap(rendered, config_path, db_path)
     paths.runtime_root().mkdir(parents=True, exist_ok=True)
-    _write_atomic(config_path, rendered)
+    atomic_write_text(config_path, rendered)
 
     # --- ledger and worker homes ------------------------------------------
     bootstrap_store(store, config_path, codex_custody=True)

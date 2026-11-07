@@ -28,6 +28,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .fsutil import file_sha256
+
 RUNTIME_PINS_PATH = Path(__file__).with_name("runtime_pins.json")
 RUNTIME_PINS_SCHEMA = 2
 CLAUDE_VERSIONS_DIR_ENV = "AGENT_COMMS_CLAUDE_VERSIONS_DIR"
@@ -224,7 +226,7 @@ def bundle_manifest(root: Path) -> list[list[str]]:
                     walk(path)
                 elif item.is_file(follow_symlinks=False):
                     mode = "755" if item.stat(follow_symlinks=False).st_mode & 0o100 else "644"
-                    entries.append([rel, mode, _file_sha256(path)])
+                    entries.append([rel, mode, file_sha256(path)])
                 else:
                     raise BundleNotDigestible(f"unsupported file type in bundle: {rel}")
 
@@ -246,11 +248,3 @@ def codex_bundle_digest_matches(bundle: Path, expected_sha256: str | None = None
         return bundle_sha256(bundle) == expected
     except (BundleNotDigestible, OSError):
         return False
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
