@@ -4,7 +4,9 @@ From nothing to a dispatch that a worker answers, on one Mac. Part 1 needs no
 model login and takes a few minutes; it is the path CI proves on every change
 (`make install-smoke`). Part 2 adds your real runtimes.
 
-Requirements: macOS, Python 3.11 or newer, Git, and
+Requirements: macOS, Python 3.11 or newer (3.11 and 3.14 are the tested
+interpreters; see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup-and-tests)
+before using another), Git, and
 [uv](https://docs.astral.sh/uv/). Words such as actor, team, seat and
 dispatch are defined in [concepts.md](concepts.md); you do not need that
 page to finish this one.

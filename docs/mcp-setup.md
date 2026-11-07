@@ -6,12 +6,12 @@ terminals.
 
 ## Prerequisites
 
-1. Install [uv](https://docs.astral.sh/uv/).
-2. Sync the environment:
-   ```sh
-   uv sync
-   ```
-3. Set up a team; this registers the actors and binds the architect seat
+1. Install the package. [quickstart.md](quickstart.md#1-install) is the one
+   place that describes it: a wheel built from a clone and installed with
+   `uv tool install`, or `uv sync` in a development checkout. This page
+   uses the checkout form (`.venv/bin/...`); with the installed package drop
+   the `.venv/bin/` prefix.
+2. Set up a team; this registers the actors and binds the architect seat
    in the clients you name:
    ```sh
    .venv/bin/agent-comms setup --project-root /absolute/path/to/your/project \
