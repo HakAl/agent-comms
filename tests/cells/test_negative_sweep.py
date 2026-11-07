@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.cli import bootstrap_store
@@ -473,10 +474,10 @@ class NegativeSweepTest(unittest.TestCase):
             registry = mock.MagicMock()
             with mock.patch.dict(os.environ, claude_pin_env(root)), \
                  mock.patch.object(paths, "dispatch_log_path", return_value=root / "worker.log"), \
-                 mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-                 mock.patch.object(supervisor, "reaper_registry", return_value=registry), \
+                 mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+                 mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry), \
                  mock.patch.object(
-                     supervisor, "spawn_supervised", return_value=_ready_spawn(4321)
+                     supervising.spawn, "spawn_supervised", return_value=_ready_spawn(4321)
                  ) as spawn:
                 adapter.dispatch(context)
 

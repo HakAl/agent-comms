@@ -21,6 +21,7 @@ from unittest import mock
 
 from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
 from agent_comms import cli, codex_binding, codex_hook, doctor, mcp_clients, paths, provisioning, setup, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import CodexAdapter, McpBindingMismatch, PolicyHookUnverified
 from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
@@ -493,9 +494,9 @@ class WorkerBindingTest(_Project):
         )
         with mock.patch.object(paths, "dispatch_log_path", return_value=self.root / "worker.log"), \
                 mock.patch.object(paths, "dispatch_events_path", return_value=self.root / "events.jsonl"), \
-                mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-                mock.patch.object(supervisor, "reaper_registry", return_value=mock.MagicMock()), \
-                mock.patch.object(supervisor, "spawn_supervised", return_value=spawned) as spawn:
+                mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+                mock.patch.object(supervising.reaper, "reaper_registry", return_value=mock.MagicMock()), \
+                mock.patch.object(supervising.spawn, "spawn_supervised", return_value=spawned) as spawn:
             result = adapter.dispatch(self.context)
         return adapter, spawn, result
 
@@ -569,7 +570,7 @@ class WorkerBindingTest(_Project):
                 self.with_stored(*extra)
                 runner = StubCodex(resolved(binding))
                 with self.assertRaisesRegex(McpBindingMismatch, "stored spawn args for t-codex-worker set agent-comms with -c"), \
-                        mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                        mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
                     self.dispatch(runner)
                 spawn.assert_not_called()
                 self.assertEqual(runner.calls, [])
@@ -630,7 +631,7 @@ class WorkerBindingTest(_Project):
             (StubHooks(returncode=127), "exited 127"),
         ):
             with self.subTest(expected), self.assertRaisesRegex(PolicyHookUnverified, expected), \
-                    mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                    mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
                 self.dispatch(StubCodex(resolved(binding)), hooks)
             spawn.assert_not_called()
 
@@ -646,7 +647,7 @@ class WorkerBindingTest(_Project):
                 self.with_stored(*extra)
                 runner, hooks = StubCodex(resolved(binding)), StubHooks()
                 with self.assertRaisesRegex(PolicyHookUnverified, "stored spawn args for t-codex-worker set hooks"), \
-                        mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                        mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
                     self.dispatch(runner, hooks)
                 spawn.assert_not_called()
                 self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
@@ -660,7 +661,7 @@ class WorkerBindingTest(_Project):
                 self.with_stored(*extra)
                 runner, hooks = StubCodex(resolved(CodexAdapter().mcp_binding(self.context))), StubHooks()
                 with self.assertRaisesRegex(PolicyHookUnverified, "--dangerously-bypass-hook-trust"), \
-                        mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                        mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
                     self.dispatch(runner, hooks)
                 spawn.assert_not_called()
                 self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
@@ -799,8 +800,8 @@ class RealCodexResolutionTest(_Project):
         )
         with mock.patch.object(paths, "dispatch_log_path", return_value=self.root / "worker.log"), \
                 mock.patch.object(paths, "dispatch_events_path", return_value=self.root / "events.jsonl"), \
-                mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-                mock.patch.object(supervisor, "spawn_supervised", side_effect=AssertionError("started")) as started:
+                mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+                mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=AssertionError("started")) as started:
             try:
                 CodexAdapter().dispatch(context)
             finally:

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import custody, paths, runtime_pins
+from agent_comms import supervising
 from agent_comms.cli import run as cli_run
 from agent_comms.custody import CustodyError, fill_codex_custody
 from agent_comms.runtime_pins import BundleNotDigestible, bundle_manifest, bundle_sha256
@@ -286,7 +287,6 @@ class AdapterCustodyTest(unittest.TestCase):
     def dispatch(self, mutate=None):  # type: ignore[no-untyped-def]
         from datetime import timedelta
 
-        from agent_comms import supervisor
         from agent_comms.adapters.codex import CodexAdapter
         from tests.substrate.test_codex_auth_preflight import NOW, _codex_context, _write_auth
 
@@ -297,7 +297,7 @@ class AdapterCustodyTest(unittest.TestCase):
             mutate(context.recipient["spawn"])
         with mock.patch.object(CodexAdapter, "_now_utc", return_value=NOW), \
                 mock.patch.object(CodexAdapter, "_binding_preflight", return_value=None), \
-                mock.patch.object(supervisor, "spawn_supervised") as spawn:
+                mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
             try:
                 CodexAdapter().dispatch(context)
             finally:
@@ -354,10 +354,9 @@ class AdapterCustodyTest(unittest.TestCase):
         self.assertFalse(self.spawned)
 
     def test_the_custody_binary_is_what_starts(self) -> None:
-        from agent_comms import supervisor
 
-        with mock.patch.object(supervisor, "reaper_registry", return_value=mock.MagicMock()), \
-                mock.patch.object(supervisor, "janitor_sweep", return_value=[]):
+        with mock.patch.object(supervising.reaper, "reaper_registry", return_value=mock.MagicMock()), \
+                mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]):
             from datetime import timedelta
 
             from agent_comms.adapters.codex import CodexAdapter
@@ -367,7 +366,7 @@ class AdapterCustodyTest(unittest.TestCase):
             _write_auth(home, timedelta(hours=1))
             with mock.patch.object(CodexAdapter, "_now_utc", return_value=NOW), \
                     mock.patch.object(CodexAdapter, "_binding_preflight", return_value=None), \
-                    mock.patch.object(supervisor, "spawn_supervised", return_value=_fake_supervised()) as spawn:
+                    mock.patch.object(supervising.spawn, "spawn_supervised", return_value=_fake_supervised()) as spawn:
                 CodexAdapter().dispatch(_codex_context(self.root, home))
         self.assertEqual(spawn.call_args.args[0][0], str(self.binary))
 

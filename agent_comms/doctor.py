@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import mcp_clients, paths, supervisor
+from . import mcp_clients, paths, supervising
 from . import runtimes as runtime_registry
 from .checks import (  # noqa: F401 - doctor's names for callers and tests
     FAIL,
@@ -167,8 +167,8 @@ def check_runtime_root(root: Path, control_root: Path | None = None) -> dict:
     ``control_root`` (default: ``root/run/s``, or wherever
     ``AGENT_COMMS_SUPERVISOR_ROOT`` moves it)."""
     if control_root is None:
-        control_root = supervisor.control_root() if os.environ.get(supervisor.CONTROL_ROOT_ENV) else root / "run" / "s"
-    too_long = supervisor.control_root_problem(control_root)
+        control_root = supervising.paths.control_root() if os.environ.get(supervising.paths.CONTROL_ROOT_ENV) else root / "run" / "s"
+    too_long = supervising.paths.control_root_problem(control_root)
     if too_long:
         return check("runtime_root", FAIL, too_long, f"set {paths.HOME_ENV} to a shorter absolute path and rerun setup there")
     if not root.exists() and not root.is_symlink():

@@ -43,8 +43,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import agent_comms.dispatch_ledger as dispatch_ledger
-from agent_comms import supervisor
+from agent_comms import supervisor, terminal_statuses
 from agent_comms.store import Store
 
 
@@ -425,13 +424,13 @@ class JanitorConsumesJoinedProjectionTest(unittest.TestCase):
         run_dir = self._owned_dir(token, dispatch_id)
 
         calls: list[tuple] = []
-        real = dispatch_ledger.project_dispatch_transport
+        real = terminal_statuses.project_dispatch_transport
 
         def spy(dispatch_status, transport_status):
             calls.append((dispatch_status, transport_status))
             return real(dispatch_status, transport_status)
 
-        with mock.patch.object(dispatch_ledger, "project_dispatch_transport", spy):
+        with mock.patch.object(terminal_statuses, "project_dispatch_transport", spy):
             record = self._sweep_record(run_dir)
 
         # The exact raw joined pair was supplied from the live ledger/transport.
@@ -469,7 +468,7 @@ class JanitorConsumesJoinedProjectionTest(unittest.TestCase):
         _set_status(self.store, dispatch_id, "dlq")
         run_dir = self._owned_dir(token, dispatch_id)
         with mock.patch.object(
-            dispatch_ledger, "project_dispatch_transport", self._fixed_projection("queued", "queued")
+            terminal_statuses, "project_dispatch_transport", self._fixed_projection("queued", "queued")
         ):
             record = self._sweep_record(run_dir)
         self.assertEqual(record["action"], "preserved")
@@ -493,7 +492,7 @@ class JanitorConsumesJoinedProjectionTest(unittest.TestCase):
         # ledger status stays the seeded "queued".
         run_dir = self._owned_dir(token, dispatch_id)
         with mock.patch.object(
-            dispatch_ledger, "project_dispatch_transport", self._fixed_projection("closed", "closed")
+            terminal_statuses, "project_dispatch_transport", self._fixed_projection("closed", "closed")
         ):
             record = self._sweep_record(run_dir)
         self.assertEqual(record["action"], "removed")

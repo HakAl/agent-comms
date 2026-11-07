@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext, DispatchStart
 from agent_comms.adapters.codex import AuthStale, CODEX_AUTH_STALE_AFTER, CodexAdapter
 from agent_comms.adapters.fake import FakeAdapter
@@ -84,10 +85,10 @@ def _supervised_boundary(pid: int = 4321):
     stays runtime-free.
     """
     with mock.patch.object(
-        supervisor, "spawn_supervised", return_value=_fake_supervised(pid)
+        supervising.spawn, "spawn_supervised", return_value=_fake_supervised(pid)
     ) as spawn, mock.patch.object(
-        supervisor, "reaper_registry", return_value=mock.MagicMock()
-    ), mock.patch.object(supervisor, "janitor_sweep", return_value=[]):
+        supervising.reaper, "reaper_registry", return_value=mock.MagicMock()
+    ), mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]):
         yield spawn
 
 

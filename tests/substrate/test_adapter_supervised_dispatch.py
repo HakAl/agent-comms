@@ -33,6 +33,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import paths, supervisor
+from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters._base import SpawnFailed
 from agent_comms.adapters.fake import FakeAdapter
@@ -127,9 +128,9 @@ class SupervisedDispatchWiringTest(unittest.TestCase):
     def test_ready_path_wires_janitor_spawn_reaper_and_identity(self) -> None:
         adapter = FakeAdapter()
         registry = mock.MagicMock()
-        with mock.patch.object(supervisor, "janitor_sweep", return_value=[]) as janitor, \
-             mock.patch.object(supervisor, "spawn_supervised", return_value=self._ready_spawn()) as spawn, \
-             mock.patch.object(supervisor, "reaper_registry", return_value=registry):
+        with mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]) as janitor, \
+             mock.patch.object(supervising.spawn, "spawn_supervised", return_value=self._ready_spawn()) as spawn, \
+             mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry):
             result = adapter.dispatch(self._context())
 
         # Janitor swept the protected root (default) with this db before spawning.
@@ -174,9 +175,9 @@ class SupervisedDispatchWiringTest(unittest.TestCase):
     def test_ready_path_keeps_zdotdir_for_supervisor(self) -> None:
         adapter = FakeAdapter()
         registry = mock.MagicMock()
-        with mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
-             mock.patch.object(supervisor, "spawn_supervised", return_value=self._ready_spawn()), \
-             mock.patch.object(supervisor, "reaper_registry", return_value=registry), \
+        with mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
+             mock.patch.object(supervising.spawn, "spawn_supervised", return_value=self._ready_spawn()), \
+             mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry), \
              mock.patch.object(FakeAdapter, "_cleanup_zdotdir") as cleanup:
             result = adapter.dispatch(self._context())
         # On READY the adapter does NOT tear the zdotdir down: the supervisor and
@@ -187,12 +188,12 @@ class SupervisedDispatchWiringTest(unittest.TestCase):
     def test_pre_ready_failure_cleans_zdotdir_and_raises_spawnfailed(self) -> None:
         adapter = FakeAdapter()
         registry = mock.MagicMock()
-        with mock.patch.object(supervisor, "janitor_sweep", return_value=[]), \
+        with mock.patch.object(supervising.janitor, "janitor_sweep", return_value=[]), \
              mock.patch.object(
-                 supervisor, "spawn_supervised",
+                 supervising.spawn, "spawn_supervised",
                  side_effect=supervisor.SupervisorError("AF_UNIX bind denied"),
              ), \
-             mock.patch.object(supervisor, "reaper_registry", return_value=registry), \
+             mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry), \
              mock.patch.object(FakeAdapter, "_cleanup_zdotdir") as cleanup:
             with self.assertRaises(SpawnFailed) as ctx:
                 adapter.dispatch(self._context())
@@ -206,9 +207,9 @@ class SupervisedDispatchWiringTest(unittest.TestCase):
     def test_janitor_failure_never_blocks_spawn(self) -> None:
         adapter = FakeAdapter()
         registry = mock.MagicMock()
-        with mock.patch.object(supervisor, "janitor_sweep", side_effect=OSError("sweep boom")), \
-             mock.patch.object(supervisor, "spawn_supervised", return_value=self._ready_spawn()), \
-             mock.patch.object(supervisor, "reaper_registry", return_value=registry):
+        with mock.patch.object(supervising.janitor, "janitor_sweep", side_effect=OSError("sweep boom")), \
+             mock.patch.object(supervising.spawn, "spawn_supervised", return_value=self._ready_spawn()), \
+             mock.patch.object(supervising.reaper, "reaper_registry", return_value=registry):
             result = adapter.dispatch(self._context())
         self.assertEqual(result.spawn_handle, "fake:alpha-fake-worker:4321")
         registry.register.assert_called_once()

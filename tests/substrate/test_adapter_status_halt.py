@@ -20,6 +20,7 @@ from agent_comms.adapters import _base
 from agent_comms.adapters._base import AdapterStatus, SupervisorUnreachable
 from agent_comms.adapters.fake import FakeAdapter
 from agent_comms import supervisor
+from agent_comms import supervising
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE_SOURCE = (ROOT / "agent_comms" / "adapters" / "_base.py").read_text()
@@ -82,7 +83,7 @@ class AdapterStatusTest(unittest.TestCase):
     def test_running_when_status_socket_confirms(self) -> None:
         observed = {"control_socket": SOCKET, "run_token": TOKEN}
         with mock.patch.object(
-            supervisor, "probe_status", return_value=supervisor.ControlResult(ok=True, state="running")
+            supervising.protocol, "probe_status", return_value=supervisor.ControlResult(ok=True, state="running")
         ):
             result = self.adapter.status(HANDLE, observed)
         self.assertEqual(result.state, "running")
@@ -110,7 +111,7 @@ class AdapterHaltTest(unittest.TestCase):
     def test_authenticated_halt_confirmed(self) -> None:
         observed = {"control_socket": SOCKET, "run_token": TOKEN}
         with mock.patch.object(
-            supervisor, "request_halt", return_value=supervisor.ControlResult(ok=True, state="halted", returncode=0)
+            supervising.protocol, "request_halt", return_value=supervisor.ControlResult(ok=True, state="halted", returncode=0)
         ) as halt:
             with mock.patch("os.killpg", side_effect=AssertionError("authenticated halt must not killpg")):
                 self.adapter.halt(HANDLE, observed)
@@ -144,7 +145,7 @@ class AdapterHaltTest(unittest.TestCase):
             },
         }
         with mock.patch.object(
-            supervisor, "request_halt", return_value=supervisor.ControlResult(ok=False, error="connection refused")
+            supervising.protocol, "request_halt", return_value=supervisor.ControlResult(ok=False, error="connection refused")
         ):
             with mock.patch("os.killpg", side_effect=AssertionError("authenticated halt must not killpg")):
                 self.adapter.halt(HANDLE, observed)  # no raise: complete reap proof confirms
@@ -152,7 +153,7 @@ class AdapterHaltTest(unittest.TestCase):
     def test_authenticated_halt_unconfirmed_raises_without_signal(self) -> None:
         observed = {"control_socket": SOCKET, "run_token": TOKEN}
         with mock.patch.object(
-            supervisor, "request_halt", return_value=supervisor.ControlResult(ok=False, error="no response")
+            supervising.protocol, "request_halt", return_value=supervisor.ControlResult(ok=False, error="no response")
         ):
             with mock.patch("os.killpg", side_effect=AssertionError("authenticated halt must not killpg")):
                 with self.assertRaises(SupervisorUnreachable) as ctx:
@@ -168,7 +169,7 @@ class AdapterHaltTest(unittest.TestCase):
             "worker_exit": {"returncode": 0, "run_token": "b" * 32},
         }
         with mock.patch.object(
-            supervisor, "request_halt", return_value=supervisor.ControlResult(ok=False, error="connection refused")
+            supervising.protocol, "request_halt", return_value=supervisor.ControlResult(ok=False, error="connection refused")
         ):
             with mock.patch("os.killpg", side_effect=AssertionError("authenticated halt must not killpg")):
                 with self.assertRaises(SupervisorUnreachable) as ctx:
@@ -182,7 +183,7 @@ class AdapterHaltTest(unittest.TestCase):
             "reaper_exit": {"returncode": 0, "run_token": 42},
         }
         with mock.patch.object(
-            supervisor, "request_halt", return_value=supervisor.ControlResult(ok=False, error="connection refused")
+            supervising.protocol, "request_halt", return_value=supervisor.ControlResult(ok=False, error="connection refused")
         ):
             with self.assertRaises(SupervisorUnreachable):
                 self.adapter.halt(HANDLE, observed)
@@ -191,14 +192,14 @@ class AdapterHaltTest(unittest.TestCase):
         # A handle with no parseable PID must still work through the socket path.
         observed = {"control_socket": SOCKET, "run_token": TOKEN}
         with mock.patch.object(
-            supervisor, "request_halt", return_value=supervisor.ControlResult(ok=True, state="halted")
+            supervising.protocol, "request_halt", return_value=supervisor.ControlResult(ok=True, state="halted")
         ):
             self.adapter.halt("fake:alpha-fake-worker:not-a-pid", observed)
 
     def test_no_control_identity_raises_unreachable_without_signal(self) -> None:
         # Missing supervisor identity is unreachable/unconfirmed and
         # stage-2/manual: there is NO handle-parsed PID / killpg fallback.
-        with mock.patch.object(supervisor, "request_halt", side_effect=AssertionError("no socket, no signal")):
+        with mock.patch.object(supervising.protocol, "request_halt", side_effect=AssertionError("no socket, no signal")):
             with mock.patch("os.killpg", side_effect=AssertionError("no control identity must not killpg")):
                 with self.assertRaises(SupervisorUnreachable) as ctx:
                     self.adapter.halt(HANDLE, None)

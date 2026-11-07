@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
-from . import paths, supervisor
+from . import paths, supervising
 from .adapters.registry import adapter_for
 from .dispatch_ledger import WORKER_DISPATCH_POLICY, is_dispatch_terminal
 from .doctor import LedgerRef
@@ -140,7 +140,7 @@ def _reap(clock: Callable[[], float], sleep: Callable[[float], None]) -> bool:
     would leave the wrapper's exit proof unrecorded. Bounded; ``False`` when a
     wrapper is still registered at the deadline.
     """
-    registry = supervisor.reaper_registry()
+    registry = supervising.reaper.reaper_registry()
     deadline = clock() + REAP_SECONDS
     while True:
         registry.reap_ready()

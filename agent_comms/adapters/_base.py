@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import DispatchContext, DispatchStart
-from .. import paths, supervisor
+from .. import paths, supervising
 from ..policies import compile_policy, scoped_env
 from ..runtime_pins import claude_binary_path, codex_binary_path
 from ..spawn import DEFAULT_WORKER_PROMPT, claude_settings_for_policy
@@ -190,7 +190,7 @@ class ProcessSpawnAdapter:
         # a SQL-terminal run. It never decides lifecycle from the filesystem and
         # never blocks a spawn, so a sweep failure is swallowed on purpose.
         try:
-            supervisor.janitor_sweep(str(context.db_path))
+            supervising.janitor.janitor_sweep(str(context.db_path))
         except Exception:
             pass
 
@@ -215,7 +215,7 @@ class ProcessSpawnAdapter:
                     f"worker artifact open failed: {exc}; log={worker_log}"
                 ) from exc
             try:
-                spawned = supervisor.spawn_supervised(
+                spawned = supervising.spawn.spawn_supervised(
                     child_command,
                     dispatch_id=str(context.dispatch["dispatch_id"]),
                     db_path=str(context.db_path),
@@ -228,7 +228,7 @@ class ProcessSpawnAdapter:
                     stdout=events_file if events_file is not None else log_file,
                     stderr=log_file,
                 )
-            except supervisor.SupervisorError as exc:
+            except supervising.paths.SupervisorError as exc:
                 # Pre-READY failure: the supervisor cleaned its own attempted run
                 # directory and never sent READY. The adapter owns the zdotdir it
                 # created, so it cleans that here and surfaces a spawn failure, so
@@ -255,7 +255,7 @@ class ProcessSpawnAdapter:
         handle = f"{self.runtime_label}:{recipient['id']}:{spawned.popen.pid}"
         self._processes[handle] = spawned.popen
         self._zdotdirs[handle] = zdotdir
-        supervisor.reaper_registry().register(
+        supervising.reaper.reaper_registry().register(
             handle,
             spawned.popen,
             db_path=str(context.db_path),
@@ -280,7 +280,7 @@ class ProcessSpawnAdapter:
                 "child_pid": spawned.child_pid,
                 "run_token": spawned.run_token,
                 "control_socket": spawned.control_socket,
-                "protocol_version": supervisor.PROTOCOL_VERSION,
+                "protocol_version": supervising.paths.PROTOCOL_VERSION,
                 "expected_close_by": context.expected_close_by,
                 "worker_log": str(worker_log),
                 **(
@@ -492,7 +492,7 @@ class ProcessSpawnAdapter:
                 state="supervisor_unreachable",
                 detail="no supervisor control identity in observed values",
             )
-        result = supervisor.probe_status(control_socket, run_token)
+        result = supervising.protocol.probe_status(control_socket, run_token)
         if result.ok and result.state == "running":
             return AdapterStatus(state="running")
         return AdapterStatus(
@@ -538,9 +538,9 @@ class ProcessSpawnAdapter:
         evidence never confirms; otherwise this raises ``SupervisorUnreachable``
         and the caller must not claim native-child death.
         """
-        result = supervisor.request_halt(control_socket, run_token, io_timeout=HALT_IO_TIMEOUT_SECONDS)
+        result = supervising.protocol.request_halt(control_socket, run_token, io_timeout=HALT_IO_TIMEOUT_SECONDS)
         confirmed = result.ok and result.state == "halted"
-        if not confirmed and supervisor.complete_reaper_proof(observed.get("reaper_exit"), run_token) is not None:
+        if not confirmed and supervising.evidence.complete_reaper_proof(observed.get("reaper_exit"), run_token) is not None:
             confirmed = True
         if not confirmed:
             raise SupervisorUnreachable(

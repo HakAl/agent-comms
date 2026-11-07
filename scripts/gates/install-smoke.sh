@@ -133,8 +133,8 @@ mkdir -p "$HOME/.agent-comms" "$space/ledger dir"
 # that never reaches READY.
 export AGENT_COMMS_SUPERVISOR_ROOT="$root/s"
 socket_path_length=$(printf '%s' "$AGENT_COMMS_SUPERVISOR_ROOT/0123456789abcdef0123456789abcdef/s" | wc -c | tr -d ' ')
-sun_path_max=$(sed -n 's/^SUN_PATH_MAX_BYTES = \([0-9]*\)$/\1/p' agent_comms/supervisor.py)
-[ -n "$sun_path_max" ] || fail "could not read SUN_PATH_MAX_BYTES from agent_comms/supervisor.py"
+sun_path_max=$(sed -n 's/^SUN_PATH_MAX_BYTES = \([0-9]*\)$/\1/p' agent_comms/supervising/paths.py)
+[ -n "$sun_path_max" ] || fail "could not read SUN_PATH_MAX_BYTES from agent_comms/supervising/paths.py"
 [ "$socket_path_length" -le "$sun_path_max" ] \
   || fail "supervisor socket path would be $socket_path_length bytes (limit $sun_path_max); run from a checkout at a shorter path"
 uv tool install -q "$wheel" || fail "uv tool install failed"

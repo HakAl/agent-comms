@@ -20,7 +20,8 @@ from pathlib import Path
 from unittest import mock
 
 from tests.codex_custody_support import install_fake_codex_custody, mcp_get_codex_script
-from agent_comms import codex_home, paths, supervisor
+from agent_comms import codex_home, paths
+from agent_comms import supervising
 from agent_comms.adapters.codex import AuthStale, CodexAdapter
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.adapters.fake import FakeAdapter
@@ -361,7 +362,7 @@ class SnapshotTest(ScratchTest):
             )
             with (
                 mock.patch("agent_comms.dispatch_ledger.require_fresh_module"),
-                mock.patch.object(supervisor, "spawn_supervised") as spawn,
+                mock.patch.object(supervising.spawn, "spawn_supervised") as spawn,
             ):
                 row = store.dispatch_agent(
                     "architect",
@@ -745,10 +746,10 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
                 os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}
             ),
             mock.patch.object(
-                supervisor, "spawn_supervised", return_value=self._ready_spawn()
+                supervising.spawn, "spawn_supervised", return_value=self._ready_spawn()
             ),
-            mock.patch.object(supervisor, "janitor_sweep"),
-            mock.patch.object(supervisor, "reaper_registry"),
+            mock.patch.object(supervising.janitor, "janitor_sweep"),
+            mock.patch.object(supervising.reaper, "reaper_registry"),
         ):
             row = self.store._dispatch._start_dispatch_context(
                 lambda _: adapter, context
@@ -782,8 +783,8 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
             mock.patch.object(paths, "dispatch_log_path", return_value=log),
             mock.patch.object(paths, "dispatch_events_path", return_value=events),
             mock.patch.object(Path, "open", open_file),
-            mock.patch.object(supervisor, "janitor_sweep"),
-            mock.patch.object(supervisor, "spawn_supervised", side_effect=error),
+            mock.patch.object(supervising.janitor, "janitor_sweep"),
+            mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=error),
         ):
             with self.assertRaises(OSError) as raised:
                 adapter.dispatch(self._context())
@@ -801,10 +802,10 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
             before = list(conn.execute("select * from messages"))
         with (
             mock.patch.object(
-                supervisor, "spawn_supervised", return_value=self._ready_spawn()
+                supervising.spawn, "spawn_supervised", return_value=self._ready_spawn()
             ),
-            mock.patch.object(supervisor, "janitor_sweep"),
-            mock.patch.object(supervisor, "reaper_registry"),
+            mock.patch.object(supervising.janitor, "janitor_sweep"),
+            mock.patch.object(supervising.reaper, "reaper_registry"),
         ):
             row = self.store._dispatch._start_dispatch_context(
                 lambda _: adapter, context
@@ -858,9 +859,9 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
                 ) as resolution,
                 mock.patch.object(paths, "dispatch_log_path", return_value=log),
                 mock.patch.object(paths, "dispatch_events_path", return_value=events),
-                mock.patch.object(supervisor, "spawn_supervised", side_effect=spawn),
-                mock.patch.object(supervisor, "janitor_sweep"),
-                mock.patch.object(supervisor, "reaper_registry"),
+                mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=spawn),
+                mock.patch.object(supervising.janitor, "janitor_sweep"),
+                mock.patch.object(supervising.reaper, "reaper_registry"),
             ):
                 result = adapter.dispatch(context)
             resolution.assert_called_once()
@@ -915,8 +916,8 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
                         paths, "dispatch_events_path", return_value=events
                     ),
                     mock.patch.object(Path, "open", open_file),
-                    mock.patch.object(supervisor, "janitor_sweep"),
-                    mock.patch.object(supervisor, "spawn_supervised") as spawn,
+                    mock.patch.object(supervising.janitor, "janitor_sweep"),
+                    mock.patch.object(supervising.spawn, "spawn_supervised") as spawn,
                 ):
                     with self.assertRaisesRegex(SpawnFailed, f"injected {failing}"):
                         adapter.dispatch(context)
@@ -948,7 +949,7 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
                         paths, "dispatch_events_path", return_value=events
                     ),
                     mock.patch.object(Path, "open", open_file),
-                    mock.patch.object(supervisor, "janitor_sweep"),
+                    mock.patch.object(supervising.janitor, "janitor_sweep"),
                 ):
                     failed = self.store._dispatch._start_dispatch_context(
                         lambda _: adapter, context
@@ -1025,9 +1026,9 @@ class CodexRoutingTest(ScratchTest):
             mock.patch.object(
                 paths, "dispatch_events_path", return_value=self.root / "worker.events"
             ),
-            mock.patch.object(supervisor, "spawn_supervised", side_effect=spawn),
-            mock.patch.object(supervisor, "janitor_sweep"),
-            mock.patch.object(supervisor, "reaper_registry"),
+            mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=spawn),
+            mock.patch.object(supervising.janitor, "janitor_sweep"),
+            mock.patch.object(supervising.reaper, "reaper_registry"),
         ):
             row = store.dispatch_agent(
                 "architect",
@@ -1160,9 +1161,9 @@ class CodexRoutingTest(ScratchTest):
                 mock.patch.object(paths, "dispatch_log_path", return_value=log),
                 mock.patch.object(paths, "dispatch_events_path", return_value=events),
                 mock.patch.object(CodexAdapter, "_now_utc", return_value=NOW),
-                mock.patch.object(supervisor, "spawn_supervised", side_effect=spawn),
-                mock.patch.object(supervisor, "janitor_sweep"),
-                mock.patch.object(supervisor, "reaper_registry"),
+                mock.patch.object(supervising.spawn, "spawn_supervised", side_effect=spawn),
+                mock.patch.object(supervising.janitor, "janitor_sweep"),
+                mock.patch.object(supervising.reaper, "reaper_registry"),
             ):
                 observed = CodexAdapter().dispatch(ctx).observed_values
             self.assertEqual(observed["codex_auth"]["gaps"], [])

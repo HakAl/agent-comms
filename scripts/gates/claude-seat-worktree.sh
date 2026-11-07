@@ -76,8 +76,8 @@ echo "claude $(claude --version 2>/dev/null | head -1) at $(command -v claude); 
 # path limit (103 bytes on macOS), so the root must be short; a deep checkout
 # fails here with the reason. CLAUDE_SEAT_SCRATCH moves the scratch directory.
 socket_path_length=$(printf '%s' "$AGENT_COMMS_HOME/run/s/0123456789abcdef0123456789abcdef/s" | wc -c | tr -d ' ')
-sun_path_max=$(sed -n 's/^SUN_PATH_MAX_BYTES = \([0-9]*\)$/\1/p' agent_comms/supervisor.py)
-[ -n "$sun_path_max" ] || fail "could not read SUN_PATH_MAX_BYTES from agent_comms/supervisor.py"
+sun_path_max=$(sed -n 's/^SUN_PATH_MAX_BYTES = \([0-9]*\)$/\1/p' agent_comms/supervising/paths.py)
+[ -n "$sun_path_max" ] || fail "could not read SUN_PATH_MAX_BYTES from agent_comms/supervising/paths.py"
 [ "$socket_path_length" -le "$sun_path_max" ] \
   || fail "control socket path would be $socket_path_length bytes (limit $sun_path_max); set CLAUDE_SEAT_SCRATCH to a shorter directory"
 
