@@ -4,17 +4,35 @@ import argparse
 import hmac
 import json
 import os
-import string
-import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .. import paths
+from ..actor_config import bootstrap_store, expand_actor_paths, expand_path_value, load_actor_config
+from ..protection import protected_actor_notice, protected_override_payload, require_unprotected_or_override
 from ..schema import ValidationError
-from ..spawn import render_spawn
 
-if TYPE_CHECKING:
-    from ..store import Store
+# Domain helpers the CLI commands reach through this module; they live in
+# agent_comms.actor_config and agent_comms.protection so no domain module
+# imports from the CLI package.
+__all__ = [
+    "ADMIN_CREDENTIAL_ERROR",
+    "ADMIN_TOKEN_PATH",
+    "DegradedState",
+    "bootstrap_store",
+    "expand_actor_paths",
+    "expand_path_value",
+    "load_actor_config",
+    "load_spawn_arg",
+    "parse_json_object",
+    "print_dispatch_table",
+    "print_json",
+    "print_message_table",
+    "protected_actor_notice",
+    "protected_override_payload",
+    "refs_from_args",
+    "require_admin_credential",
+    "require_unprotected_or_override",
+]
 
 # None means the runtime root's admin-token, resolved at call time; tests
 # patch in a path.
@@ -29,34 +47,6 @@ class DegradedState(Exception):
         super().__init__("degraded state")
         self.payload = payload
         self.already_printed = already_printed
-
-
-def protected_override_payload(protection: dict, reason: str) -> dict:
-    return {"actor_id": protection["id"], "team": protection["team"], "reason": reason}
-
-
-def require_unprotected_or_override(store, actor_id: str, override_reason: str | None) -> dict | None:
-    protection = store.actor_protection(actor_id)
-    if protection is None or not protection["protected"]:
-        return None
-    if override_reason is None or not override_reason.strip():
-        raise ValidationError(
-            f"actor {actor_id} on team {protection['team']} is protected; "
-            "rerun with --override-protected \"<reason>\""
-        )
-    reason = override_reason.strip()
-    print(
-        f"PROTECTED ACTOR OVERRIDE: {actor_id} team={protection['team']} reason={reason}",
-        file=sys.stderr,
-    )
-    return protected_override_payload(protection, reason)
-
-
-def protected_actor_notice(protection: dict) -> None:
-    print(
-        f"protected actor notice: dispatch target {protection['id']} team={protection['team']}",
-        file=sys.stderr,
-    )
 
 
 def parse_json_object(value: str) -> dict:
@@ -182,43 +172,6 @@ def refs_from_args(paths: list[str], summaries: list[str]) -> list[dict[str, str
     return refs
 
 
-def expand_path_value(value: str) -> str:
-    """Expand ``~`` and ``${ENV}`` in a config path value.
-
-    Backward-compatible: a plain absolute path (no ``~``/``$``) is returned
-    unchanged, so existing configs and already-bootstrapped DB rows resolve
-    identically. Lets operators express deployment roots as ``~/dev/X`` or
-    ``${PROJECT_ROOT}`` instead of baking one machine's absolute path
-    into config. Only the process environment is consulted; there is no
-    implicit variable for the agent-comms location, which has no meaning for
-    an installed package.
-
-    A variable that is referenced but unset is a loud failure, not a silently
-    broken ``project_root`` (invariant 5: no silent failure paths).
-    """
-    expanded = os.path.expanduser(string.Template(value).safe_substitute(os.environ))
-    if "$" in expanded:
-        raise ValidationError(
-            f"unresolved environment variable in config path {value!r}; "
-            "set it before bootstrap (e.g. export PROJECT_ROOT=/path/to/repo)"
-        )
-    return expanded
-
-
-def expand_actor_paths(entry: dict) -> dict:
-    """Expand env/~ in an actor's path-bearing fields (in place)."""
-    root = entry.get("project_root")
-    if isinstance(root, str):
-        entry["project_root"] = expand_path_value(root)
-    spawn = entry.get("spawn")
-    if isinstance(spawn, dict) and isinstance(spawn.get("env"), dict):
-        spawn["env"] = {
-            key: expand_path_value(val) if isinstance(val, str) else val
-            for key, val in spawn["env"].items()
-        }
-    return entry
-
-
 def load_spawn_arg(args: argparse.Namespace) -> dict | None:
     if args.spawn_json is not None:
         spawn = args.spawn_json
@@ -231,161 +184,3 @@ def load_spawn_arg(args: argparse.Namespace) -> dict | None:
     entry = {"spawn": spawn}
     expand_actor_paths(entry)
     return entry["spawn"]
-
-
-def load_actor_config(config_path: Path) -> dict:
-    if config_path.exists():
-        config = json.loads(config_path.read_text())
-        for entry in config.get("actors", {}).values():
-            expand_actor_paths(entry)
-        return config
-
-    legacy_path = config_path.with_name("agents.json")
-    if not legacy_path.exists():
-        # A missing registry is an error, not an empty team: bootstrap would
-        # otherwise report success having registered nobody.
-        hint = "start from config/actors.example.json"
-        checkout_config = paths.REPO_ROOT / "config" / "actors.json"
-        if checkout_config.exists():
-            hint = f"the registry now lives under the runtime root; copy {checkout_config} there or pass --config"
-        raise ValidationError(f"actor registry not found at {config_path}; {hint}")
-
-    legacy = json.loads(legacy_path.read_text())
-    actors = {}
-    for agent_id, entry in legacy.get("agents", {}).items():
-        actors[agent_id] = {
-            "kind": "agent",
-            "display_name": agent_id,
-            "team": entry["team"],
-            "role": entry.get("role", "architect"),
-            "project_root": entry["project_root"],
-            "capabilities": entry.get("capabilities", []),
-        }
-        if "runtime" in entry:
-            actors[agent_id]["runtime"] = entry["runtime"]
-        if "spawn" in entry:
-            actors[agent_id]["spawn"] = entry["spawn"]
-        expand_actor_paths(actors[agent_id])
-
-    normalized = {"actors": actors}
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n")
-    print(
-        f"warning: {legacy_path} is deprecated; wrote normalized {config_path}",
-        file=sys.stderr,
-    )
-    return normalized
-
-
-def _is_worker(entry: object) -> bool:
-    return isinstance(entry, dict) and entry.get("kind", "agent") == "agent" and entry.get("role", "architect") == "worker"
-
-
-def bootstrap_store(
-    store: Store,
-    config_path: Path,
-    *,
-    override_protected: str | None = None,
-    override_records: list[dict] | None = None,
-    codex_custody: bool | None = None,
-) -> list[dict]:
-    """Register every actor in the registry; return the registered rows.
-
-    ``codex_custody`` decides where a codex worker's ``CODEX_HOME`` lives.
-    ``True`` provisions the checkout-independent home under the runtime
-    custody root (the same home ``onboard-worker`` and ``provision-codex-home``
-    use on the default ledger) and renders the spawn with it, linking the
-    shared runtime ``auth.json`` even before the first login. ``False`` keeps
-    the legacy ``{codex_home}`` placeholder. ``None`` derives it from the
-    store: the default ledger is custody, an explicit ``--db`` ledger is
-    legacy, so ``agent-comms bootstrap`` after ``agent-comms setup`` does not
-    downgrade the workers setup provisioned.
-    """
-    from .. import provisioning
-
-    if codex_custody is None:
-        codex_custody = bool(store._db.is_default_db_open)
-    config = load_actor_config(config_path)
-    canonical = Path(config_path).expanduser().resolve() == paths.actors_config_path().resolve()
-    registered = []
-    # A worker's owner must already be registered, so workers go last: the
-    # file's order (a sorted one, say) does not decide whether it bootstraps.
-    entries = list(config.get("actors", {}).items())
-    ordered = [item for item in entries if not _is_worker(item[1])] + [item for item in entries if _is_worker(item[1])]
-    if codex_custody:
-        # Workers share the operator's own login, so every Codex worker's
-        # project must stay outside it (an existing registry or a new
-        # CODEX_HOME can put it inside); refused before anything is registered.
-        for actor_id, entry in ordered:
-            if _is_worker(entry) and entry.get("runtime") == "codex" and entry.get("project_root"):
-                provisioning.refuse_shared_login_overlap(entry["project_root"], actor_id=actor_id)
-    for actor_id, entry in ordered:
-        kind = entry.get("kind", "agent")
-        override_payload = None
-        if not canonical:
-            override_payload = require_unprotected_or_override(store, actor_id, override_protected)
-            if override_payload is not None and override_records is not None:
-                override_records.append(override_payload)
-        if kind == "agent":
-            if not entry.get("project_root"):
-                raise ValidationError(f"agent actor {actor_id} requires project_root")
-            if "spawn" in entry:
-                raise ValidationError(
-                    f"agent actor {actor_id} must not define spawn; "
-                    "declare runtime and let render_spawn generate it"
-                )
-            runtime = entry.get("runtime")
-            role = entry.get("role", "architect")
-            if role == "worker" and not entry.get("owner"):
-                raise ValidationError(f"worker actor {actor_id} requires owner")
-            if role != "worker" and "owner" in entry:
-                raise ValidationError(f"owner is only valid for worker actor {actor_id}")
-            codex_home = None
-            if runtime == "codex" and codex_custody:
-                # Workers share the operator's own login: the runtime's shared
-                # file is a link to it, dangling until the first codex login.
-                provisioning.link_shared_codex_auth()
-                home = paths.provisioned_codex_home(actor_id)
-                provisioning.write_codex_home(
-                    home,
-                    actor_id,
-                    entry["project_root"],
-                    auth_source=paths.runtime_codex_auth_source(),
-                    enforce_custody_root=True,
-                    link_absent_source=True,
-                )
-                codex_home = str(home)
-            spawn = render_spawn(runtime, actor_id, codex_home=codex_home) if runtime else None
-            registered.append(
-                store.register_agent_actor(
-                    actor_id,
-                    entry["team"],
-                    role,
-                    entry["project_root"],
-                    entry.get("capabilities", []),
-                    display_name=entry.get("display_name", actor_id),
-                    runtime=runtime,
-                    spawn=spawn,
-                    protected=entry.get("protected", True),
-                    owner=entry.get("owner"),
-                )
-            )
-        else:
-            if "protected" in entry:
-                raise ValidationError(f"non-agent actor {actor_id} must not define: protected")
-            forbidden = {"project_root", "runtime", "spawn", "team", "role", "capabilities", "owner"} & set(entry)
-            if forbidden:
-                fields = ", ".join(sorted(forbidden))
-                raise ValidationError(f"non-agent actor {actor_id} must not define: {fields}")
-            if not entry.get("display_name"):
-                raise ValidationError(f"{kind} actor {actor_id} requires display_name")
-            registered.append(
-                store.register_actor(
-                    actor_id,
-                    kind,
-                    entry["display_name"],
-                    system_class=entry.get("system_class"),
-                    system_instance=entry.get("system_instance"),
-                )
-            )
-    return registered

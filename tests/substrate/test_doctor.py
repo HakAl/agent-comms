@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_comms import cli, codex_binding, doctor, mcp_clients, paths, runtime_pins
-from agent_comms.cli._helpers import bootstrap_store
+from agent_comms.actor_config import bootstrap_store
 from agent_comms.db import LEDGER_SCHEMA_VERSION
 from agent_comms.runtime_pins import RuntimePin, bundle_sha256, codex_versions_dir
 from agent_comms.store import Store

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from agent_comms.adapters import DispatchStart
-from agent_comms.cli import settlement_plan
+from agent_comms import settlement_plan
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store
 

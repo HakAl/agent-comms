@@ -42,7 +42,7 @@ from pathlib import Path
 
 from . import doctor, mcp_clients, paths, supervisor
 from . import runtimes as runtime_registry
-from .cli._helpers import bootstrap_store, load_actor_config
+from .actor_config import bootstrap_store, load_actor_config
 from .fsutil import atomic_write_text
 from .runtime_pins import PlatformNotCertified, current_platform, pin_for
 from .schema import ValidationError, validate_actor_id_for_kind

@@ -47,7 +47,7 @@ from unittest import mock
 
 from agent_comms import cli
 from agent_comms.cli import _helpers
-from agent_comms.cli import settlement_plan as sp
+from agent_comms import settlement_plan as sp
 from agent_comms.dispatch_ledger import (
     CancellationConflictError,
     SETTLEMENT_FAILURE_REASON,

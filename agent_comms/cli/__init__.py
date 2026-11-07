@@ -13,7 +13,7 @@ from ._helpers import (
     load_actor_config,
     print_json,
 )
-from .settlement_plan import SettlementPlanError
+from ..settlement_plan import SettlementPlanError
 
 __all__ = [
     "ADMIN_CREDENTIAL_ERROR",

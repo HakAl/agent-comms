@@ -4,7 +4,7 @@
 every test module starts with ``import tests.isolation`` before any
 ``agent_comms`` import (``tests/substrate/test_isolation.py`` enforces this).
 The guard therefore runs before ``agent_comms.paths``, ``agent_comms.supervisor``
-or ``agent_comms.cli._helpers`` can compute a path from the real
+or ``agent_comms.actor_config`` can compute a path from the real
 ``Path.home()``, whichever directory unittest discovery treats as top level.
 Any invocation is isolated, including a bare
 ``python -m unittest discover -s tests/substrate`` typed without the
