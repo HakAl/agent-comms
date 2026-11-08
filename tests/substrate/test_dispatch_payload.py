@@ -3181,37 +3181,80 @@ class StagingCustodyTest(PayloadHarness):
         self.assertEqual(published.path.read_bytes(), PAYLOAD_BYTES)
         self.assertEqual(decoy.read_bytes(), b"attacker decoy bytes")
 
-    def test_staged_entry_replacement_before_link_refuses_and_removes_link(self) -> None:
+    def test_staged_entry_replacement_before_link_refuses_and_leaves_the_entry(self) -> None:
         # The adversary replaces the staged entry inside the REAL staging
         # directory with a different inode between write and link. The link
         # itself cannot be redirected, but the linked inode is no longer the
-        # verified one: the independent post-link verification against the
-        # retained staged-file FD must remove exactly the entry this call
-        # linked and refuse before durability or SQL success, with zero
-        # committed rows end to end.
+        # verified one. The call observes only "the leaf is not the staged
+        # inode", which is also what a post-link replacement of a correct
+        # link looks like (next test), so it cannot prove it owns the entry:
+        # it must leave the entry in place as explicit, audit-measurable
+        # residue and refuse with cleanup uncertainty before durability or
+        # SQL success (Lookout R3-F1).
         self.write_source("brief.md")
         capture = payload.capture_source(self.producer_root, "brief.md")
+        before = {int(name) for name in os.listdir("/dev/fd")}
         staged = payload.stage_payload(self.store_root, capture.data)
         staged_entry = staged.path
+        substitute = b"Q" * len(PAYLOAD_BYTES)
 
         def replace(rel_path: str) -> None:
             if staged_entry.exists():
                 staged_entry.unlink()
-                staged_entry.write_bytes(b"Q" * len(PAYLOAD_BYTES))
+                staged_entry.write_bytes(substitute)
 
         with mock.patch.object(payload, "_before_final_link", side_effect=replace):
             with self.assertRaises(payload.PayloadError) as caught:
                 payload.publish_final(self.store_root, staged, capture)
+        self.assertEqual({int(name) for name in os.listdir("/dev/fd")}, before)
+        self.assertEqual(caught.exception.code, "cleanup_uncertain")
         message = str(caught.exception)
-        self.assertTrue(message.startswith("dispatch_payload_publish_failed"))
-        self.assertIn("not the", message)
+        self.assertIn("not the verified staged payload inode", message)
+        self.assertIn("left in place", message)
         self.assertNotIn(LEAK_CANARY, message)
-        # The linked replacement was removed from the canonical digest path
-        # and nothing was published or left staged.
-        self.assertFalse(self.blob_path(capture.sha256).exists())
-        self.assertEqual(self.blob_files(), [])
+        # The unverified entry survives at the canonical digest path, nothing
+        # was left staged, and the read-only audit measures the residue.
+        self.assertEqual(self.blob_path(capture.sha256).read_bytes(), substitute)
         self.assertEqual(self.staging_files(), [])
+        self.assertFalse(payload.audit_store(self.db_path)["ok"])
 
+    def test_leaf_replaced_after_link_before_verification_survives(self) -> None:
+        # Lookout R3-F1: os.link links the correct staged inode, then the
+        # adversary replaces the final leaf before the first verification.
+        # The observation is identical to the pre-link substitution above;
+        # deleting the leaf here would destroy bytes this call never created,
+        # so the replacement must survive with typed uncertainty, zero SQL
+        # rows, staging discarded and every descriptor released.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        replacement = b"attacker replacement before first verification"
+        real_link = os.link
+        seen: dict[str, object] = {}
+
+        def link_then_replace(*args, **kwargs):
+            real_link(*args, **kwargs)
+            linked = blob.stat()
+            seen["linked_identity"] = (linked.st_dev, linked.st_ino)
+            blob.unlink()
+            blob.write_bytes(replacement)
+            seen["replacement_ino"] = blob.stat().st_ino
+
+        before = {int(name) for name in os.listdir("/dev/fd")}
+        with mock.patch.object(payload.os, "link", side_effect=link_then_replace):
+            with self.assertRaises(payload.PayloadError) as caught:
+                self.dispatch_file("fault-leaf-replaced-before-verify", "brief.md")
+        self.assertEqual({int(name) for name in os.listdir("/dev/fd")}, before)
+        self.assertIn("linked_identity", seen)
+        self.assertNotEqual(seen["replacement_ino"], seen["linked_identity"][1])
+        self.assertEqual(caught.exception.code, "cleanup_uncertain")
+        message = str(caught.exception)
+        self.assertIn(PAYLOAD_SHA256, message)
+        self.assertIn("left in place", message)
+        self.assertNotIn(LEAK_CANARY, message)
+        self.assertEqual(blob.read_bytes(), replacement)
+        self.assertEqual(self.counts()["dispatch_ledger"], 0)
+        self.assertEqual(self.counts()["messages"], 0)
+        self.assertEqual(self.staging_files(), [])
 
 class RetryFactoryOrderTest(PayloadHarness):
     """Review correction: retry preflight precedes runtime-adapter

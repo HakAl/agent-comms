@@ -920,8 +920,14 @@ def publish_final(
         # entry name could have been replaced inside the real staging directory
         # between write and link. Independently verify the newly linked inode
         # against the retained staged-file FD (type, identity, size) before any
-        # durability work or SQL success can reference it; a mismatch removes
-        # exactly the entry this call created, durably, and refuses.
+        # durability work or SQL success can reference it. A mismatch is NOT
+        # cleaned up: the observation "the leaf is not the staged inode" is the
+        # same whether this call linked a substituted staging entry or linked
+        # the staged inode and a replacement displaced it before this check,
+        # so the entry's ownership cannot be established and unlinking it could
+        # destroy bytes this call never created. The entry is left in place as
+        # explicit residue (measurable via `agent-comms payload-audit` while the
+        # shard is attached) and the call refuses with cleanup uncertainty.
         staged_st = os.fstat(staged.file_fd)
         custody_error: PayloadError | None = None
         try:
@@ -942,29 +948,21 @@ def publish_final(
                 custody_error = PayloadError(
                     "dispatch_payload_publish_failed",
                     f"newly linked blob for digest {capture.sha256} is not the "
-                    "verified staged payload inode; the staging entry was replaced "
-                    "between write and link, so the linked entry was removed and "
-                    "publication refuses",
+                    "verified staged payload inode; either the staging entry was "
+                    "replaced between write and link or the linked entry was "
+                    "replaced after the link, and publication refuses",
                 )
         if custody_error is not None:
             discard_staging(staged)
-            _remove_linked_blob_durably(
-                shard_fd,
-                leaf_name,
-                cause=custody_error,
-                unlink_failed=lambda err: (
-                    f"{custody_error} and unlink of the newly linked entry also "
-                    f"failed ({err}); orphan residue remains measurable via "
-                    "`agent-comms payload-audit`"
-                ),
-                fsync_failed=lambda err: (
-                    f"{custody_error}; the newly linked entry was unlinked but the "
-                    f"cleanup fsync failed ({err}), so the unlink is not durable "
-                    "and orphan residue may survive a crash; residue remains "
-                    "measurable via `agent-comms payload-audit`"
-                ),
-            )
-            raise custody_error
+            raise PayloadError(
+                "cleanup_uncertain",
+                f"cleanup uncertain for digest {capture.sha256} at {blob_rel} after "
+                f"{custody_error}: the entry at the digest name is not the inode this "
+                "call staged and its origin cannot be established, so it was left in "
+                "place as residue; a wrong-content entry refuses later publication and "
+                "reads of this digest until an operator removes it, and remains "
+                "measurable via `agent-comms payload-audit`",
+            ) from custody_error
         identity = (staged_st.st_dev, staged_st.st_ino)
 
         # From here on every failure-path removal of the created leaf is
