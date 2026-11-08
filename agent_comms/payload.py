@@ -967,7 +967,20 @@ def publish_final(
             raise custody_error
         identity = (staged_st.st_dev, staged_st.st_ino)
 
-        _finalize_published_blob(shard_fd, sha_fd, leaf_name, sha256_hex=capture.sha256)
+        # From here on every failure-path removal of the created leaf is
+        # identity-guarded against the created inode, which the still-open
+        # staged-file FD keeps allocated (see _remove_created_blob_durably),
+        # so a replacement installed at the digest name after verification is
+        # never deleted. Staging is therefore discarded only after such a
+        # removal, never before.
+        _finalize_published_blob(
+            shard_fd,
+            sha_fd,
+            leaf_name,
+            sha256_hex=capture.sha256,
+            blob_fd=staged.file_fd,
+            identity=identity,
+        )
         # The blob is durable in the retained shard. Only now confirm the
         # retained chain is still the canonical hierarchy: a rename that
         # detached it mid-publish means the durable blob is not at the canonical
@@ -987,28 +1000,32 @@ def publish_final(
             # failure raises a typed error that preserves the attachment-failure
             # context and reports the residue and its operational-audit limits,
             # rather than silently re-raising only the attachment mismatch.
-            discard_staging(staged)
-            _remove_linked_blob_durably(
-                shard_fd,
-                leaf_name,
-                cause=attach_exc,
-                unlink_failed=lambda err, attach_exc=attach_exc: (
-                    f"published blob for digest {capture.sha256} could not be confirmed "
-                    f"attached to the canonical payload store ({attach_exc}); unlink of the "
-                    f"newly created blob from the detached shard also failed ({err}), so "
-                    "orphan residue remains and, because the shard is detached from the "
-                    "canonical hierarchy, it may lie outside the reach of `agent-comms "
-                    "payload-audit`"
-                ),
-                fsync_failed=lambda err, attach_exc=attach_exc: (
-                    f"published blob for digest {capture.sha256} could not be confirmed "
-                    f"attached to the canonical payload store ({attach_exc}); the newly "
-                    f"created blob was unlinked from the detached shard but the cleanup "
-                    f"fsync failed ({err}), so the unlink is not durable and orphan residue "
-                    "may survive a crash, potentially outside the reach of `agent-comms "
-                    "payload-audit`"
-                ),
-            )
+            try:
+                _remove_created_blob_durably(
+                    shard_fd,
+                    leaf_name,
+                    blob_fd=staged.file_fd,
+                    identity=identity,
+                    cause=attach_exc,
+                    unlink_failed=lambda err, attach_exc=attach_exc: (
+                        f"published blob for digest {capture.sha256} could not be confirmed "
+                        f"attached to the canonical payload store ({attach_exc}); unlink of "
+                        f"the newly created blob from the detached shard also failed ({err}), "
+                        "so orphan residue remains and, because the shard is detached from "
+                        "the canonical hierarchy, it may lie outside the reach of "
+                        "`agent-comms payload-audit`"
+                    ),
+                    fsync_failed=lambda err, attach_exc=attach_exc: (
+                        f"published blob for digest {capture.sha256} could not be confirmed "
+                        f"attached to the canonical payload store ({attach_exc}); the newly "
+                        f"created blob was unlinked from the detached shard but the cleanup "
+                        f"fsync failed ({err}), so the unlink is not durable and orphan "
+                        "residue may survive a crash, potentially outside the reach of "
+                        "`agent-comms payload-audit`"
+                    ),
+                )
+            finally:
+                discard_staging(staged)
             raise
         # Retain shard custody, and the created inode itself, past this
         # function's own FD cleanup so the caller can remove exactly this
@@ -1026,27 +1043,37 @@ def publish_final(
             for fd in (retained_shard_fd, retained_blob_fd):
                 if fd is not None:
                     os.close(fd)
-            discard_staging(staged)
             dup_error = PayloadError(
                 "dispatch_payload_publish_failed",
                 f"could not retain custody for the published blob: {exc.strerror}",
             )
-            _remove_linked_blob_durably(
-                shard_fd,
-                leaf_name,
-                cause=dup_error,
-                unlink_failed=lambda err: (
-                    f"{dup_error} and unlink of the newly created blob also failed "
-                    f"({err}); orphan residue remains measurable via "
-                    "`agent-comms payload-audit`"
-                ),
-                fsync_failed=lambda err: (
-                    f"{dup_error}; the newly created blob was unlinked but the "
-                    f"cleanup fsync failed ({err}), so the unlink is not durable "
-                    "and orphan residue may survive a crash; residue remains "
-                    "measurable via `agent-comms payload-audit`"
-                ),
-            )
+            # The leaf was verified as the staged inode, but either dup can
+            # fail after a concurrent replacement at the digest name. The
+            # staged-file FD is that created inode and is still open here, so
+            # the removal is identity-guarded against it; a replacement is
+            # refused with typed uncertainty, never deleted. Staging is
+            # discarded on every exit, after the guarded removal.
+            try:
+                _remove_created_blob_durably(
+                    shard_fd,
+                    leaf_name,
+                    blob_fd=staged.file_fd,
+                    identity=identity,
+                    cause=dup_error,
+                    unlink_failed=lambda err: (
+                        f"{dup_error} and unlink of the newly created blob also failed "
+                        f"({err}); orphan residue remains measurable via "
+                        "`agent-comms payload-audit`"
+                    ),
+                    fsync_failed=lambda err: (
+                        f"{dup_error}; the newly created blob was unlinked but the "
+                        f"cleanup fsync failed ({err}), so the unlink is not durable "
+                        "and orphan residue may survive a crash; residue remains "
+                        "measurable via `agent-comms payload-audit`"
+                    ),
+                )
+            finally:
+                discard_staging(staged)
             raise dup_error
         discard_staging(staged)
         return PublishedBlob(
@@ -1098,23 +1125,46 @@ def rollback_created_blob(published: PublishedBlob) -> None:
             "dispatch_payload_publish_failed",
             "rollback cleanup is only defined for a publication that created its blob",
         )
-    held = os.fstat(published.blob_fd)
-    if (held.st_dev, held.st_ino) != published.identity:
+    _assert_created_leaf_identity(
+        published.shard_fd,
+        published.leaf_name,
+        blob_fd=published.blob_fd,
+        identity=published.identity,
+    )
+    os.unlink(published.leaf_name, dir_fd=published.shard_fd)
+
+
+def _assert_created_leaf_identity(
+    shard_fd: int, leaf_name: str, *, blob_fd: int, identity: tuple[int, int]
+) -> None:
+    """Refuse unless the digest-named leaf in the retained shard is the created inode.
+
+    ``blob_fd`` must be an open descriptor of the inode this publication
+    created (the staged-file FD during publication, ``PublishedBlob.blob_fd``
+    afterwards). An open descriptor keeps the inode allocated, so its number
+    cannot be reissued to a decoy linked after an unlink (ext4 reissues freed
+    numbers at once); the descriptor is checked against ``identity`` first,
+    then the leaf is lstat'd relative to the retained shard FD and must be
+    that same inode and not a symlink. A mismatch raises the typed error and
+    leaves the entry untouched. ``OSError`` from either stat propagates for
+    the caller to classify.
+    """
+    held = os.fstat(blob_fd)
+    if (held.st_dev, held.st_ino) != identity:
         raise PayloadError(
             "dispatch_payload_publish_failed",
-            f"retained descriptor for digest {published.leaf_name} does not describe the "
+            f"retained descriptor for digest {leaf_name} does not describe the "
             "blob this dispatch created; refusing to unlink anything, and the created "
             "inode remains as orphan residue",
         )
-    st = os.lstat(published.leaf_name, dir_fd=published.shard_fd)
-    if stat.S_ISLNK(st.st_mode) or (st.st_dev, st.st_ino) != published.identity:
+    st = os.lstat(leaf_name, dir_fd=shard_fd)
+    if stat.S_ISLNK(st.st_mode) or (st.st_dev, st.st_ino) != identity:
         raise PayloadError(
             "dispatch_payload_publish_failed",
-            f"canonical entry for digest {published.leaf_name} is no longer the "
+            f"canonical entry for digest {leaf_name} is no longer the "
             "blob this dispatch created; refusing to unlink the replacement, and "
             "the created inode remains as orphan residue",
         )
-    os.unlink(published.leaf_name, dir_fd=published.shard_fd)
 
 
 def cleanup_failed_publication(
@@ -1132,6 +1182,48 @@ def cleanup_failed_publication(
             "cleanup_uncertain",
             f"cleanup uncertain for digest {published.leaf_name} at {relative}: {exc}",
         ) from cause
+
+
+def _remove_created_blob_durably(
+    shard_fd: int,
+    leaf_name: str,
+    *,
+    blob_fd: int,
+    identity: tuple[int, int],
+    cause: BaseException,
+    unlink_failed: Callable[[str], str],
+    fsync_failed: Callable[[str], str],
+) -> None:
+    """Identity-guarded ``_remove_linked_blob_durably`` for a created blob.
+
+    Every ``publish_final`` failure path that runs after the linked leaf was
+    verified as the staged inode (durability failure, canonical-attachment
+    failure, custody-descriptor failure) removes through this helper. The
+    leaf is re-checked against the created inode immediately before the
+    unlink (``_assert_created_leaf_identity``); ``blob_fd`` is the still-open
+    staged-file FD, which keeps that inode allocated so the check cannot be
+    met by a reissued inode number. A replacement installed at the digest
+    name between verification and the failure is therefore never deleted: a
+    guard mismatch or guard stat error raises ``cleanup_uncertain`` carrying
+    ``cause``, mirroring ``cleanup_failed_publication`` for the SQL-rollback
+    window, and reports any surviving created inode as residue.
+    """
+    try:
+        _assert_created_leaf_identity(shard_fd, leaf_name, blob_fd=blob_fd, identity=identity)
+    except (OSError, PayloadError) as guard_exc:
+        relative = f"blobs/sha256/{leaf_name[:2]}/{leaf_name}"
+        raise PayloadError(
+            "cleanup_uncertain",
+            f"cleanup uncertain for digest {leaf_name} at {relative} after "
+            f"{cause}: {guard_exc}",
+        ) from cause
+    _remove_linked_blob_durably(
+        shard_fd,
+        leaf_name,
+        cause=cause,
+        unlink_failed=unlink_failed,
+        fsync_failed=fsync_failed,
+    )
 
 
 def _remove_linked_blob_durably(
@@ -1174,7 +1266,13 @@ def _remove_linked_blob_durably(
 
 
 def _finalize_published_blob(
-    shard_fd: int, sha_fd: int, leaf_name: str, *, sha256_hex: str
+    shard_fd: int,
+    sha_fd: int,
+    leaf_name: str,
+    *,
+    sha256_hex: str,
+    blob_fd: int,
+    identity: tuple[int, int],
 ) -> None:
     """Make a freshly linked blob durable, cleaning up on a durability failure.
 
@@ -1184,7 +1282,10 @@ def _finalize_published_blob(
     cannot redirect the fsync or the failure-unlink onto a different directory
     or an attacker replacement. On a durability failure the newly created blob
     is unlinked relative to the retained shard FD while the caller still holds
-    the SQL write lock, so no unreported blob survives; a pre-existing verified
+    the SQL write lock, so no unreported blob survives; the unlink is guarded
+    by ``blob_fd``/``identity`` (the created inode, see
+    ``_remove_created_blob_durably``) so a replacement linked at the digest
+    name since verification is refused, not deleted. A pre-existing verified
     blob never reaches this function and is never unlinked.
     """
     try:
@@ -1197,10 +1298,16 @@ def _finalize_published_blob(
         # shard directory the entry was removed from through its retained FD. If
         # that fsync fails, the removal can be lost on crash and the blob may
         # reappear as an orphan, so the diagnostic says so.
-        _remove_linked_blob_durably(
+        durability_error = PayloadError(
+            "dispatch_payload_publish_failed",
+            f"could not make payload blob durable: {exc.strerror}",
+        )
+        _remove_created_blob_durably(
             shard_fd,
             leaf_name,
-            cause=exc,
+            blob_fd=blob_fd,
+            identity=identity,
+            cause=durability_error,
             unlink_failed=lambda err, exc=exc: (
                 f"could not make payload blob durable ({exc.strerror}) and unlink of the "
                 f"newly created blob for digest {sha256_hex} also failed "
@@ -1215,10 +1322,7 @@ def _finalize_published_blob(
                 "measurable via `agent-comms payload-audit`"
             ),
         )
-        raise PayloadError(
-            "dispatch_payload_publish_failed",
-            f"could not make payload blob durable: {exc.strerror}",
-        ) from exc
+        raise durability_error from exc
 
 
 def _validate_count(name: str, value: object) -> int:

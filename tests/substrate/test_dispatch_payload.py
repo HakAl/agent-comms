@@ -729,6 +729,156 @@ class PublicationFaultTest(PayloadHarness):
         self.assertTrue(published._closed)  # custody FDs released once settled
         self.assertEqual(blob.read_bytes(), b"attacker decoy at digest name")
 
+    @staticmethod
+    def _open_fds() -> set[int]:
+        # /dev/fd lists this process's descriptors on macOS and Linux. The
+        # listing's own directory FD takes the lowest free number in both
+        # snapshots, so equal sets before and after a call mean the call
+        # released every descriptor it opened (the lifecycle flag alone only
+        # proves close() ran, not that nothing leaked around it).
+        return {int(name) for name in os.listdir("/dev/fd")}
+
+    def _custody_dup_fault(self, fail_on: int, *, replacement: bytes | None):
+        """Fail the ``fail_on``-th os.dup inside publish_final.
+
+        The custody dups run after the created leaf was linked and verified;
+        the fault records the created inode's identity and, when asked,
+        installs a different-inode replacement at the digest name before
+        raising, modelling descriptor exhaustion racing a leaf replacement.
+        """
+        blob = self.blob_path()
+        real_dup = os.dup
+        seen: dict[str, object] = {"calls": []}
+
+        def fake_dup(fd: int) -> int:
+            calls = seen["calls"]
+            calls.append(fd)
+            if len(calls) != fail_on:
+                return real_dup(fd)
+            created = blob.stat()
+            seen["created_identity"] = (created.st_dev, created.st_ino)
+            if replacement is not None:
+                blob.unlink()
+                blob.write_bytes(replacement)
+                seen["replacement_ino"] = blob.stat().st_ino
+            raise OSError(24, "injected descriptor exhaustion")
+
+        return fake_dup, seen
+
+    def _assert_replacement_refused(self, caught, seen, blob, replacement: bytes) -> None:
+        self.assertNotEqual(seen["replacement_ino"], seen["created_identity"][1])
+        self.assertEqual(caught.exception.code, "cleanup_uncertain")
+        message = str(caught.exception)
+        self.assertIn(PAYLOAD_SHA256, message)
+        self.assertIn("refusing to unlink the replacement", message)
+        self.assertNotIn(LEAK_CANARY, message)
+        # The replacement at the canonical digest name survives untouched, no
+        # SQL row references anything, and the staging entry is gone.
+        self.assertEqual(blob.read_bytes(), replacement)
+        self.assertEqual(self.counts()["dispatch_ledger"], 0)
+        self.assertEqual(self.counts()["messages"], 0)
+        self.assertEqual(self.staging_files(), [])
+
+    def test_first_custody_dup_failure_never_unlinks_a_replacement_leaf(self) -> None:
+        # Lookout R2-F1: the shard-FD dup fails after the created leaf was
+        # linked and verified, and the leaf was replaced in between. Cleanup
+        # must re-check the leaf against the created inode (still held open
+        # through the staged-file FD) and refuse to unlink the replacement.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        replacement = b"attacker replacement after link"
+        fake_dup, seen = self._custody_dup_fault(1, replacement=replacement)
+        before = self._open_fds()
+        with mock.patch.object(payload.os, "dup", side_effect=fake_dup):
+            with self.assertRaises(payload.PayloadError) as caught:
+                self.dispatch_file("fault-dup-first-replaced", "brief.md")
+        self.assertEqual(self._open_fds(), before)
+        self.assertEqual(len(seen["calls"]), 1)
+        self.assertIn("could not retain custody", str(caught.exception))
+        self._assert_replacement_refused(caught, seen, blob, replacement)
+
+    def test_second_custody_dup_failure_never_unlinks_a_replacement_leaf(self) -> None:
+        # Lookout R2-F1, second ordering: the shard dup succeeds and the
+        # staged-file dup fails. The acquired shard duplicate is released and
+        # the replacement still survives.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        replacement = b"attacker replacement after shard dup"
+        fake_dup, seen = self._custody_dup_fault(2, replacement=replacement)
+        before = self._open_fds()
+        with mock.patch.object(payload.os, "dup", side_effect=fake_dup):
+            with self.assertRaises(payload.PayloadError) as caught:
+                self.dispatch_file("fault-dup-second-replaced", "brief.md")
+        self.assertEqual(self._open_fds(), before)
+        self.assertEqual(len(seen["calls"]), 2)
+        self.assertIn("could not retain custody", str(caught.exception))
+        self._assert_replacement_refused(caught, seen, blob, replacement)
+
+    def test_custody_dup_failure_without_replacement_removes_created_blob_durably(self) -> None:
+        # The ordinary acquisition failure: nothing replaced the leaf, so the
+        # guard passes and the created blob is removed durably, leaving no
+        # orphan for the audit and no descriptor behind.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        fsynced_after_unlink: list[bool] = []
+        real_fsync_fd = payload._fsync_fd
+
+        def observing_fsync(fd: int) -> None:
+            if blob.parent.is_dir() and not blob.exists() and payload._dir_identity(fd) == (
+                os.stat(blob.parent).st_dev, os.stat(blob.parent).st_ino
+            ):
+                fsynced_after_unlink.append(True)
+            real_fsync_fd(fd)
+
+        for fail_on in (1, 2):
+            with self.subTest(fail_on=fail_on):
+                fsynced_after_unlink.clear()
+                fake_dup, seen = self._custody_dup_fault(fail_on, replacement=None)
+                before = self._open_fds()
+                with mock.patch.object(payload, "_fsync_fd", side_effect=observing_fsync):
+                    with mock.patch.object(payload.os, "dup", side_effect=fake_dup):
+                        with self.assertRaises(payload.PayloadError) as caught:
+                            self.dispatch_file(f"fault-dup-{fail_on}-plain", "brief.md")
+                self.assertEqual(self._open_fds(), before)
+                self.assertEqual(len(seen["calls"]), fail_on)
+                self.assertEqual(caught.exception.code, "dispatch_payload_publish_failed")
+                self.assertIn("could not retain custody", str(caught.exception))
+                self.assertNotIn(LEAK_CANARY, str(caught.exception))
+                self.assertEqual(fsynced_after_unlink, [True])
+                self.assert_zero_dispatch_writes()
+                self.assertTrue(payload.audit_store(self.db_path)["ok"])
+
+    def test_durability_failure_never_unlinks_a_replacement_leaf(self) -> None:
+        # The same guard covers the durability-failure cleanup: the shard fsync
+        # that would make the created blob durable fails after the leaf was
+        # replaced, and the replacement must survive with typed uncertainty.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        replacement = b"attacker replacement before durability"
+        real_fsync_fd = payload._fsync_fd
+        seen: dict[str, object] = {}
+
+        def replacing_failing_fsync(fd: int) -> None:
+            if "created_identity" not in seen and blob.exists() and payload._dir_identity(
+                fd
+            ) == (os.stat(blob.parent).st_dev, os.stat(blob.parent).st_ino):
+                created = blob.stat()
+                seen["created_identity"] = (created.st_dev, created.st_ino)
+                blob.unlink()
+                blob.write_bytes(replacement)
+                seen["replacement_ino"] = blob.stat().st_ino
+                raise OSError(5, "injected durability fsync failure")
+            real_fsync_fd(fd)
+
+        before = self._open_fds()
+        with mock.patch.object(payload, "_fsync_fd", side_effect=replacing_failing_fsync):
+            with self.assertRaises(payload.PayloadError) as caught:
+                self.dispatch_file("fault-durability-replaced", "brief.md")
+        self.assertEqual(self._open_fds(), before)
+        self.assertIn("created_identity", seen)
+        self.assertIn("could not make payload blob durable", str(caught.exception))
+        self._assert_replacement_refused(caught, seen, blob, replacement)
+
     def test_failing_call_never_deletes_preexisting_verified_blob(self) -> None:
         self.write_source("brief.md")
         winner = self.dispatch_file("fault-winner", "brief.md")
@@ -2556,6 +2706,54 @@ class StoreChainNoFollowTest(PayloadHarness):
         # only through the swapped pathname was never unlinked or overwritten.
         self.assertFalse((moved / capture.sha256).exists())
         self.assertEqual(decoy.read_bytes(), b"attacker replacement bytes")
+        self.assertEqual(self.staging_files(), [])
+
+    def test_publish_attachment_failure_never_unlinks_a_replacement_leaf(self) -> None:
+        # Same detachment, but the leaf inside the renamed real shard is
+        # replaced after durability and before the attachment recheck. The
+        # identity-guarded cleanup must refuse to unlink the replacement and
+        # report cleanup uncertainty with the attachment failure preserved.
+        self.write_source("brief.md")
+        capture = payload.capture_source(self.producer_root, "brief.md")
+        # Snapshot before staging: publish_final owns the discard of the
+        # staging custody FDs on this failure path, so they must be gone too.
+        before = {int(name) for name in os.listdir("/dev/fd")}
+        staged = payload.stage_payload(self.store_root, capture.data)
+        shard = self.blob_path().parent
+        moved = self.root / "shard-moved-replaced"
+        outside = self.root / "outside-shard-replaced"
+        outside.mkdir()
+        replacement = b"attacker replacement inside the real shard"
+        real_assert_attached = payload._assert_publish_chain_attached
+        seen: dict[str, object] = {}
+
+        def swap(rel_path: str) -> None:
+            shard.rename(moved)
+            shard.symlink_to(outside)
+
+        def replace_then_check(store_root, chain) -> None:
+            linked = moved / capture.sha256
+            created = linked.stat()
+            seen["created_identity"] = (created.st_dev, created.st_ino)
+            linked.unlink()
+            linked.write_bytes(replacement)
+            seen["replacement_ino"] = linked.stat().st_ino
+            real_assert_attached(store_root, chain)
+
+        with mock.patch.object(payload, "_before_final_link", side_effect=swap):
+            with mock.patch.object(
+                payload, "_assert_publish_chain_attached", side_effect=replace_then_check
+            ):
+                with self.assertRaises(payload.PayloadError) as caught:
+                    payload.publish_final(self.store_root, staged, capture)
+        self.assertEqual({int(name) for name in os.listdir("/dev/fd")}, before)
+        self.assertNotEqual(seen["replacement_ino"], seen["created_identity"][1])
+        self.assertEqual(caught.exception.code, "cleanup_uncertain")
+        message = str(caught.exception)
+        self.assertIn("refusing to unlink the replacement", message)
+        self.assertIn("attach", message)
+        self.assertNotIn(LEAK_CANARY, message)
+        self.assertEqual((moved / capture.sha256).read_bytes(), replacement)
         self.assertEqual(self.staging_files(), [])
 
     def test_publish_attachment_failure_unlink_failure_reports_detached_residue(self) -> None:
