@@ -272,6 +272,7 @@ class UseHermeticPinsTest(unittest.TestCase):
         self.assertNotIn(runtime_pins.RUNTIME_PINS_ENV, os.environ)
 
     def test_is_a_no_op_on_a_certified_host(self) -> None:
+        # Literally: no environment patch is started, not a patch of nothing.
         seen: dict[str, object] = {}
 
         @hermetic_pins.with_hermetic_pins
@@ -280,8 +281,9 @@ class UseHermeticPinsTest(unittest.TestCase):
                 seen["env"] = os.environ.get(runtime_pins.RUNTIME_PINS_ENV)
 
         with _patched_platform(CERTIFIED):
-            result = self._run(Probe)
-        self.assertEqual(result.errors, [])
+            with mock.patch.object(hermetic_pins.mock, "patch", side_effect=AssertionError("patched")):
+                result = self._run(Probe)
+        self.assertEqual(result.errors, [], result.errors)
         self.assertIsNone(seen["env"])
 
 

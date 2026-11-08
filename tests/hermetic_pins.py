@@ -12,7 +12,10 @@ What it never does: it is a no-op on a certified host (macOS today), under
 ``AGENT_COMMS_TEST_CERT=1`` (certification mode must never see a synthetic
 pin; certify.py has just written the candidate pin for one runtime), and
 in live-home mode (``tests.isolation.LIVE_HOME_ENV``: the real runtime
-decides). It is never applied process-wide: the live cells and
+decides, and the scratch copy would otherwise land under the real home; so
+a live-home run of the hermetic cell classes on an uncertified host still
+errors, which is a known limit, not a claim). It is never applied
+process-wide: the live cells and
 ``test_cell_version_drift`` decide their skip by catching
 ``PlatformNotCertified`` and must keep that honest skip, and the
 manifest-shape tests read the shipped file unpatched.
@@ -100,8 +103,13 @@ def use_hermetic_pins(testcase_class: type[unittest.TestCase]) -> None:
 
     Call first in ``setUpClass`` so it precedes every helper that resolves a
     pin; the patch is removed by a class cleanup, after ``tearDownClass``.
+    Where there is nothing to override (a certified host, certification or
+    live-home mode) the environment is not touched at all.
     """
-    patch = mock.patch.dict(os.environ, hermetic_pins_env())
+    env = hermetic_pins_env()
+    if not env:
+        return
+    patch = mock.patch.dict(os.environ, env)
     patch.start()
     testcase_class.addClassCleanup(patch.stop)
 

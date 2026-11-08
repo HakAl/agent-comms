@@ -677,6 +677,7 @@ class WorkerBindingTest(_Project):
 
 
 @unittest.skipIf(REAL_CODEX is None, "codex is not on PATH")
+@with_hermetic_pins
 class RealCodexResolutionTest(_Project):
     """What Codex itself resolves (``codex mcp get --json``, no login, no
     model call) with scratch homes and projects."""
