@@ -293,7 +293,8 @@ class ClaudeCellSkipReasonTest(unittest.TestCase):
     def test_reason_is_login_text_when_custody_binary_is_absent(self) -> None:
         from tests import dispatch_cell_harness as harness
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        # A certified platform, so the custody-binary check is what decides.
+        with tempfile.TemporaryDirectory() as temp_dir, _patched_platform(RELEASE_PLATFORM):
             with mock.patch.dict(os.environ, {runtime_pins.CLAUDE_VERSIONS_DIR_ENV: temp_dir}):
                 reason = harness.claude_cell_skip_reason()
         self.assertEqual(reason, harness.CLAUDE_NOT_LOGGED_IN_REASON)

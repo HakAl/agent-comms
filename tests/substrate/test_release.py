@@ -122,10 +122,17 @@ class ReleaseVersionTest(unittest.TestCase):
         self.assertEqual(runtime_pins.RUNTIME_PINS_PATH, paths.PACKAGE_ROOT / "runtime_pins.json")
         self.assertTrue(runtime_pins.RUNTIME_PINS_PATH.is_file())
         self.assertFalse((paths.REPO_ROOT / "tests" / "cells" / "cell_versions.json").exists())
+        # The resolver agrees with the manifest data for a certified platform
+        # and fails closed for an unlisted one, whatever the host is.
         pins = runtime_pins.load_runtime_pins()
-        entry = pins["runtimes"]["claude"]["platforms"][runtime_pins.current_platform()]
-        self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
-        self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
+        certified = sorted(pins["runtimes"]["claude"]["platforms"])[0]
+        entry = pins["runtimes"]["claude"]["platforms"][certified]
+        with patch.object(runtime_pins, "current_platform", return_value=certified):
+            self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
+            self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
+        with patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
+            with self.assertRaises(runtime_pins.PlatformNotCertified):
+                runtime_pins.claude_pin()
         self.assertTrue(code_identity.is_included_surface("agent_comms/runtime_pins.json"))
 
     def test_platform_pins_answer_for_the_current_platform_without_raising(self) -> None:

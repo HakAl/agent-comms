@@ -466,7 +466,7 @@ class CertifyScriptTest(unittest.TestCase):
                     certify.fsync_file(self.pins)
                     certify.fsync_dir(target)
                 if expect_full:
-                    self.assertEqual((full, plain), ([certify.fcntl.F_FULLFSYNC] * 2, []))
+                    self.assertEqual((full, plain), ([certify.FULL_FSYNC] * 2, []))
                 else:
                     self.assertEqual((len(full), len(plain)), (0, 2))
 

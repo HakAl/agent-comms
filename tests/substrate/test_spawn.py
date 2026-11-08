@@ -650,11 +650,18 @@ class RenderSpawnTest(unittest.TestCase):
         self.assertIn("render_spawn('claude', actor_id)", dispatch["failure_reason"])
 
     def test_cell_versions_claude_pin_matches_runtime_source(self) -> None:
-        manifest = json.loads(runtime_pins.RUNTIME_PINS_PATH.read_text())
-        entry = manifest["runtimes"]["claude"]["platforms"][runtime_pins.current_platform()]
+        # The manifest this process reads, for a platform it certifies: the
+        # resolver returns that entry, and fails closed for an unlisted key.
+        manifest = runtime_pins.load_runtime_pins()
+        certified = sorted(manifest["runtimes"]["claude"]["platforms"])[0]
+        entry = manifest["runtimes"]["claude"]["platforms"][certified]
 
-        self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
-        self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
+        with mock.patch.object(runtime_pins, "current_platform", return_value=certified):
+            self.assertEqual(entry["version"], runtime_pins.claude_pin().version)
+            self.assertEqual(entry["sha256"], runtime_pins.claude_pin().sha256)
+        with mock.patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
+            with self.assertRaises(runtime_pins.PlatformNotCertified):
+                runtime_pins.claude_pin()
 
     def test_claude_settings_allows_policy_tools_only(self) -> None:
         policy = compile_policy(WORKER_DISPATCH_POLICY)
