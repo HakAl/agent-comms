@@ -16,6 +16,7 @@ from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import CodexAdapter
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 from tests.codex_custody_support import install_fake_codex_custody, python_shim_script
+from tests.hermetic_pins import with_hermetic_pins
 
 # Hermetic supervised-seam identity. The real AF_UNIX bind lives in the
 # certification environment (EndToEndSupervisorTest); these runtime-free cells
@@ -66,6 +67,7 @@ def provision_fresh_codex_home(codex_home: Path) -> Path:
     return codex_home
 
 
+@with_hermetic_pins
 class CodexAdapterTest(unittest.TestCase):
     def setUp(self) -> None:
         install_fake_codex_custody(self, python_shim_script())

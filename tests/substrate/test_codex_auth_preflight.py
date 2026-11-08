@@ -21,6 +21,7 @@ from agent_comms.adapters.fake import FakeAdapter
 from agent_comms.spawn import render_spawn
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 from tests.codex_custody_support import install_fake_codex_custody, mcp_get_codex_script
+from tests.hermetic_pins import with_hermetic_pins
 
 
 NOW = datetime(2026, 6, 7, 12, 0, 0, tzinfo=timezone.utc)
@@ -91,6 +92,7 @@ def _supervised_boundary(pid: int = 4321):
         yield spawn
 
 
+@with_hermetic_pins
 class CodexAuthPreflightTest(unittest.TestCase):
     def setUp(self) -> None:
         install_fake_codex_custody(self, mcp_get_codex_script())

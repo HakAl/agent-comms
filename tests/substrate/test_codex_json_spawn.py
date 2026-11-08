@@ -45,6 +45,7 @@ from tests.substrate import test_worker_usage as usage_fixture
 from tests.substrate import test_adapter_supervised_dispatch as stream_fixture
 from tests.substrate import test_spawn as spawn_fixture
 from tests import dispatch_cell_harness as cell_fixture
+from tests.hermetic_pins import with_hermetic_pins
 
 NOW = datetime.now(timezone.utc).replace(microsecond=123456) - timedelta(seconds=1)
 
@@ -72,6 +73,7 @@ class ScratchTest(unittest.TestCase):
         self.root = Path(temp.name)
 
 
+@with_hermetic_pins
 class SnapshotTest(ScratchTest):
     def setUp(self):
         super().setUp()
@@ -713,6 +715,7 @@ class EventUsageTest(usage_fixture.WorkerUsageTest):
                 self.assertEqual(self.usage(good)["total_tokens"], 17)
 
 
+@with_hermetic_pins
 class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
     def test_criterion_14_claude_live_row_has_no_codex_snapshot_or_events(self):
         actor_id = "alpha-claude-worker"
@@ -964,6 +967,7 @@ class StreamTest(stream_fixture.SupervisedDispatchWiringTest):
                 self.assertTrue(all(handle.closed for handle in opened))
 
 
+@with_hermetic_pins
 class CodexRoutingTest(ScratchTest):
     def setUp(self):
         super().setUp()

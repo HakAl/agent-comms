@@ -16,6 +16,7 @@ from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.claude import ClaudeAdapter
 from agent_comms.policies import compile_policy, scoped_env
 from agent_comms.store import WORKER_DISPATCH_POLICY
+from tests.hermetic_pins import with_hermetic_pins
 
 # Hermetic supervised-seam identity (see tests/cells/test_adapter_codex.py). The
 # real AF_UNIX bind proof lives in the certification EndToEndSupervisorTest.
@@ -43,6 +44,7 @@ def process_exists(pid: int) -> bool:
     return True
 
 
+@with_hermetic_pins
 class ClaudeAdapterTest(unittest.TestCase):
     def _write_fake_pin(self, root: Path) -> tuple[Path, str]:
         versions_dir = root / "claude-versions"

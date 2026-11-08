@@ -38,6 +38,7 @@ from agent_comms.policies import (
 from agent_comms.schema import ValidationError
 from agent_comms.spawn import DEFAULT_WORKER_PROMPT, _claude_settings, _escaped_json, claude_settings_for_policy, render_spawn
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.hermetic_pins import with_hermetic_pins
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILTIN_ALLOWED_TOOLS = frozenset({"Bash", "Edit", "Glob", "Grep", "MultiEdit", "Read", "TodoWrite", "Write"})
@@ -117,6 +118,7 @@ def _supervised_capture(captured: dict, pid: int = 4321):
         yield spawn
 
 
+@with_hermetic_pins
 class RenderSpawnTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()

@@ -22,6 +22,7 @@ from agent_comms.policies import compile_policy
 from agent_comms.runtime_pins import RuntimePin
 from agent_comms.schema import ValidationError
 from agent_comms.store import WORKER_DISPATCH_POLICY, Store
+from tests.hermetic_pins import with_hermetic_pins
 
 MCP_COMMAND = str(Path(sys.executable).parent / "agent-comms-mcp")
 HUMAN = "01M36YTJV9XBW95S6ZWV47C4RG"
@@ -234,6 +235,7 @@ class HelpersTest(unittest.TestCase):
                 self.assertEqual(setup.detect_runtimes(which=lambda _name: "/bin/codex"), ["claude", "codex"])
 
 
+@with_hermetic_pins
 class SetupCommandTest(_Scratch):
     def test_fresh_machine_writes_registry_registers_and_binds_both_seats(self) -> None:
         rc, result = self.setup("--runtimes", "fake", "--clients", "claude,codex", "--human", "alice", "--human-id", HUMAN)

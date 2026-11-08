@@ -29,6 +29,7 @@ from agent_comms.spawn import render_spawn
 from agent_comms.store import WORKER_DISPATCH_POLICY
 
 from tests.substrate.test_setup import HUMAN, FakeClients
+from tests.hermetic_pins import with_hermetic_pins
 
 MCP_COMMAND = str(Path(sys.executable).parent / "agent-comms-mcp")
 BLOCK = codex_binding.entry_toml(codex_binding.Binding("/bin/m", ["--actor-id", "a"], "/p", codex_binding.server_env(AGENT_COMMS_ACTOR_ID="a")))
@@ -465,6 +466,7 @@ class LaunchOptionsTest(unittest.TestCase):
             self.assertFalse(codex_binding.overrides_server(value), value)
 
 
+@with_hermetic_pins
 class WorkerBindingTest(_Project):
     """A Codex dispatch binds the worker's server with -c and checks it first."""
 

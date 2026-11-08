@@ -18,6 +18,7 @@ from agent_comms import codex_auth_refresh
 from agent_comms import codex_refresh_driver
 from agent_comms.db import Database, LEDGER_SCHEMA_VERSION
 from agent_comms.store import Store
+from tests.hermetic_pins import with_hermetic_pins
 
 NOW = datetime(2026, 8, 6, tzinfo=timezone.utc)
 HUMAN = "01M36YTJV9XBW95S6ZWV47C4RG"
@@ -28,6 +29,7 @@ def jwt(exp: int) -> str:
     return "x." + payload + ".x"
 
 
+@with_hermetic_pins
 class RefreshTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
