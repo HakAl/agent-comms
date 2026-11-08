@@ -26,6 +26,7 @@ from tests.dispatch_cell_harness import (
     supervisor_root_negative_fixture,
     supervisor_root_negative_probe,
 )
+from tests.hermetic_pins import with_hermetic_pins
 
 
 def _af_unix_bind_supported() -> bool:
@@ -127,6 +128,7 @@ def _ready_spawn(wrapper_pid: int) -> supervisor.SupervisedSpawn:
     )
 
 
+@with_hermetic_pins
 class NegativeSweepTest(unittest.TestCase):
     def test_dispatch_allowlist_rejects_negative_cases_and_idempotency_replays(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

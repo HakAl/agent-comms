@@ -19,6 +19,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -819,6 +820,21 @@ class BoundedIndexDigestTest(unittest.TestCase):
                 git_evidence.bounded_regular_file_digest(path)
         self.assertIn("git_index_raced", ctx.exception.code)
 
+    def _wait_for_a_later_timestamp_tick(self, ctime_ns: int) -> None:
+        # Filesystem timestamps advance per kernel tick (coarse on ext4;
+        # APFS is fine-grained enough to hide this). A mutation in the same
+        # tick as the file's creation leaves st_ctime_ns unchanged and the
+        # race undetected, so wait until the clock has visibly moved on.
+        probe = self.dir / "tick-probe"
+        deadline = time.monotonic() + 10
+        while True:
+            probe.write_bytes(b"tick")
+            if os.stat(probe).st_ctime_ns > ctime_ns:
+                return
+            if time.monotonic() > deadline:
+                raise AssertionError("the filesystem timestamp did not advance within 10 s")
+            time.sleep(0.001)
+
     def test_same_size_inplace_mutation_during_read_refuses_via_ctime(self) -> None:
         # A same-uid writer overwrites the index in place with the SAME size during
         # the streamed read and restores st_mtime_ns with utime. Device, inode,
@@ -828,6 +844,7 @@ class BoundedIndexDigestTest(unittest.TestCase):
         original = b"A" * 4096
         path.write_bytes(original)
         st_before = os.stat(path)
+        self._wait_for_a_later_timestamp_tick(st_before.st_ctime_ns)
         real_read = os.read
         fired = {"done": False}
 

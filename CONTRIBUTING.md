@@ -127,14 +127,18 @@ The GitHub Actions workflow `.github/workflows/gate.yml` runs hygiene, lint,
 the test matrix, install-smoke and claude-seat on every pull request and push
 to `main`. It is a mirror of the local gates on a fresh macOS runner (minus
 preverify, since CI already is a fresh clone), not a gate in front of the
-push: a failure there means something already public needs fixing. A
-`linux-probe` job runs hygiene, lint and the suite on Ubuntu with
-`continue-on-error`; it measures what Linux support still needs (the
-roadmap's milestone 2), and its red result does not fail the run. The
+push: a failure there means something already public needs fixing. The
+`test-linux` job runs the suite on Ubuntu (Python 3.14) as a required job.
+No Linux runtime pin exists yet, so the live cells and the drift cell skip
+there with the `PlatformNotCertified` text, and the hermetic tests that
+build a stub binary named after the pinned version get a pin table entry
+for the host from `tests/hermetic_pins.py` (applied per test class through
+`AGENT_COMMS_RUNTIME_PINS`, never process-wide, and never under
+`AGENT_COMMS_TEST_CERT=1`). The
 claude-seat job installs Claude Code at the version pinned
 in `agent_comms/runtime_pins.json` with the official installer, so it also
-re-checks the pinned client's behavior on every change. The test and
-claude-seat jobs
+re-checks the pinned client's behavior on every change. The test,
+test-linux and claude-seat jobs
 also prove the suite's isolation: `scripts/gates/leftovers.sh before` takes a
 snapshot of `HOME` and the checkout, and `leftovers.sh after` fails the job
 if the run added anything to either (bytecode caches excepted) or wrote under
@@ -158,7 +162,13 @@ and CPU architecture as Python reports them, `<sys.platform>-<machine>`:
 `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-aarch64`. On a
 shell, `uname -m` prints the second half. `agent-comms version` prints the
 key it resolved as `platform` and, under `platform_pins`, the certified
-version per runtime for it, `null` where there is none.
+version per runtime for it, `null` where there is none. It also prints
+`runtime_pins_path`, the manifest it read: the shipped file, or the one
+named by `AGENT_COMMS_RUNTIME_PINS` (an absolute path; empty means unset),
+which lets one process and its children resolve pins from another manifest.
+The hermetic suite uses it on an uncertified host; production reads the
+shipped file, and workers do not inherit it (spawned worker environments
+drop every `AGENT_COMMS_*` variable).
 
 An entry is a claim that the gated cells passed on that platform with that
 version, so a platform is listed only with that evidence (see AGENTS.md).

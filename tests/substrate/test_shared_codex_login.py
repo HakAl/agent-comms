@@ -25,6 +25,7 @@ from agent_comms import cli, paths, provisioning, setup
 from agent_comms.actor_config import bootstrap_store
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store
+from tests.hermetic_pins import with_hermetic_pins
 
 
 class _Scratch(unittest.TestCase):
@@ -116,6 +117,7 @@ class OperatorCodexAuthTest(_Scratch):
         self.assertNotIn(f"CODEX_HOME={shlex.quote(str(other))}", remedy)
 
 
+@with_hermetic_pins
 class SharedLoginBoundaryTest(_Scratch):
     """The project root of a worker that shares the operator's login must stay
     outside that login, however the login is reached and whoever provisions."""

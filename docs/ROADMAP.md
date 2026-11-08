@@ -96,9 +96,13 @@ login, so there is no agent-comms-specific login to create.
    103 bytes on every platform as a deliberate invariant; `pgrep` is looked
    up on PATH; the release script accepts `sha256sum` where `shasum` is
    absent. No launchd code exists yet, so the service manager above is new
-   work, not a port. Still open: Linux runtime pins and the hermetic tests
-   that resolve pins on the host (the `linux-probe` CI job lists them).
-3. **CI on Linux.** The same suite runs on Linux.
+   work, not a port. The hermetic tests that resolve a pin on the host get
+   one from `tests/hermetic_pins.py` on an uncertified platform. Still open:
+   Linux runtime pins (needs a certification run on Linux).
+3. **CI on Linux.** The same suite runs on Linux. **Done:** the `test-linux`
+   job of [the gate workflow](../.github/workflows/gate.yml) runs the suite
+   on Ubuntu as a required job; the live cells skip there until item 2's
+   pins exist.
 4. **Repeat the milestone 1 walkthrough** on a clean Linux machine.
 
 ### Later

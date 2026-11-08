@@ -23,6 +23,7 @@ from unittest import mock
 from agent_comms import supervisor
 from tests import isolation
 from tests.cells import certify_run
+from tests.hermetic_pins import with_hermetic_pins
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -465,7 +466,7 @@ class CertifyScriptTest(unittest.TestCase):
                     certify.fsync_file(self.pins)
                     certify.fsync_dir(target)
                 if expect_full:
-                    self.assertEqual((full, plain), ([certify.fcntl.F_FULLFSYNC] * 2, []))
+                    self.assertEqual((full, plain), ([certify.FULL_FSYNC] * 2, []))
                 else:
                     self.assertEqual((len(full), len(plain)), (0, 2))
 
@@ -487,6 +488,7 @@ class CertifyScriptTest(unittest.TestCase):
         self.assertEqual(same, text)
 
 
+@with_hermetic_pins
 class CertCustodyTest(unittest.TestCase):
     def test_the_named_bundle_is_versioned_and_copied_into_cert_custody(self) -> None:
         from agent_comms.runtime_pins import bundle_sha256, codex_pin

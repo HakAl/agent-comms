@@ -426,8 +426,12 @@ def bounded_regular_file_digest(
     ``absent``. A symlink/FIFO/device/socket/directory (rejected by the open or
     fstat), oversize, or device/inode/total-size/``st_mtime_ns``/``st_ctime_ns``
     drift across the read refuses. ``st_ctime_ns`` is load-bearing: a same-size
-    in-place mutation by the owner cannot be masked, because ``utime`` cannot
-    restore ``ctime``; ``st_mtime_ns`` is defense in depth.
+    in-place mutation by the owner cannot be masked with ``utime``, which
+    cannot restore ``ctime``; ``st_mtime_ns`` is defense in depth. The check
+    is only as fine as the filesystem's timestamps: a same-size mutation that
+    lands within the same timestamp tick as the ``ctime`` already recorded
+    (coarse on ext4) leaves every compared field equal and is not detected;
+    the streamed digest alone cannot tell. Tracked as a follow-up.
     """
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:

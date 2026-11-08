@@ -19,6 +19,7 @@ from agent_comms.policies import compile_policy, scoped_env
 from agent_comms.runtime_pins import CLAUDE_PINNED_SHA256_ENV, CLAUDE_VERSIONS_DIR_ENV, claude_pin
 from agent_comms.schema import ValidationError
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.hermetic_pins import with_hermetic_pins
 
 
 def seed_dispatch_actors(store: Store, root: Path) -> None:
@@ -71,6 +72,7 @@ def claude_pin_stub_sha256(versions_dir: Path) -> str:
     return hashlib.sha256((versions_dir / claude_pin().version).read_bytes()).hexdigest()
 
 
+@with_hermetic_pins
 class DispatchTest(unittest.TestCase):
     def test_architect_can_dispatch_own_team_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

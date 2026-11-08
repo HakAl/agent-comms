@@ -17,6 +17,7 @@ from agent_comms.runtime_pins import (
     CLAUDE_VERSIONS_DIR_ENV,
 )
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
+from tests.hermetic_pins import with_hermetic_pins
 
 
 def seed_dispatch_actors(store: Store, root: Path) -> None:
@@ -80,6 +81,7 @@ def claude_pin_env(root: Path) -> dict[str, str]:
     }
 
 
+@with_hermetic_pins
 class TtlRuntimeDeathTest(unittest.TestCase):
     def test_ttl_kills_actual_runtime_task_and_monitor_dlqs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

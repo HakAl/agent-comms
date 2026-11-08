@@ -16,6 +16,7 @@ from agent_comms.cli import run as cli_run
 from agent_comms.custody import CustodyError, fill_codex_custody
 from agent_comms.runtime_pins import BundleNotDigestible, bundle_manifest, bundle_sha256
 from tests.codex_custody_support import default_codex_script
+from tests.hermetic_pins import with_hermetic_pins
 
 
 def _bundle(root: Path) -> Path:
@@ -96,6 +97,7 @@ class BundleDigestTest(unittest.TestCase):
             self.assertFalse(runtime_pins.codex_bundle_digest_matches(self.bundle))
 
 
+@with_hermetic_pins
 class CodexCustodyPathTest(unittest.TestCase):
     def test_default_layout_is_under_the_runtime_root(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -143,6 +145,7 @@ def _native_bundle(root: Path, version: str | None = None) -> Path:
     return bundle
 
 
+@with_hermetic_pins
 class FillCustodyTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -273,6 +276,7 @@ class FillCustodyTest(unittest.TestCase):
         self.assertEqual(custody.codex_custody_state()["reason"], "digest differs from the pin")
 
 
+@with_hermetic_pins
 class AdapterCustodyTest(unittest.TestCase):
     """A Codex dispatch runs only the certified custody bundle; anything else starts nothing."""
 

@@ -418,6 +418,10 @@ def run_lock(repo: Path) -> Iterator[None]:
         yield
 
 
+# The macOS-only fcntl; None where the platform's fcntl module lacks it.
+FULL_FSYNC = getattr(fcntl, "F_FULLFSYNC", None)
+
+
 def sync_fd(fd: int, path: Path) -> None:
     """Flush ``fd`` to stable storage, or refuse.
 
@@ -426,7 +430,7 @@ def sync_fd(fd: int, path: Path) -> None:
     """
     try:
         if sys.platform == "darwin":
-            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            fcntl.fcntl(fd, FULL_FSYNC)
         else:
             os.fsync(fd)
     except OSError as exc:

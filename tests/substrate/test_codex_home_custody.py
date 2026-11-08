@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.codex_custody_support import install_fake_codex_custody
+from tests.hermetic_pins import with_hermetic_pins
 from agent_comms import codex_home, codex_refresh_driver, paths, provisioning
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.codex import AuthStale, CodexAdapter
@@ -91,6 +92,7 @@ class _Base(unittest.TestCase):
 # --- Predicate 9: adapter preflight + provisioning containment -----------------
 
 
+@with_hermetic_pins
 class AdapterPreflightTest(_Base):
     """Strict preflight keys off the resolved home, never an env switch: a
     custody-managed home (the provisioned default home or any home inside the
