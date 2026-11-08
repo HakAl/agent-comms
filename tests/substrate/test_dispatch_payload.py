@@ -3210,7 +3210,7 @@ class StagingCustodyTest(PayloadHarness):
         self.assertEqual(caught.exception.code, "cleanup_uncertain")
         message = str(caught.exception)
         self.assertIn("not the verified staged payload inode", message)
-        self.assertIn("left in place", message)
+        self.assertIn("no digest-leaf removal was attempted", message)
         self.assertNotIn(LEAK_CANARY, message)
         # The unverified entry survives at the canonical digest path, nothing
         # was left staged, and the read-only audit measures the residue.
@@ -3249,12 +3249,58 @@ class StagingCustodyTest(PayloadHarness):
         self.assertEqual(caught.exception.code, "cleanup_uncertain")
         message = str(caught.exception)
         self.assertIn(PAYLOAD_SHA256, message)
-        self.assertIn("left in place", message)
+        self.assertIn("no digest-leaf removal was attempted", message)
         self.assertNotIn(LEAK_CANARY, message)
         self.assertEqual(blob.read_bytes(), replacement)
         self.assertEqual(self.counts()["dispatch_ledger"], 0)
         self.assertEqual(self.counts()["messages"], 0)
         self.assertEqual(self.staging_files(), [])
+
+    def test_verification_diagnostic_reports_only_what_was_observed(self) -> None:
+        # Lookout R4-F1: the uncertainty diagnostic must not claim a
+        # replacement when the verification saw something else. Two
+        # non-replacement observations: the leaf is gone before the first
+        # verification (stat unavailable), and the leaf is the staged inode
+        # but was truncated after capture (size mismatch, same inode). Both
+        # refuse with cleanup uncertainty, remove nothing, and say so.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        real_link = os.link
+
+        def link_then_unlink(*args, **kwargs):
+            real_link(*args, **kwargs)
+            blob.unlink()
+
+        def link_then_truncate(*args, **kwargs):
+            real_link(*args, **kwargs)
+            os.truncate(blob, 3)
+
+        cases = (
+            ("absent", link_then_unlink, "could not be re-verified", None),
+            ("truncated", link_then_truncate, "is the staged inode but its size is 3", b"Exa"),
+        )
+        for name, side_effect, expected, survivor in cases:
+            with self.subTest(case=name):
+                before = {int(n) for n in os.listdir("/dev/fd")}
+                with mock.patch.object(payload.os, "link", side_effect=side_effect):
+                    with self.assertRaises(payload.PayloadError) as caught:
+                        self.dispatch_file(f"fault-verify-diag-{name}", "brief.md")
+                self.assertEqual({int(n) for n in os.listdir("/dev/fd")}, before)
+                self.assertEqual(caught.exception.code, "cleanup_uncertain")
+                message = str(caught.exception)
+                self.assertIn(expected, message)
+                self.assertNotIn("replaced", message)
+                self.assertIn("no digest-leaf removal was attempted", message)
+                self.assertIn("while the shard is attached", message)
+                self.assertNotIn(LEAK_CANARY, message)
+                if survivor is None:
+                    self.assertFalse(blob.exists())
+                else:
+                    self.assertEqual(blob.read_bytes(), survivor)
+                    blob.unlink()  # reset for the next subtest
+                self.assertEqual(self.counts()["dispatch_ledger"], 0)
+                self.assertEqual(self.staging_files(), [])
+
 
 class RetryFactoryOrderTest(PayloadHarness):
     """Review correction: retry preflight precedes runtime-adapter

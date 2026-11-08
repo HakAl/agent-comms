@@ -943,25 +943,39 @@ def publish_final(
                 stat.S_ISLNK(leaf_st.st_mode)
                 or not stat.S_ISREG(leaf_st.st_mode)
                 or (leaf_st.st_dev, leaf_st.st_ino) != (staged_st.st_dev, staged_st.st_ino)
-                or leaf_st.st_size != capture.byte_count
             ):
                 custody_error = PayloadError(
                     "dispatch_payload_publish_failed",
                     f"newly linked blob for digest {capture.sha256} is not the "
-                    "verified staged payload inode; either the staging entry was "
-                    "replaced between write and link or the linked entry was "
-                    "replaced after the link, and publication refuses",
+                    "verified staged payload inode (type or identity differs); either "
+                    "the staging entry was replaced between write and link or the "
+                    "linked entry was replaced after the link, and publication refuses",
+                )
+            elif leaf_st.st_size != capture.byte_count:
+                custody_error = PayloadError(
+                    "dispatch_payload_publish_failed",
+                    f"newly linked blob for digest {capture.sha256} is the staged inode "
+                    f"but its size is {leaf_st.st_size}, not the captured "
+                    f"{capture.byte_count}; the staged inode was modified after capture, "
+                    "and publication refuses",
                 )
         if custody_error is not None:
+            # Report only what was observed: the entry could not be verified as
+            # the expected staged payload (stat unavailable, type/identity
+            # mismatch, or size mismatch on the same inode); nothing was
+            # removed; residue may remain. Attachment has not been checked yet,
+            # so canonical-path refusal and audit visibility hold only while the
+            # retained shard is the canonical one.
             discard_staging(staged)
             raise PayloadError(
                 "cleanup_uncertain",
                 f"cleanup uncertain for digest {capture.sha256} at {blob_rel} after "
-                f"{custody_error}: the entry at the digest name is not the inode this "
-                "call staged and its origin cannot be established, so it was left in "
-                "place as residue; a wrong-content entry refuses later publication and "
-                "reads of this digest until an operator removes it, and remains "
-                "measurable via `agent-comms payload-audit`",
+                f"{custody_error}: the entry at the digest name could not be verified as "
+                "the expected staged payload, no digest-leaf removal was attempted, and "
+                "residue may remain; while the shard is attached to the canonical store, "
+                "an unverifiable entry refuses later publication and reads of this digest "
+                "until an operator removes it and is measurable via `agent-comms "
+                "payload-audit`; residue in a detached shard lies outside the audit's reach",
             ) from custody_error
         identity = (staged_st.st_dev, staged_st.st_ino)
 
