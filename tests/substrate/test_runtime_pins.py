@@ -10,6 +10,7 @@ from __future__ import annotations
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
 import io
+import json
 import os
 import platform
 import re
@@ -90,6 +91,91 @@ class ManifestDataTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, re.escape(str(bad))) as raised:
                     runtime_pins.load_runtime_pins()
         self.assertIn("schema 2", str(raised.exception))
+
+
+class PinsPathOverrideTest(unittest.TestCase):
+    """``AGENT_COMMS_RUNTIME_PINS`` names an alternative manifest for one process.
+
+    Same class as the four versions-dir and digest overrides: an absolute
+    path, empty means unset, and every error names the file actually read.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.override = Path(self.temp.name) / "pins.json"
+        manifest = runtime_pins.load_runtime_pins()
+        for entry in manifest["runtimes"].values():
+            entry["platforms"][UNLISTED] = dict(entry["platforms"][RELEASE_PLATFORM], version="9.9.9")
+        self.override.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def _env(self, value: str | None) -> mock._patch_dict:
+        if value is None:
+            return mock.patch.dict(os.environ, {}, clear=False)
+        return mock.patch.dict(os.environ, {runtime_pins.RUNTIME_PINS_ENV: value})
+
+    def test_env_name_and_default(self) -> None:
+        self.assertEqual(runtime_pins.RUNTIME_PINS_ENV, "AGENT_COMMS_RUNTIME_PINS")
+        with self._env(None):
+            os.environ.pop(runtime_pins.RUNTIME_PINS_ENV, None)
+            self.assertEqual(runtime_pins.runtime_pins_path(), runtime_pins.RUNTIME_PINS_PATH)
+            with self.assertRaises(PlatformNotCertified):
+                runtime_pins.pin_for("claude", UNLISTED)
+
+    def test_override_is_read_by_the_resolver(self) -> None:
+        with self._env(str(self.override)):
+            self.assertEqual(runtime_pins.runtime_pins_path(), self.override)
+            self.assertEqual(runtime_pins.load_runtime_pins(), json.loads(self.override.read_text()))
+            pin = runtime_pins.pin_for("claude", UNLISTED)
+            self.assertEqual(pin.version, "9.9.9")
+            self.assertIn(UNLISTED, runtime_pins.certified_platforms("codex"))
+            with _patched_platform(UNLISTED):
+                self.assertEqual(runtime_pins.codex_pin().platform, UNLISTED)
+
+    def test_empty_override_means_unset(self) -> None:
+        with self._env(""):
+            self.assertEqual(runtime_pins.runtime_pins_path(), runtime_pins.RUNTIME_PINS_PATH)
+            with self.assertRaises(PlatformNotCertified):
+                runtime_pins.pin_for("claude", UNLISTED)
+
+    def test_relative_override_is_refused_before_any_read(self) -> None:
+        from agent_comms.schema import ValidationError
+
+        with self._env("relative/pins.json"):
+            with self.assertRaisesRegex(ValidationError, re.escape(runtime_pins.RUNTIME_PINS_ENV)) as raised:
+                runtime_pins.runtime_pins_path()
+            self.assertIn("not an absolute path", str(raised.exception))
+            with self.assertRaises(ValidationError):
+                runtime_pins.load_runtime_pins()
+
+    def test_tilde_in_override_is_expanded(self) -> None:
+        home = Path(self.temp.name) / "home"
+        home.mkdir()
+        (home / "pins.json").write_bytes(self.override.read_bytes())
+        with mock.patch.dict(os.environ, {"HOME": str(home), runtime_pins.RUNTIME_PINS_ENV: "~/pins.json"}):
+            self.assertEqual(runtime_pins.runtime_pins_path(), home / "pins.json")
+
+    def test_schema_is_checked_through_the_override_naming_it(self) -> None:
+        self.override.write_text('{"schema": 1, "runtimes": {}}', encoding="utf-8")
+        with self._env(str(self.override)):
+            with self.assertRaisesRegex(ValueError, re.escape(str(self.override))) as raised:
+                runtime_pins.load_runtime_pins()
+        self.assertIn("schema 2", str(raised.exception))
+        self.assertNotIn(str(runtime_pins.RUNTIME_PINS_PATH), str(raised.exception))
+
+    def test_unknown_runtime_error_names_the_override(self) -> None:
+        with self._env(str(self.override)):
+            with self.assertRaisesRegex(KeyError, re.escape(str(self.override))):
+                runtime_pins.pin_for("gemini")
+
+    def test_patched_module_constant_still_bites(self) -> None:
+        # The existing tests patch RUNTIME_PINS_PATH on the module; the path
+        # function must read the attribute at call time, not bind it at import.
+        with self._env(None):
+            os.environ.pop(runtime_pins.RUNTIME_PINS_ENV, None)
+            with mock.patch.object(runtime_pins, "RUNTIME_PINS_PATH", self.override):
+                self.assertEqual(runtime_pins.runtime_pins_path(), self.override)
+                self.assertEqual(runtime_pins.pin_for("claude", UNLISTED).version, "9.9.9")
 
 
 class CurrentPlatformTest(unittest.TestCase):

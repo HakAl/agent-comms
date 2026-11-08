@@ -15,7 +15,9 @@ certifying a new platform is described in CONTRIBUTING.md under "Runtime
 pins". On a platform without an entry every consumer fails closed with
 :class:`PlatformNotCertified`, whose message names the platform and what to
 do. The file is package data, so an installed wheel carries it; the cell
-drift test and ``agent-comms version`` read the same file.
+drift test and ``agent-comms version`` read the same file. One process can
+be pointed at another manifest with ``AGENT_COMMS_RUNTIME_PINS`` (see
+:func:`runtime_pins_path`); ``agent-comms version`` reports which file it read.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from .fsutil import file_sha256
 
 RUNTIME_PINS_PATH = Path(__file__).with_name("runtime_pins.json")
 RUNTIME_PINS_SCHEMA = 2
+RUNTIME_PINS_ENV = "AGENT_COMMS_RUNTIME_PINS"
 CLAUDE_VERSIONS_DIR_ENV = "AGENT_COMMS_CLAUDE_VERSIONS_DIR"
 CLAUDE_PINNED_SHA256_ENV = "AGENT_COMMS_CLAUDE_PINNED_SHA256"
 CODEX_VERSIONS_DIR_ENV = "AGENT_COMMS_CODEX_VERSIONS_DIR"
@@ -61,14 +64,35 @@ def current_platform() -> str:
     return f"{sys.platform}-{_platform.machine().lower()}"
 
 
+def runtime_pins_path() -> Path:
+    """The manifest this process reads: the shipped file, or the override.
+
+    ``AGENT_COMMS_RUNTIME_PINS`` names an alternative manifest for one
+    process and the children it starts, the same class of knob as the
+    versions-dir and digest overrides. Empty is unset; a relative path is
+    refused, as for :func:`codex_versions_dir`, so the file read is never a
+    function of the working directory. ``agent-comms version`` reports the
+    path chosen here. The module constant is read at call time so a test
+    that patches it keeps its effect.
+    """
+    override = os.environ.get(RUNTIME_PINS_ENV)
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            from .schema import ValidationError
+
+            raise ValidationError(f"{RUNTIME_PINS_ENV}={override!r} is not an absolute path; set it to one")
+        return Path(os.path.normpath(path))
+    return RUNTIME_PINS_PATH
+
+
 def load_runtime_pins() -> dict:
     """The certified runtime manifest as written, checked for the schema."""
-    manifest = json.loads(RUNTIME_PINS_PATH.read_text(encoding="utf-8"))
+    path = runtime_pins_path()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
     schema = manifest.get("schema") if isinstance(manifest, dict) else None
     if schema != RUNTIME_PINS_SCHEMA:
-        raise ValueError(
-            f"{RUNTIME_PINS_PATH}: expected runtime pins schema {RUNTIME_PINS_SCHEMA}, found {schema!r}"
-        )
+        raise ValueError(f"{path}: expected runtime pins schema {RUNTIME_PINS_SCHEMA}, found {schema!r}")
     return manifest
 
 
@@ -114,7 +138,7 @@ def codex_pin() -> RuntimePin:
 def _runtime_entry(runtime: str) -> dict:
     runtimes = load_runtime_pins()["runtimes"]
     if runtime not in runtimes:
-        raise KeyError(f"{RUNTIME_PINS_PATH} has no runtime {runtime!r} (has: {', '.join(sorted(runtimes))})")
+        raise KeyError(f"{runtime_pins_path()} has no runtime {runtime!r} (has: {', '.join(sorted(runtimes))})")
     return runtimes[runtime]
 
 

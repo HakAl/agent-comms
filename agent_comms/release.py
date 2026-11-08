@@ -98,6 +98,7 @@ def release_info() -> dict:
         "contract_version": code_identity.CONTRACT_VERSION,
         "platform": platform,
         "platform_pins": platform_pins(manifest, platform),
+        "runtime_pins_path": str(runtime_pins.runtime_pins_path()),
         "certified_runtimes": manifest,
         **repo_git_info(paths.REPO_ROOT),
     }

@@ -158,7 +158,13 @@ and CPU architecture as Python reports them, `<sys.platform>-<machine>`:
 `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-aarch64`. On a
 shell, `uname -m` prints the second half. `agent-comms version` prints the
 key it resolved as `platform` and, under `platform_pins`, the certified
-version per runtime for it, `null` where there is none.
+version per runtime for it, `null` where there is none. It also prints
+`runtime_pins_path`, the manifest it read: the shipped file, or the one
+named by `AGENT_COMMS_RUNTIME_PINS` (an absolute path; empty means unset),
+which lets one process and its children resolve pins from another manifest.
+The hermetic suite uses it on an uncertified host; production reads the
+shipped file, and workers do not inherit it (spawned worker environments
+drop every `AGENT_COMMS_*` variable).
 
 An entry is a claim that the gated cells passed on that platform with that
 version, so a platform is listed only with that evidence (see AGENTS.md).

@@ -65,6 +65,7 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertIn("codex", payload["certified_runtimes"]["runtimes"])
             self.assertIn("claude", payload["certified_runtimes"]["runtimes"])
             self.assertEqual(payload["platform"], runtime_pins.current_platform())
+            self.assertEqual(payload["runtime_pins_path"], str(runtime_pins.RUNTIME_PINS_PATH))
             self.assertEqual(
                 payload["platform_pins"],
                 {
@@ -77,6 +78,39 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertIn("git_describe", payload)
             self.assertIn("git_exact_tag", payload)
             self.assertIn("pin_worktree", payload)
+
+    def test_release_info_and_cli_report_a_pins_override(self) -> None:
+        # A failure report from a process running with AGENT_COMMS_RUNTIME_PINS
+        # set must show the file it read, so `agent-comms version` names it.
+        shipped = runtime_pins.load_runtime_pins()
+        for entry in shipped["runtimes"].values():
+            entry["platforms"]["unlisted-arch"] = dict(next(iter(entry["platforms"].values())), version="9.9.9")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            override = Path(temp_dir) / "pins.json"
+            override.write_text(json.dumps(shipped), encoding="utf-8")
+            env = os.environ.copy()
+            env[runtime_pins.RUNTIME_PINS_ENV] = str(override)
+            pythonpath = str(paths.REPO_ROOT)
+            if env.get("PYTHONPATH"):
+                pythonpath = os.pathsep.join((pythonpath, env["PYTHONPATH"]))
+            env["PYTHONPATH"] = pythonpath
+            with patch.dict(os.environ, {runtime_pins.RUNTIME_PINS_ENV: str(override)}):
+                with patch.object(runtime_pins, "current_platform", return_value="unlisted-arch"):
+                    info = release_info()
+            result = subprocess.run(
+                [sys.executable, "-m", "agent_comms.cli", "version"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+        cli_info = json.loads(result.stdout)
+        self.assertEqual(info["runtime_pins_path"], str(override))
+        self.assertEqual(info["certified_runtimes"], shipped)
+        self.assertEqual(info["platform_pins"], {"claude": "9.9.9", "codex": "9.9.9"})
+        self.assertEqual(cli_info["runtime_pins_path"], str(override))
+        self.assertEqual(cli_info["certified_runtimes"], shipped)
 
     def test_runtime_pins_ship_inside_the_package(self) -> None:
         # ac-4ao.2: the pin manifest is package data, so an installed wheel
