@@ -791,13 +791,19 @@ class PublishedBlob:
     """Result and custody of one payload publication.
 
     For a blob this call created, ``shard_fd`` is a retained duplicate of the
-    verified shard directory FD and ``identity`` is the ``(st_dev, st_ino)``
-    of the newly linked inode; both stay valid through the caller's SQL commit
-    or rollback so a rollback can remove exactly the created inode
-    FD-relative (``rollback_created_blob``), never a replacement reachable
-    through a swapped pathname. A reused pre-existing blob carries no custody
-    (nothing may be removed on rollback). ``close()`` is idempotent and must
-    run on every success and error path once the SQL outcome is settled.
+    verified shard directory FD, ``identity`` is the ``(st_dev, st_ino)`` of
+    the newly linked inode, and ``blob_fd`` is a retained FD of that inode;
+    all three stay valid through the caller's SQL commit or rollback so a
+    rollback can remove exactly the created inode FD-relative
+    (``rollback_created_blob``), never a replacement reachable through a
+    swapped pathname. ``blob_fd`` is what makes ``identity`` meaningful: a
+    filesystem such as ext4 hands a freed inode number to the next file
+    created in the directory, so a decoy linked at the digest name after an
+    unlink would otherwise carry the created inode's ``(st_dev, st_ino)``;
+    an inode with an open descriptor stays allocated and its number cannot
+    be reissued. A reused pre-existing blob carries no custody (nothing may
+    be removed on rollback). ``close()`` is idempotent and must run on every
+    success and error path once the SQL outcome is settled.
     """
 
     path: Path
@@ -805,14 +811,16 @@ class PublishedBlob:
     leaf_name: str
     shard_fd: int | None = None
     identity: tuple[int, int] | None = None
+    blob_fd: int | None = None
     _closed: bool = False
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self.shard_fd is not None:
-            os.close(self.shard_fd)
+        for fd in (self.shard_fd, self.blob_fd):
+            if fd is not None:
+                os.close(fd)
 
 
 def publish_final(
@@ -1002,16 +1010,26 @@ def publish_final(
                 ),
             )
             raise
-        discard_staging(staged)
-        # Retain shard custody past this function's own FD cleanup so the
-        # caller can remove exactly this created inode, FD-relative, if its
-        # SQL transaction fails after publication.
+        # Retain shard custody, and the created inode itself, past this
+        # function's own FD cleanup so the caller can remove exactly this
+        # created inode, FD-relative, if its SQL transaction fails after
+        # publication. The staged file FD is the created inode (the link made
+        # them one); holding a duplicate keeps its inode number allocated, so
+        # the rollback identity guard cannot be met by a decoy that inherited
+        # a freed number (ext4 reissues freed inode numbers at once).
+        retained_shard_fd: int | None = None
+        retained_blob_fd: int | None = None
         try:
             retained_shard_fd = os.dup(shard_fd)
+            retained_blob_fd = os.dup(staged.file_fd)
         except OSError as exc:
+            for fd in (retained_shard_fd, retained_blob_fd):
+                if fd is not None:
+                    os.close(fd)
+            discard_staging(staged)
             dup_error = PayloadError(
                 "dispatch_payload_publish_failed",
-                f"could not retain shard custody for the published blob: {exc.strerror}",
+                f"could not retain custody for the published blob: {exc.strerror}",
             )
             _remove_linked_blob_durably(
                 shard_fd,
@@ -1030,12 +1048,14 @@ def publish_final(
                 ),
             )
             raise dup_error
+        discard_staging(staged)
         return PublishedBlob(
             path=final_path,
             created=True,
             leaf_name=leaf_name,
             shard_fd=retained_shard_fd,
             identity=identity,
+            blob_fd=retained_blob_fd,
         )
     finally:
         for fd in reversed(fds):
@@ -1061,14 +1081,30 @@ def rollback_created_blob(published: PublishedBlob) -> None:
     redirect cleanup and a leaf replacement (an attacker decoy at the
     canonical digest name) is never deleted: a mismatch raises the typed
     error, leaves the replacement untouched, and reports the created inode as
-    residue. ``OSError`` from the guard stat or the unlink propagates for the
-    caller to classify. The caller owns the follow-up durability fsync of
+    residue. The identity is trustworthy because ``published.blob_fd`` keeps
+    the created inode allocated (see :class:`PublishedBlob`); the guard
+    checks that descriptor still describes the recorded inode too.
+    ``OSError`` from the guard stat or the unlink propagates for the caller
+    to classify. The caller owns the follow-up durability fsync of
     ``published.shard_fd`` and the closing of the custody FDs.
     """
-    if not published.created or published.shard_fd is None or published.identity is None:
+    if (
+        not published.created
+        or published.shard_fd is None
+        or published.identity is None
+        or published.blob_fd is None
+    ):
         raise PayloadError(
             "dispatch_payload_publish_failed",
             "rollback cleanup is only defined for a publication that created its blob",
+        )
+    held = os.fstat(published.blob_fd)
+    if (held.st_dev, held.st_ino) != published.identity:
+        raise PayloadError(
+            "dispatch_payload_publish_failed",
+            f"retained descriptor for digest {published.leaf_name} does not describe the "
+            "blob this dispatch created; refusing to unlink anything, and the created "
+            "inode remains as orphan residue",
         )
     st = os.lstat(published.leaf_name, dir_fd=published.shard_fd)
     if stat.S_ISLNK(st.st_mode) or (st.st_dev, st.st_ino) != published.identity:

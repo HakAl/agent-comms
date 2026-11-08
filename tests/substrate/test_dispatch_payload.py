@@ -687,6 +687,48 @@ class PublicationFaultTest(PayloadHarness):
         self.assertEqual(blob.read_bytes(), b"attacker decoy at digest name")
         self.assertEqual(self.counts()["dispatch_ledger"], 0)
 
+    def test_created_inode_is_held_open_so_a_decoy_cannot_inherit_its_number(self) -> None:
+        # ext4 hands a freed inode number to the next file created in the
+        # directory (200 of 200 in the Debian VM; 0 of 200 while the inode is
+        # held open), so (st_dev, st_ino) alone cannot tell the created blob
+        # from a decoy linked after an unlink. The publication keeps the
+        # created inode open until the SQL outcome settles, which keeps its
+        # number allocated on every POSIX filesystem; the leaf-decoy test above
+        # then holds on Linux as well as on APFS.
+        self.write_source("brief.md")
+        blob = self.blob_path()
+        real_publish_final = payload.publish_final
+        seen: dict[str, object] = {}
+
+        def recording_publish_final(*args, **kwargs):
+            published = real_publish_final(*args, **kwargs)
+            seen["published"] = published
+            return published
+
+        def replace_then_fail(*args, **kwargs):
+            published = seen["published"]
+            held = os.fstat(published.blob_fd)
+            seen["held_identity"] = (held.st_dev, held.st_ino)
+            blob.unlink()
+            blob.write_bytes(b"attacker decoy at digest name")
+            seen["decoy_ino"] = blob.stat().st_ino
+            seen["held_nlink_after"] = os.fstat(published.blob_fd).st_nlink
+            raise RuntimeError("injected insert failure")
+
+        with mock.patch.object(payload, "publish_final", side_effect=recording_publish_final):
+            with mock.patch.object(Mailbox, "_insert_message", side_effect=replace_then_fail):
+                with self.assertRaises(payload.PayloadError) as caught:
+                    self.dispatch_file("fault-leaf-decoy-inode", "brief.md")
+        published = seen["published"]
+        self.assertTrue(published.created)
+        self.assertEqual(seen["held_identity"], published.identity)
+        self.assertEqual(seen["held_nlink_after"], 0)  # unlinked, still allocated
+        self.assertNotEqual(seen["decoy_ino"], published.identity[1])
+        self.assertEqual(caught.exception.code, "cleanup_uncertain")
+        self.assertIn("refusing to unlink the replacement", str(caught.exception))
+        self.assertTrue(published._closed)  # custody FDs released once settled
+        self.assertEqual(blob.read_bytes(), b"attacker decoy at digest name")
+
     def test_failing_call_never_deletes_preexisting_verified_blob(self) -> None:
         self.write_source("brief.md")
         winner = self.dispatch_file("fault-winner", "brief.md")
