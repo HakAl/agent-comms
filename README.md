@@ -35,8 +35,8 @@ process. Humans and scripts use the `agent-comms` CLI.
   fresh-clone preverify and an install smoke test of the wheel. `make hooks`
   installs a pre-push hook that runs hygiene and lint on the commits about
   to be published. CI runs hygiene, lint, the suite and the install smoke
-  test on macOS (preverify stays local: CI already is a fresh clone), plus
-  the `make claude-seat` check and an informational Linux probe.
+  test on macOS (preverify stays local: CI already is a fresh clone), the
+  `make claude-seat` check, and the suite again on Linux.
 
 Release 0.2.0 was walked through on a clean Mac against milestone 1 of
 [the roadmap](docs/ROADMAP.md) (macOS); the commands and results are in
