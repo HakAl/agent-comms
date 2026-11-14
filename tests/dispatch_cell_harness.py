@@ -3,9 +3,11 @@ from __future__ import annotations
 import tests.isolation
 
 import contextlib
+import functools
 import json
 import hashlib
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -202,6 +204,79 @@ def codex_cert_auth_copy_back(cert_home: Path, temp_home: Path, snapshot: str) -
         return
     if current_refresh is None or (temp_refresh is not None and temp_refresh > current_refresh):
         _atomic_write_text(cert_auth, temp_content)
+
+
+# A cell's worker log and event stream live in the cell's temporary directory,
+# so a failed assertion is the only place they outlive the test. Each file
+# contributes at most this many trailing bytes to the message.
+WORKER_EVIDENCE_TAIL_BYTES = 6000
+_TOKEN_SHAPED = re.compile(
+    r"eyJ[A-Za-z0-9_-]{16,}(?:\.[A-Za-z0-9_-]+){0,2}|sk-[A-Za-z0-9_-]{20,}"
+)
+
+
+def _redact(text: str, secrets: tuple[str, ...]) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return _TOKEN_SHAPED.sub("[redacted]", text)
+
+
+def _file_tail(path: Path) -> str:
+    with path.open("rb") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, size - WORKER_EVIDENCE_TAIL_BYTES))
+        data = handle.read()
+    text = data.decode("utf-8", errors="replace")
+    if size > WORKER_EVIDENCE_TAIL_BYTES:
+        # Drop the partial first line of a cut tail.
+        text = text.split("\n", 1)[-1]
+    return text
+
+
+def worker_evidence(dispatch: dict, *, secrets: tuple[str, ...] = ()) -> str:
+    """What the worker left behind for ``dispatch``, as text for a failure
+    message: the row's outcome and the tails of its log and event stream.
+
+    Never raises: a file that is absent or unreadable is named as such. Token
+    shaped text and every value in ``secrets`` are replaced before returning,
+    since the message is written to certification logs and records.
+    """
+    observed = dispatch.get("observed_values")
+    observed = observed if isinstance(observed, dict) else {}
+    outcome = {
+        key: dispatch.get(key)
+        for key in ("dispatch_id", "status", "result", "failure_reason")
+    }
+    outcome["closeout"] = observed.get("closeout")
+    parts = [f"worker evidence: {outcome!r}"]
+    for key in ("worker_log", "worker_events"):
+        raw = observed.get(key)
+        if not raw:
+            parts.append(f"{key}: not recorded")
+            continue
+        try:
+            tail = _file_tail(Path(str(raw)))
+        except OSError as exc:
+            parts.append(f"{key}: {raw} unreadable ({exc.__class__.__name__})")
+            continue
+        parts.append(f"{key} tail ({raw}):\n{tail.rstrip()}")
+    return _redact("\n".join(parts), secrets)
+
+
+def _with_worker_evidence(method):  # type: ignore[no-untyped-def]
+    """Append :func:`worker_evidence` to an AssertionError raised by a harness
+    assertion whose first argument is the dispatch row."""
+
+    @functools.wraps(method)
+    def checked(self, dispatch, *args, **kwargs):  # type: ignore[no-untyped-def]
+        try:
+            return method(self, dispatch, *args, **kwargs)
+        except AssertionError as exc:
+            evidence = worker_evidence(dispatch, secrets=getattr(self, "evidence_secrets", ()))
+            raise AssertionError(f"{exc}\n{evidence}") from exc
+
+    return checked
 
 
 def wait_until(predicate: Callable[[], object], timeout_seconds: float) -> object:
@@ -453,6 +528,8 @@ class DispatchCellHarness:
         self._spawn_handles: set[str] = set()
         self._closed = False
         self.halt_on_terminal = halt_on_terminal
+        # Values worker_evidence must never print (a cert login token).
+        self.evidence_secrets: tuple[str, ...] = ()
         worker_project_root = root / worker_id
         provision_worker_git_root(worker_project_root)
         self.store.register_actor(HUMAN_ID, "human", "alice")
@@ -584,6 +661,7 @@ class DispatchCellHarness:
         )
         return dispatch, fixture
 
+    @_with_worker_evidence
     def assert_closed_with_parented_reply(self, dispatch: dict) -> None:
         self.assert_dispatch_closed(dispatch)
         triggers = [
@@ -625,6 +703,7 @@ class DispatchCellHarness:
         if not __import__("re").fullmatch(r"[0-9a-f]{64}", str(delta.get("manifest_sha256", ""))):
             raise AssertionError(f"positive cell has invalid manifest digest: {delta!r}")
 
+    @_with_worker_evidence
     def assert_closed_with_file_backed_reply(
         self, dispatch: dict, expected_bytes: bytes
     ) -> tuple[dict, list[dict]]:
@@ -652,7 +731,9 @@ class DispatchCellHarness:
             )
         if len(artifact_replies) != 1:
             raise AssertionError(
-                f"expected one artifact reply parented to {dispatch['message_id']}, got {artifact_replies!r}"
+                f"expected one artifact reply parented to {dispatch['message_id']}, got {artifact_replies!r}; "
+                "all parented replies: "
+                + repr([(reply["id"], reply["from"], reply["body_storage"]) for reply in replies])
             )
         if triggers[0]["status"] != "closed":
             raise AssertionError(f"trigger was not closed: {triggers[0]!r}")
@@ -861,13 +942,18 @@ def make_claude_harness(
     output_file: Path | None = None,
     spawn: dict | None = None,
 ) -> DispatchCellHarness:
-    return DispatchCellHarness(
+    cert_env = claude_cert_env(root)
+    harness = DispatchCellHarness(
         root,
         CLAUDE_WORKER_ID,
         "claude",
         spawn or render_spawn("claude", CLAUDE_WORKER_ID),
-        TempClaudeAdapter(child_pid_file, output_file, cert_env=claude_cert_env(root)),
+        TempClaudeAdapter(child_pid_file, output_file, cert_env=cert_env),
     )
+    token = cert_env.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        harness.evidence_secrets = (token,)
+    return harness
 
 
 def codex_cell_preflight() -> tuple[bool, str]:
