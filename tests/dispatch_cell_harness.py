@@ -1183,6 +1183,84 @@ def supervisor_root_negative_fixture(worker_cwd: Path, protected_root: Path | No
         shutil.rmtree(probe["probe_dir"], ignore_errors=True)
 
 
+STARTUP_SECRET_NAME = "RC_DERIVED_SECRET"
+# Startup file -> the marker variable it exports. Covers zsh, bash and sh.
+STARTUP_FILE_MARKERS = {
+    ".zshenv": "STARTUP_MARKER_ZSHENV",
+    ".zprofile": "STARTUP_MARKER_ZPROFILE",
+    ".zshrc": "STARTUP_MARKER_ZSHRC",
+    ".bash_profile": "STARTUP_MARKER_BASH_PROFILE",
+    ".bashrc": "STARTUP_MARKER_BASHRC",
+    ".profile": "STARTUP_MARKER_PROFILE",
+}
+STARTUP_ENV_FILE_NAME = "startup-variable-file.sh"
+STARTUP_ENV_FILE_MARKER = "STARTUP_MARKER_BASH_ENV"
+STARTUP_MARKERS = (*STARTUP_FILE_MARKERS.values(), STARTUP_ENV_FILE_MARKER)
+
+
+def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
+    """Fill ``home`` with startup files for zsh, bash and sh that each export
+    ``RC_DERIVED_SECRET`` (read from a file, as an rc-derived secret is) and
+    their own marker, plus one file meant to be named by ``BASH_ENV``.
+    Returns that last file."""
+    secret_path = home / "admin-token"
+    secret_path.write_text(secret_value)
+
+    def body(marker: str) -> str:
+        return (
+            f"export {STARTUP_SECRET_NAME}=\"$(cat {shlex.quote(str(secret_path))})\"\n"
+            f"export {marker}=1\n"
+        )
+
+    for name, marker in STARTUP_FILE_MARKERS.items():
+        (home / name).write_text(body(marker))
+    env_file = home / STARTUP_ENV_FILE_NAME
+    env_file.write_text(body(STARTUP_ENV_FILE_MARKER))
+    return env_file
+
+
+def startup_probe_source(result_path: Path) -> str:
+    """A script that records what its own process environment carries of the
+    startup fixture, and enough identity to know which process answered."""
+    names = (STARTUP_SECRET_NAME, *STARTUP_MARKERS)
+    return (
+        "import json, os\n"
+        f"names = {names!r}\n"
+        "result = {\n"
+        "    'startup': {name: os.environ.get(name, '') for name in names},\n"
+        "    'home': os.environ.get('HOME', ''),\n"
+        "    'zdotdir': os.environ.get('ZDOTDIR', ''),\n"
+        "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
+        "}\n"
+        f"open({str(result_path)!r}, 'w').write(json.dumps(result))\n"
+    )
+
+
+SHELL_NAMES = frozenset({"sh", "bash", "zsh", "dash"})
+
+
+def outer_shell_flags(command: str) -> tuple[str, str] | None:
+    """``(shell name, option letters)`` when ``command`` is a shell invocation
+    such as ``/bin/bash -lc '...'``; ``None`` for anything else or a string
+    that does not parse. Only options ahead of the command string count."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if not argv or Path(argv[0]).name not in SHELL_NAMES:
+        return None
+    letters = ""
+    for token in argv[1:]:
+        if not token.startswith("-"):
+            break
+        if token.startswith("--"):
+            continue
+        letters += token[1:]
+        if "c" in token[1:]:
+            break
+    return Path(argv[0]).name, letters
+
+
 def operator_env(root: Path, token: str = "operator-secret") -> dict[str, str]:
     home = root / "home"
     secret_dir = home / ".agent-comms"

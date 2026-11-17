@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import unittest
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -19,8 +20,11 @@ from tests.dispatch_cell_harness import (
     codex_pin_env_for_versions_dir,
     long_running_worker_spawn,
     make_codex_harness,
+    outer_shell_flags,
+    startup_probe_source,
     supervisor_root_negative_fixture,
     wait_until,
+    write_operator_startup_fixture,
 )
 from agent_comms import supervisor
 from agent_comms.adapters._base import SupervisorUnreachable
@@ -329,44 +333,87 @@ class CodexCellTest(unittest.TestCase):
             self.assertFalse(env_present(payload["GITHUB_TOKEN"]), payload)
             self.assertFalse(env_present(payload["AWS_SECRET_ACCESS_KEY"]), payload)
 
-    def test_codex_spawn_zdotdir_isolates_operator_rc_secret_export(self) -> None:
+    def test_codex_command_shell_loads_no_operator_startup_file(self) -> None:
+        """The shell Codex starts for a worker command carries nothing from the
+        operator's zsh, bash or sh startup files, nor from a file a config
+        layer names through BASH_ENV. The probe names no shell: it reports the
+        environment of an ordinary command."""
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
             root = Path(temp_dir)
             operator_home = root / "operator-home"
             operator_home.mkdir()
-            secret_path = operator_home / "admin-token"
             secret_value = "rc-derived-admin-secret"
-            secret_path.write_text(secret_value)
-            (operator_home / ".zshenv").write_text(
-                f"export RC_DERIVED_SECRET=\"$(cat {shlex.quote(str(secret_path))})\"\n"
-            )
-            (operator_home / ".zshrc").write_text(
-                f"export RC_DERIVED_SECRET=\"$(cat {shlex.quote(str(secret_path))})\"\n"
-            )
+            env_file = write_operator_startup_fixture(operator_home, secret_value)
             harness = make_codex_harness(root)
             stack.callback(harness.close)
-            result_path = root / "alpha-codex-worker" / "rc_env_result.json"
+            with (root / "codex-home" / "config.toml").open("a") as config:
+                config.write(
+                    "\n[shell_environment_policy.set]\n"
+                    f"BASH_ENV = {json.dumps(str(env_file))}\n"
+                )
+            worker_root = root / CODEX_WORKER_ID
+            result_path = worker_root / "startup_probe_result.json"
+            probe_path = worker_root / "startup_probe.py"
+            probe_path.write_text(startup_probe_source(result_path))
+            probe_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe_path))}"
 
             with patched_env({"HOME": str(operator_home), "ZDOTDIR": str(operator_home)}):
                 dispatch = harness.dispatch_and_wait(
-                    idempotency_key="codex-rc-secret-isolation",
+                    idempotency_key="codex-startup-file-isolation",
                     ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
                     timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
                     body=(
-                        "Run a fresh zsh login-style environment check and write JSON to "
-                        f"{result_path} with keys rc_secret_present and rc_secret_value. "
-                        "The value should come only from os.environ.get('RC_DERIVED_SECRET', '') "
-                        "inside that zsh-launched process. Then send the normal parented reply "
-                        "and call close_dispatch with result=satisfied, that reply id, and "
-                        "delta=true."
+                        "Run exactly this command once, as an ordinary command, without "
+                        f"wrapping it in another shell: {probe_command}\n"
+                        "Do not edit the script or its output file. Then send the normal "
+                        "parented reply and call close_dispatch with result=satisfied, "
+                        "that reply id, and delta=true."
                     ),
                 )
 
             harness.assert_closed_with_parented_reply(dispatch)
-            self.assertTrue(result_path.exists(), f"missing rc env result at {result_path}")
-            payload = __import__("json").loads(result_path.read_text())
-            self.assertFalse(env_present(payload["rc_secret_present"]), payload)
-            self.assertNotEqual(payload["rc_secret_value"], secret_value, payload)
+            events = [
+                json.loads(line)
+                for line in Path(dispatch["observed_values"]["worker_events"])
+                .read_text()
+                .splitlines()
+                if line.strip()
+            ]
+            commands = [
+                event["item"]
+                for event in events
+                if event.get("type") == "item.completed"
+                and event.get("item", {}).get("type") == "command_execution"
+            ]
+            probe_runs = [
+                item
+                for item in commands
+                if str(probe_path) in str(item.get("command", ""))
+                and item.get("exit_code") == 0
+                and item.get("status") == "completed"
+            ]
+            self.assertTrue(probe_runs, f"no completed probe command in the events: {commands!r}")
+            self.assertTrue(result_path.exists(), f"missing probe result at {result_path}")
+            payload = json.loads(result_path.read_text())
+            # The answer counts only if it came from this dispatch's worker
+            # under the operator home and the owned empty ZDOTDIR.
+            self.assertEqual(payload["dispatch_id"], dispatch["dispatch_id"], payload)
+            self.assertEqual(payload["home"], str(operator_home), payload)
+            zdotdir = Path(payload["zdotdir"])
+            self.assertEqual(zdotdir.name, "empty-zdotdir", payload)
+            self.assertTrue(
+                zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), payload
+            )
+            leaked = {name: value for name, value in payload["startup"].items() if value}
+            print(f"CODEX_STARTUP_LEAKED={sorted(leaked)}")
+            self.assertEqual(leaked, {}, f"operator startup state reached the worker command: {payload!r}")
+            # Mechanism, for this pinned Codex: no command shell was started
+            # as a login or interactive shell.
+            shells = [outer_shell_flags(str(item.get("command", ""))) for item in commands]
+            print(f"CODEX_COMMAND_SHELLS={sorted({shell for shell in shells if shell})}")
+            for shell in shells:
+                if shell is not None:
+                    self.assertFalse(set(shell[1]) & {"l", "i"}, f"login or interactive command shell: {commands!r}")
 
     def test_hard_ttl_kills_real_codex_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
