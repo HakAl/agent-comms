@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
+import subprocess
+import sys
 import tomllib
 import unittest
 
@@ -124,6 +126,9 @@ class EffectiveProblemsTest(unittest.TestCase):
             # Lookout LINUX-PINS-003 C1: Codex's matcher knows only * and ?;
             # brackets are literal, so these cannot match ZDOTDIR.
             {"exclude": ["ZDOTDI[R]", "[Z]DOTDIR", "ZDOTDIR[!x]"]},
+            # C3: Codex compares each character's lowercase form, so the
+            # dotted and dotless i are not the ASCII letter.
+            {"exclude": ["ZDOTD\u0130R", "ZDOTD\u0131R", "ZDOTDIR?", "?ZDOTDIR", "ZDOT", "*X"]},
             {"inherit": "all", "include_only": []},
             {"set": {**codex_startup.PINNED_ENV, "EDITOR": "vi"}},
         ):
@@ -146,6 +151,8 @@ class EffectiveProblemsTest(unittest.TestCase):
             ({"exclude": ["*"]}, "removes ZDOTDIR"),
             ({"exclude": ["ZDOT???"]}, "removes ZDOTDIR"),
             ({"exclude": ["z*d?r"]}, "removes ZDOTDIR"),
+            ({"exclude": ["***Z**R***"]}, "removes ZDOTDIR"),
+            ({"exclude": ["*?*?*?*?*?*?*?*"]}, "removes ZDOTDIR"),
             ({"inherit": "core"}, "inherit is 'core'"),
             ({"inherit": "none"}, "inherit is 'none'"),
             ({"experimental_use_profile": True}, "experimental_use_profile"),
@@ -155,6 +162,21 @@ class EffectiveProblemsTest(unittest.TestCase):
                 problems = codex_startup.effective_problems(effective(**policy))
                 self.assertEqual(len(problems), 1, problems)
                 self.assertRegex(problems[0], expected)
+
+    def test_a_run_of_wildcards_is_matched_in_bounded_time(self) -> None:
+        # Lookout LINUX-PINS-003 R3: a regex built from the pattern
+        # backtracks over every split of the name between the stars, so a
+        # harmless exclusion in a config file stalled dispatch admission.
+        # Run apart from this process: the slow form never returns.
+        script = (
+            "from agent_comms import codex_startup as s\n"
+            "pinned = {'allow_login_shell': False, 'features': {'shell_snapshot': False},\n"
+            "          'shell_environment_policy': {'set': dict(s.PINNED_ENV),\n"
+            "              'exclude': ['*' * 80 + 'X', '*?' * 40 + 'X', '*' * 5000 + 'Q' + '?' * 5000]}}\n"
+            "print(s.effective_problems(pinned))\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=20)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "[]"), done.stderr)
 
     def test_settings_outside_the_policy(self) -> None:
         for change, expected in (

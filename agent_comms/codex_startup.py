@@ -38,7 +38,6 @@ the pinned build (``tests/cells/test_cell_codex.py``).
 
 from __future__ import annotations
 
-import re
 import tomllib
 from typing import Callable
 
@@ -121,11 +120,28 @@ def read_config(
 
 def _codex_pattern_matches(pattern: str, name: str) -> bool:
     """Whether a Codex environment pattern matches ``name``. Codex 0.164.0
-    matches case-insensitively with two wildcards only, ``*`` (any run) and
-    ``?`` (one character); every other character, brackets included, is
-    literal."""
-    parts = (".*" if char == "*" else "." if char == "?" else re.escape(char) for char in pattern)
-    return re.fullmatch("".join(parts), name, re.IGNORECASE | re.DOTALL) is not None
+    knows two wildcards, ``*`` (any run) and ``?`` (one character); every
+    other character, brackets included, is literal and compared by its
+    lowercase form, one character at a time. Matched iteratively, restarting
+    from the last ``*``, so the work is bounded by the two lengths' product
+    (a regex built from the pattern backtracks over a run of stars)."""
+    at = position = 0
+    star = resume = -1
+    while position < len(name):
+        char = pattern[at] if at < len(pattern) else None
+        if char == "*":
+            star, resume = at, position
+            at += 1
+        elif char is not None and (char == "?" or char.lower() == name[position].lower()):
+            at += 1
+            position += 1
+        elif star >= 0:
+            # Let the last star take one more character and try again.
+            resume += 1
+            at, position = star + 1, resume
+        else:
+            return False
+    return all(char == "*" for char in pattern[at:])
 
 
 def effective_problems(config: dict) -> list[str]:
