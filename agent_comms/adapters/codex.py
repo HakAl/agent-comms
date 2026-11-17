@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import DispatchContext
 from ._base import ProcessSpawnAdapter, SpawnFailed
-from .. import codex_binding, codex_hook, paths
+from .. import codex_binding, codex_hook, codex_startup, paths
 from ..codex_home import preflight_home_snapshot
 from ..codex_auth_refresh import codex_auth_snapshot
 from ..policies import WORKER_DISPATCH_POLICY_VERSION, compile_policy
@@ -47,6 +47,10 @@ class McpBindingMismatch(RuntimeError):
 
 class PolicyHookUnverified(RuntimeError):
     """Codex would not run the worker's policy hook, or the hook does not run."""
+
+
+class ShellStartupUnpinned(RuntimeError):
+    """A stored option would let Codex load shell startup files for a worker."""
 
 
 HookLister = Callable[..., "tuple[list | None, str | None]"]
@@ -115,6 +119,17 @@ class CodexAdapter(ProcessSpawnAdapter):
         )
         return codex_binding.Binding(str(paths.mcp_command()), args, project_root, env)
 
+    def _spawn_env(self, spawn: dict, context: DispatchContext, policy) -> dict[str, str]:  # type: ignore[no-untyped-def]
+        raw_env = spawn.get("env", {}) or {}
+        if isinstance(raw_env, dict):
+            named = sorted(str(key) for key in raw_env if str(key) in codex_startup.STARTUP_ENV_NAMES)
+            if named:
+                raise ShellStartupUnpinned(
+                    f"spawn.env for {context.recipient['id']} sets {', '.join(named)}, which names a file "
+                    "for the worker's command shells to load at startup; remove it from the spawn block"
+                )
+        return super()._spawn_env(spawn, context, policy)
+
     def _runtime_prefix_args(self, context: DispatchContext) -> list[str]:
         if context.recipient.get("runtime") not in self.supported_runtimes:
             return []
@@ -124,6 +139,7 @@ class CodexAdapter(ProcessSpawnAdapter):
                 self.mcp_binding(context), extra={"default_tools_approval_mode": "approve"}
             ),
             *codex_hook.config_overrides(self.policy_hook_command(context)),
+            *codex_startup.config_overrides(),
         ]
 
     @staticmethod
@@ -157,6 +173,16 @@ class CodexAdapter(ProcessSpawnAdapter):
             raise PolicyHookUnverified(
                 f"the stored spawn args for {context.recipient['id']} set hooks with -c ({', '.join(hooks)}), "
                 "which could replace or disable the policy hook; remove them from the spawn block"
+            )
+        # The startup pins keep operator shell startup files out of the
+        # worker's command shells; a stored option must not undo them.
+        startup = [f"-c {value}" for value in launch.overrides if codex_startup.touches_startup(value)]
+        startup += codex_startup.startup_toggles(launch.feature_toggles)
+        if startup:
+            raise ShellStartupUnpinned(
+                f"the stored spawn args for {context.recipient['id']} set shell startup behavior "
+                f"({', '.join(startup)}), which could load operator startup files into worker commands; "
+                "remove them from the spawn block"
             )
         # Exact-hash trust is the contract; the bypass would also run every
         # untrusted hook while hooks/list still reports ours trusted.

@@ -38,6 +38,9 @@ def _run_probe(argv_prefix: list[str], home: Path, **extra: str) -> dict:
         env=_probe_env(home, **extra),
         check=True,
         capture_output=True,
+        # bash loads .bashrc for a command shell whose stdin is a socket
+        # (its remote-shell rule), which a test runner's stdin can be.
+        stdin=subprocess.DEVNULL,
         timeout=30,
     )
     return json.loads(result_path.read_text())

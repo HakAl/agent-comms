@@ -20,10 +20,10 @@ from pathlib import Path
 from unittest import mock
 
 from tests.codex_custody_support import forwarding_codex_script, install_fake_codex_custody
-from agent_comms import cli, codex_binding, codex_hook, doctor, mcp_clients, paths, provisioning, setup, supervisor
+from agent_comms import cli, codex_binding, codex_hook, codex_startup, doctor, mcp_clients, paths, provisioning, setup, supervisor
 from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
-from agent_comms.adapters.codex import CodexAdapter, McpBindingMismatch, PolicyHookUnverified
+from agent_comms.adapters.codex import CodexAdapter, McpBindingMismatch, PolicyHookUnverified, ShellStartupUnpinned
 from agent_comms.policies import WORKER_DISPATCH_POLICY_VERSION
 from agent_comms.spawn import render_spawn
 from agent_comms.store import WORKER_DISPATCH_POLICY
@@ -514,6 +514,7 @@ class WorkerBindingTest(_Project):
         overrides = [
             *codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"}),
             *codex_hook.config_overrides(CodexAdapter.policy_hook_command(self.context)),
+            *codex_startup.config_overrides(),
         ]
         self.assertEqual(child[0], str(self.codex_binary))
         self.assertEqual(child[1:1 + len(overrides)], overrides)
@@ -522,7 +523,7 @@ class WorkerBindingTest(_Project):
         values = {}
         for flag, pair in zip(overrides[::2], overrides[1::2]):
             self.assertEqual(flag, "-c")
-            if pair.startswith("hooks."):
+            if pair.startswith("hooks.") or codex_startup.touches_startup(pair):
                 continue
             key, _, value = pair.partition("=")
             values[key.removeprefix("mcp_servers.agent-comms.")] = tomllib.loads(f"v = {value}")["v"]
@@ -586,6 +587,7 @@ class WorkerBindingTest(_Project):
         overrides = [
             *codex_binding.config_overrides(binding, extra={"default_tools_approval_mode": "approve"}),
             *codex_hook.config_overrides(CodexAdapter.policy_hook_command(self.context)),
+            *codex_startup.config_overrides(),
         ]
         # The template passes no --profile (slice 3b), so a stored one is the
         # profile the launch loads; stored -c follow ours, in launch order.
@@ -649,6 +651,57 @@ class WorkerBindingTest(_Project):
                 self.with_stored(*extra)
                 runner, hooks = StubCodex(resolved(binding)), StubHooks()
                 with self.assertRaisesRegex(PolicyHookUnverified, "stored spawn args for t-codex-worker set hooks"), \
+                        mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
+                    self.dispatch(runner, hooks)
+                spawn.assert_not_called()
+                self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
+
+    def test_stored_options_that_unpin_shell_startup_start_nothing(self) -> None:
+        # Lookout LINUX-PINS-002 R1/R2: every route by which a stored option
+        # could bring login shells, the startup snapshot or a startup
+        # variable back is refused before Codex runs at all.
+        binding = CodexAdapter().mcp_binding(self.context)
+        for extra in (
+            ["-c", "allow_login_shell=true"],
+            ["--config=features.shell_snapshot=true"],
+            ["-c", 'features."shell_snapshot_v2"=true'],
+            ["--config", "features={{shell_snapshot=true}}"],
+            ["-c", 'shell_environment_policy.set.BASH_ENV="/operator/.bashrc"'],
+            ["-c", 'shell_environment_policy={{inherit="all"}}'],
+            ["--enable", "shell_snapshot"],
+            ["--enable=shell_snapshot"],
+            ["--enable=shell_snapshot_v2"],
+            ["--disable", "shell_snapshot"],
+        ):
+            with self.subTest(extra):
+                self.setUp()
+                self.with_stored(*extra)
+                runner, hooks = StubCodex(resolved(binding)), StubHooks()
+                with self.assertRaisesRegex(
+                    ShellStartupUnpinned, "stored spawn args for t-codex-worker set shell startup behavior"
+                ), mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
+                    self.dispatch(runner, hooks)
+                spawn.assert_not_called()
+                self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
+
+    def test_other_feature_toggles_and_overrides_still_launch(self) -> None:
+        binding = CodexAdapter().mcp_binding(self.context)
+        self.with_stored("--enable", "web_search", "-c", "features.web_search=true")
+        runner = StubCodex(resolved(binding))
+        _adapter, spawn, _result = self.dispatch(runner)
+        spawn.assert_called_once()
+
+    def test_spawn_env_naming_a_startup_file_starts_nothing(self) -> None:
+        binding = CodexAdapter().mcp_binding(self.context)
+        for name in ("BASH_ENV", "ENV"):
+            with self.subTest(name):
+                self.setUp()
+                spawn_block = self.context.recipient["spawn"]
+                self.context.recipient["spawn"] = {
+                    **spawn_block, "env": {**spawn_block.get("env", {}), name: "/operator/.bashrc"}
+                }
+                runner, hooks = StubCodex(resolved(binding)), StubHooks()
+                with self.assertRaisesRegex(ShellStartupUnpinned, f"spawn.env for t-codex-worker sets {name}"), \
                         mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
                     self.dispatch(runner, hooks)
                 spawn.assert_not_called()
