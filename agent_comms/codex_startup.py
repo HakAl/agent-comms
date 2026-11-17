@@ -12,7 +12,12 @@ empty ``ZDOTDIR`` only covers zsh. A worker launch therefore pins, with
   startup state to replay;
 - ``shell_environment_policy.set`` ``BASH_ENV`` and ``ENV`` empty: explicit
   values apply after every exclusion, so a config layer cannot name a file
-  for a non-login shell to load, and an empty value names none.
+  for a non-login shell to load, and an empty value names none;
+- ``shell_environment_policy.set`` ``SHLVL`` = ``1``: bash loads ``.bashrc``
+  for a plain ``bash -c`` when its stdin is a socket (its remote-shell rule)
+  and the shell level is below 2. Codex gives command shells a socket, and
+  the worker environment carries no ``SHLVL``, so without this every command
+  loaded ``.bashrc``. Starting from 1, the command shell is at level 2.
 
 This is launch hygiene for the shells the runtime creates. A shell the
 worker starts itself as ``bash -l`` or ``bash -i`` still reads the files in
@@ -27,6 +32,8 @@ import tomllib
 PINNED_FEATURES = ("shell_snapshot", "shell_snapshot_v2")
 # Variables that name a file for a shell to load at startup.
 STARTUP_ENV_NAMES = frozenset({"BASH_ENV", "ENV"})
+# What shell_environment_policy.set pins for every command shell.
+PINNED_ENV = {"BASH_ENV": "", "ENV": "", "SHLVL": "1"}
 _TOP_LEVEL = ("allow_login_shell", "features", "shell_environment_policy")
 
 
@@ -34,7 +41,7 @@ def config_overrides() -> list[str]:
     """The ``-c`` pairs that pin the settings above for one run."""
     values = ["allow_login_shell=false"]
     values += [f"features.{name}=false" for name in PINNED_FEATURES]
-    values += [f'shell_environment_policy.set.{name}=""' for name in sorted(STARTUP_ENV_NAMES)]
+    values += [f'shell_environment_policy.set.{name}="{value}"' for name, value in sorted(PINNED_ENV.items())]
     argv: list[str] = []
     for value in values:
         argv += ["-c", value]

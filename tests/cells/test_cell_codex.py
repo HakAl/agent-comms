@@ -372,48 +372,49 @@ class CodexCellTest(unittest.TestCase):
                 )
 
             harness.assert_closed_with_parented_reply(dispatch)
-            events = [
-                json.loads(line)
-                for line in Path(dispatch["observed_values"]["worker_events"])
-                .read_text()
-                .splitlines()
-                if line.strip()
-            ]
-            commands = [
-                event["item"]
-                for event in events
-                if event.get("type") == "item.completed"
-                and event.get("item", {}).get("type") == "command_execution"
-            ]
-            probe_runs = [
-                item
-                for item in commands
-                if str(probe_path) in str(item.get("command", ""))
-                and item.get("exit_code") == 0
-                and item.get("status") == "completed"
-            ]
-            self.assertTrue(probe_runs, f"no completed probe command in the events: {commands!r}")
-            self.assertTrue(result_path.exists(), f"missing probe result at {result_path}")
-            payload = json.loads(result_path.read_text())
-            # The answer counts only if it came from this dispatch's worker
-            # under the operator home and the owned empty ZDOTDIR.
-            self.assertEqual(payload["dispatch_id"], dispatch["dispatch_id"], payload)
-            self.assertEqual(payload["home"], str(operator_home), payload)
-            zdotdir = Path(payload["zdotdir"])
-            self.assertEqual(zdotdir.name, "empty-zdotdir", payload)
-            self.assertTrue(
-                zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), payload
-            )
-            leaked = {name: value for name, value in payload["startup"].items() if value}
-            print(f"CODEX_STARTUP_LEAKED={sorted(leaked)}")
-            self.assertEqual(leaked, {}, f"operator startup state reached the worker command: {payload!r}")
-            # Mechanism, for this pinned Codex: no command shell was started
-            # as a login or interactive shell.
-            shells = [outer_shell_flags(str(item.get("command", ""))) for item in commands]
-            print(f"CODEX_COMMAND_SHELLS={sorted({shell for shell in shells if shell})}")
-            for shell in shells:
-                if shell is not None:
-                    self.assertFalse(set(shell[1]) & {"l", "i"}, f"login or interactive command shell: {commands!r}")
+            with harness.worker_evidence_on_failure(dispatch):
+                events = [
+                    json.loads(line)
+                    for line in Path(dispatch["observed_values"]["worker_events"])
+                    .read_text()
+                    .splitlines()
+                    if line.strip()
+                ]
+                commands = [
+                    event["item"]
+                    for event in events
+                    if event.get("type") == "item.completed"
+                    and event.get("item", {}).get("type") == "command_execution"
+                ]
+                probe_runs = [
+                    item
+                    for item in commands
+                    if str(probe_path) in str(item.get("command", ""))
+                    and item.get("exit_code") == 0
+                    and item.get("status") == "completed"
+                ]
+                self.assertTrue(probe_runs, f"no completed probe command in the events: {commands!r}")
+                self.assertTrue(result_path.exists(), f"missing probe result at {result_path}")
+                payload = json.loads(result_path.read_text())
+                # The answer counts only if it came from this dispatch's worker
+                # under the operator home and the owned empty ZDOTDIR.
+                self.assertEqual(payload["dispatch_id"], dispatch["dispatch_id"], payload)
+                self.assertEqual(payload["home"], str(operator_home), payload)
+                zdotdir = Path(payload["zdotdir"])
+                self.assertEqual(zdotdir.name, "empty-zdotdir", payload)
+                self.assertTrue(
+                    zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), payload
+                )
+                shells = [outer_shell_flags(str(item.get("command", ""))) for item in commands]
+                print(f"CODEX_COMMAND_SHELLS={sorted({shell for shell in shells if shell})}")
+                leaked = {name: value for name, value in payload["startup"].items() if value}
+                print(f"CODEX_STARTUP_LEAKED={sorted(leaked)}")
+                self.assertEqual(leaked, {}, f"operator startup state reached the worker command: {payload!r}")
+                # Mechanism, for this pinned Codex: no command shell was started
+                # as a login or interactive shell.
+                for shell in shells:
+                    if shell is not None:
+                        self.assertFalse(set(shell[1]) & {"l", "i"}, f"login or interactive command shell: {commands!r}")
 
     def test_hard_ttl_kills_real_codex_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:

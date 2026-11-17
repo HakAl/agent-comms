@@ -12,6 +12,7 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 
 import json
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ def _probe_env(home: Path, **extra: str) -> dict[str, str]:
     return {"PATH": "/usr/bin:/bin", "HOME": str(home), **extra}
 
 
-def _run_probe(argv_prefix: list[str], home: Path, **extra: str) -> dict:
+def _run_probe(argv_prefix: list[str], home: Path, stdin: int = subprocess.DEVNULL, **extra: str) -> dict:
     result_path = home / "probe-result.json"
     probe = home / "probe.py"
     probe.write_text(harness.startup_probe_source(result_path))
@@ -40,7 +41,7 @@ def _run_probe(argv_prefix: list[str], home: Path, **extra: str) -> dict:
         capture_output=True,
         # bash loads .bashrc for a command shell whose stdin is a socket
         # (its remote-shell rule), which a test runner's stdin can be.
-        stdin=subprocess.DEVNULL,
+        stdin=stdin,
         timeout=30,
     )
     return json.loads(result_path.read_text())
@@ -75,6 +76,19 @@ class StartupFixtureIsLiveTest(unittest.TestCase):
     def test_empty_bash_env_names_no_file(self) -> None:
         payload = _run_probe([BASH, "-c"], self.home, BASH_ENV="")
         self.assertEqual({k: v for k, v in payload["startup"].items() if v}, {})
+
+    def test_socket_stdin_loads_bashrc_unless_the_shell_level_is_set(self) -> None:
+        # bash's remote-shell rule: a plain `bash -c` whose stdin is a socket
+        # loads .bashrc while the shell level is below 2. Codex gives command
+        # shells a socket, so the adapter pins SHLVL=1.
+        ours, theirs = socket.socketpair()
+        self.addCleanup(ours.close)
+        self.addCleanup(theirs.close)
+        loaded = _run_probe([BASH, "-c"], self.home, stdin=ours.fileno())
+        self.assertEqual(loaded["startup"]["STARTUP_MARKER_BASHRC"], "1")
+        self.assertEqual(loaded["startup"][harness.STARTUP_SECRET_NAME], "the-secret")
+        pinned = _run_probe([BASH, "-c"], self.home, stdin=ours.fileno(), SHLVL="1")
+        self.assertEqual({k: v for k, v in pinned["startup"].items() if v}, {})
 
     def test_every_marker_is_reported(self) -> None:
         payload = _run_probe([BASH, "-c"], self.home)

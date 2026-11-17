@@ -599,6 +599,16 @@ class DispatchCellHarness:
         cert_home, temp_home, snapshot = self._codex_cert_auth_state
         codex_cert_auth_copy_back(cert_home, temp_home, snapshot)
 
+    @contextlib.contextmanager
+    def worker_evidence_on_failure(self, dispatch: dict) -> Iterator[None]:
+        """Append :func:`worker_evidence` to an AssertionError raised by a
+        cell's own checks on ``dispatch``."""
+        try:
+            yield
+        except AssertionError as exc:
+            evidence = worker_evidence(dispatch, secrets=self.evidence_secrets)
+            raise AssertionError(f"{exc}\n{evidence}") from exc
+
     def dispatch_and_wait(
         self,
         *,

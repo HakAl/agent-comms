@@ -34,7 +34,7 @@ class ConfigOverridesTest(unittest.TestCase):
             {
                 "allow_login_shell": False,
                 "features": {"shell_snapshot": False, "shell_snapshot_v2": False},
-                "shell_environment_policy": {"set": {"BASH_ENV": "", "ENV": ""}},
+                "shell_environment_policy": {"set": {"BASH_ENV": "", "ENV": "", "SHLVL": "1"}},
             },
         )
 
