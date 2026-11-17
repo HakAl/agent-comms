@@ -6,7 +6,7 @@
       "platforms": {
         "darwin-arm64": {
           "version": "0.164.0",
-          "certified_on": "2026-10-25",
+          "certified_on": "2026-11-17",
           "sha256": "2bfda010e68e0c2c4156a4562a6248800103132d911e812661cb5a446738e10b"
         },
         "linux-aarch64": {
