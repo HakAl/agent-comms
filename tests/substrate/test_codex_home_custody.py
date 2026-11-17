@@ -891,7 +891,7 @@ class ContractSurfaceGovernanceTest(unittest.TestCase):
         # 30 adds --verbose to the Claude worker's stream-json spawn.
         from agent_comms import code_identity
 
-        self.assertEqual(code_identity.CONTRACT_VERSION, 31)
+        self.assertEqual(code_identity.CONTRACT_VERSION, 32)
 
     def test_declared_digest_matches_governed_surface(self) -> None:
         from agent_comms import code_identity

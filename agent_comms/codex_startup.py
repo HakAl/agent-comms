@@ -38,7 +38,7 @@ the pinned build (``tests/cells/test_cell_codex.py``).
 
 from __future__ import annotations
 
-import fnmatch
+import re
 import tomllib
 from typing import Callable
 
@@ -119,6 +119,15 @@ def read_config(
     return config, None
 
 
+def _codex_pattern_matches(pattern: str, name: str) -> bool:
+    """Whether a Codex environment pattern matches ``name``. Codex 0.164.0
+    matches case-insensitively with two wildcards only, ``*`` (any run) and
+    ``?`` (one character); every other character, brackets included, is
+    literal."""
+    parts = (".*" if char == "*" else "." if char == "?" else re.escape(char) for char in pattern)
+    return re.fullmatch("".join(parts), name, re.IGNORECASE | re.DOTALL) is not None
+
+
 def effective_problems(config: dict) -> list[str]:
     """Why the configuration Codex resolved (``config/read``) would not keep
     operator startup files out of the shells Codex creates. Empty when every
@@ -158,8 +167,7 @@ def effective_problems(config: dict) -> list[str]:
         problems.append(f"shell_environment_policy.inherit is {policy.get('inherit')!r}, which drops ZDOTDIR")
     exclude = policy.get("exclude")
     for pattern in exclude if isinstance(exclude, list) else ([exclude] if exclude else []):
-        # Codex matches these as case-insensitive globs.
-        if fnmatch.fnmatchcase("zdotdir", str(pattern).lower()):
+        if _codex_pattern_matches(str(pattern), "ZDOTDIR"):
             problems.append(f"shell_environment_policy.exclude {str(pattern)!r} removes ZDOTDIR")
     if policy.get("experimental_use_profile"):
         problems.append("shell_environment_policy.experimental_use_profile runs commands through the login profile")

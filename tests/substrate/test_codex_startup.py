@@ -121,6 +121,9 @@ class EffectiveProblemsTest(unittest.TestCase):
         for policy in (
             {"include_only": ["HOME", "PATH", "SHLVL", "ZDOTDIR", "AGENT_COMMS_*"]},
             {"exclude": ["AWS_*", "*TOKEN*", "FOO?"], "ignore_default_excludes": True},
+            # Lookout LINUX-PINS-003 C1: Codex's matcher knows only * and ?;
+            # brackets are literal, so these cannot match ZDOTDIR.
+            {"exclude": ["ZDOTDI[R]", "[Z]DOTDIR", "ZDOTDIR[!x]"]},
             {"inherit": "all", "include_only": []},
             {"set": {**codex_startup.PINNED_ENV, "EDITOR": "vi"}},
         ):
@@ -141,6 +144,8 @@ class EffectiveProblemsTest(unittest.TestCase):
             ({"exclude": ["ZDOTDIR"]}, "exclude 'ZDOTDIR' removes ZDOTDIR"),
             ({"exclude": ["AWS_*", "zdot*"]}, "exclude 'zdot\\*' removes ZDOTDIR"),
             ({"exclude": ["*"]}, "removes ZDOTDIR"),
+            ({"exclude": ["ZDOT???"]}, "removes ZDOTDIR"),
+            ({"exclude": ["z*d?r"]}, "removes ZDOTDIR"),
             ({"inherit": "core"}, "inherit is 'core'"),
             ({"inherit": "none"}, "inherit is 'none'"),
             ({"experimental_use_profile": True}, "experimental_use_profile"),

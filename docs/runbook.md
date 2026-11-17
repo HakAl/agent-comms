@@ -504,8 +504,9 @@ both variables, further `set` entries) is left as you configured it. When
 Codex gives no answer the dispatch is refused as not verified. Codex 0.164.0
 does not accept `--profile` for `app-server`, so a stored spawn that passes
 `--profile` cannot be checked and is refused; remove it from the spawn
-block (`agent-comms rerender-spawn --runtime codex` drops a
-`--profile <worker>` left by an older version).
+block (`agent-comms rerender-spawn --runtime codex --apply` drops a
+`--profile <worker>` left by an older version; `--apply` needs the
+operator credential).
 
 Limits:
 
