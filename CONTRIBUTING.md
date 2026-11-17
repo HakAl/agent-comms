@@ -59,8 +59,8 @@ root. Set it from your own shell, never from an agent.
 The guard refuses either of the last two unless every target on the command
 line is under `tests/cells`, so the substrate suite never runs against a
 real home. Without a login the cell tests skip. Other skip reasons include
-a missing certified pin for the platform, no `git` or `codex` on `PATH`, no
-`/bin/zsh`, no passwd database, an old SQLite, an `AF_UNIX` bind the OS
+a missing certified pin for the platform, no `git`, `codex` or `bash` on
+`PATH`, no `/bin/zsh`, no passwd database, an old SQLite, an `AF_UNIX` bind the OS
 sandbox denies, or running as root; the skip message names the cause. A
 skip is reported as a skip, never as a pass.
 
@@ -129,7 +129,9 @@ to `main`. It is a mirror of the local gates on a fresh macOS runner (minus
 preverify, since CI already is a fresh clone), not a gate in front of the
 push: a failure there means something already public needs fixing. The
 `test-linux` job runs the suite on Ubuntu (Python 3.14) as a required job.
-No Linux runtime pin exists yet, so the live cells and the drift cell skip
+The only Linux runtime pin is Codex on `linux-aarch64`, certified in a
+Debian 13 VM; the runner is `linux-x86_64`, which has no pin, so the live
+cells and the drift cell skip
 there with the `PlatformNotCertified` text, and the hermetic tests that
 build a stub binary named after the pinned version get a pin table entry
 for the host from `tests/hermetic_pins.py` (applied per test class through
@@ -172,6 +174,9 @@ drop every `AGENT_COMMS_*` variable).
 
 An entry is a claim that the gated cells passed on that platform with that
 version, so a platform is listed only with that evidence (see AGENTS.md).
+The entries today: Codex on `darwin-arm64` and `linux-aarch64` (the latter
+certified in a Debian 13 VM), Claude on `darwin-arm64`. `linux-x86_64` and
+`darwin-x86_64` have none.
 Where the manifest has no entry for the current platform every consumer of
 a pin fails closed with one message that names the platform, the platforms
 that are certified, and this section: a Claude dispatch refuses before it
