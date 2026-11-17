@@ -455,7 +455,9 @@ would and exits nonzero when a refresh failed.
 
 **When:** a Codex dispatch is refused because the stored spawn args or
 `spawn.env` "set shell startup behavior" or name "a file for the worker's
-command shells to load at startup", or you want to know what of your shell
+command shells to load at startup", because "Codex would not keep operator
+shell startup files out" of the worker's command shells, or with "worker
+shell startup not verified"; or you want to know what of your shell
 configuration a worker sees.
 
 A worker runs with your `HOME`, so your shell startup files are there for
@@ -480,6 +482,31 @@ starts: a `-c` that sets `allow_login_shell`, `features.shell_snapshot`,
 `spawn.env`. Remove the option from the worker's spawn block and dispatch
 again.
 
+The pins set single keys of `shell_environment_policy`, and Codex merges
+the rest of that table from its config files: the worker's `CODEX_HOME`
+`config.toml` and the project's `.codex/config.toml` layers. Before every
+run agent-comms asks Codex for the configuration it resolved (`config/read`
+from `codex app-server`, loaded as the run loads it) and refuses the
+dispatch, before the worker starts, when that configuration would drop or
+replace what the pins protect. The refusal names each setting:
+
+- `include_only` that does not list `SHLVL` and `ZDOTDIR` by their exact
+  names. Codex applies it after `set`, so it removes the pinned `SHLVL`,
+  and without `ZDOTDIR` zsh reads the files in `HOME`. Add the two names;
+  a pattern in their place is not accepted.
+- `set.ZDOTDIR`, an `exclude` pattern that matches `ZDOTDIR`, or `inherit`
+  other than `all`: each replaces or drops the worker's empty `ZDOTDIR`.
+- `experimental_use_profile`, a pinned value that did not take effect, or a
+  key of the table this check does not know.
+
+Any other restriction (an `exclude` list, an `include_only` that names
+both variables, further `set` entries) is left as you configured it. When
+Codex gives no answer the dispatch is refused as not verified. Codex 0.164.0
+does not accept `--profile` for `app-server`, so a stored spawn that passes
+`--profile` cannot be checked and is refused; remove it from the spawn
+block (`agent-comms rerender-spawn --runtime codex` drops a
+`--profile <worker>` left by an older version).
+
 Limits:
 
 - This is launch hygiene, not a read boundary. A worker command can still
@@ -491,6 +518,11 @@ Limits:
   claim (the check uses `$SHELL -lc` under a fresh empty `ZDOTDIR`).
 - `shell_snapshot_v2` is pinned off and refused; what it would do when
   enabled was not traced.
+- The resolved-configuration check reads what Codex reports for the
+  settings named above. How Codex 0.164.0 builds a command's environment
+  from them (`set` before `include_only`) was read from its source, not
+  observed in a run; the check refuses those configurations instead of
+  relying on it.
 - Claude workers: only the zsh item applies. What Claude Code's own shell
   loads under bash is not established, and no Linux Claude pin exists.
 - Evidence is for Codex 0.164.0 on `darwin-arm64` and `linux-aarch64`.

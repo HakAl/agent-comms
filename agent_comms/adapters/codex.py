@@ -54,6 +54,7 @@ class ShellStartupUnpinned(RuntimeError):
 
 
 HookLister = Callable[..., "tuple[list | None, str | None]"]
+ConfigReader = Callable[..., "tuple[dict | None, str | None]"]
 
 
 class CodexCustodyUnavailable(RuntimeError):
@@ -85,6 +86,11 @@ class CodexAdapter(ProcessSpawnAdapter):
     run that hook (``hooks/list`` through ``hook_lister``) and runs the hook
     once as Codex would (through ``hook_runner``), since Codex runs the tool
     anyway when a hook cannot start.
+
+    The shell startup pins (``codex_startup``) set single keys of a policy
+    the config layers also write, so the preflight reads the configuration
+    Codex resolved (``config/read`` through ``config_reader``) and refuses
+    one that would drop or replace what the pins protect.
     """
 
     runtime_label = "codex"
@@ -96,11 +102,13 @@ class CodexAdapter(ProcessSpawnAdapter):
         mcp_runner: codex_binding.Runner | None = None,
         hook_lister: HookLister | None = None,
         hook_runner: codex_binding.Runner | None = None,
+        config_reader: ConfigReader | None = None,
     ) -> None:
         super().__init__()
         self._mcp_runner = mcp_runner or subprocess.run
         self._hook_lister = hook_lister or codex_hook.list_hooks
         self._hook_runner = hook_runner or subprocess.run
+        self._config_reader = config_reader or codex_startup.read_config
 
     def mcp_binding(self, context: DispatchContext) -> codex_binding.Binding:
         actor_id = str(context.recipient["id"])
@@ -210,8 +218,26 @@ class CodexAdapter(ProcessSpawnAdapter):
                 f"dispatch in {cwd}: {'; '.join(problems)}; remove the conflicting entry from the worker's "
                 f"CODEX_HOME config or the project's .codex/config.toml layers"
             )
+        self._shell_startup_preflight(context, command, cwd=cwd, env=env, overrides=overrides)
         self._policy_hook_preflight(context, command, cwd=cwd, env=env, overrides=overrides)
-        return {"codex_mcp_binding": "verified", "codex_policy_hook": "verified"}
+        return {"codex_mcp_binding": "verified", "codex_policy_hook": "verified", "codex_shell_startup": "verified"}
+
+    def _shell_startup_preflight(
+        self, context: DispatchContext, command: str, *, cwd: str, env: dict[str, str], overrides: list[str]
+    ) -> None:
+        """A config layer no stored option names (the worker's home, a
+        profile, the project) can filter out or replace what the startup
+        pins set, so the resolved configuration is checked, not the argv."""
+        config, error = self._config_reader(command, cwd=cwd, env=env, overrides=overrides)
+        if config is None:
+            raise ShellStartupUnpinned(f"worker shell startup not verified: {error}")
+        problems = codex_startup.effective_problems(config)
+        if problems:
+            raise ShellStartupUnpinned(
+                f"Codex would not keep operator shell startup files out of {context.recipient['id']}'s command "
+                f"shells in {cwd}: {'; '.join(problems)}; change shell_environment_policy in the worker's "
+                "CODEX_HOME config, the selected profile or the project's .codex/config.toml layers"
+            )
 
     def _policy_hook_preflight(
         self, context: DispatchContext, command: str, *, cwd: str, env: dict[str, str], overrides: list[str]

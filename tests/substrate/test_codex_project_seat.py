@@ -87,6 +87,9 @@ class StubHooks:
         self.stdout, self.returncode = stdout, returncode
         self.list_calls: list[dict] = []
         self.run_calls: list[dict] = []
+        self.config_calls: list[dict] = []
+        self.policy: dict = {}
+        self.config_error: str | None = None
 
     def lister(self, codex, **kwargs):
         self.list_calls.append({"codex": codex, **kwargs})
@@ -101,6 +104,18 @@ class StubHooks:
     def runner(self, argv, **kwargs):
         self.run_calls.append({"argv": list(argv), **kwargs})
         return _completed(argv, self.returncode, stdout=self.stdout, stderr="")
+
+    def config_reader(self, codex, **kwargs):
+        """``config/read``: the pins the overrides declare, with
+        ``self.policy`` laid over the shell environment policy."""
+        self.config_calls.append({"codex": codex, **kwargs})
+        if self.config_error is not None:
+            return None, self.config_error
+        return {
+            "allow_login_shell": False,
+            "features": {"shell_snapshot": False},
+            "shell_environment_policy": {"set": dict(codex_startup.PINNED_ENV), **self.policy},
+        }, None
 
 
 def _declared_hook_command(overrides: list[str]) -> str:
@@ -490,7 +505,9 @@ class WorkerBindingTest(_Project):
 
     def dispatch(self, runner: StubCodex, hooks: StubHooks | None = None):
         hooks = hooks or StubHooks()
-        adapter = CodexAdapter(mcp_runner=runner, hook_lister=hooks.lister, hook_runner=hooks.runner)
+        adapter = CodexAdapter(
+            mcp_runner=runner, hook_lister=hooks.lister, hook_runner=hooks.runner, config_reader=hooks.config_reader
+        )
         spawned = supervisor.SupervisedSpawn(
             popen=types.SimpleNamespace(pid=4300), run_token="a" * 32, control_socket="/s", child_pid=4301, wrapper_pid=4300, run_dir="/r"
         )
@@ -537,6 +554,7 @@ class WorkerBindingTest(_Project):
         self.assertEqual(call["env"]["CODEX_HOME"], str(self.worker_home))
         self.assertEqual(result.observed_values["codex_mcp_binding"], "verified")
         self.assertEqual(result.observed_values["codex_policy_hook"], "verified")
+        self.assertEqual(result.observed_values["codex_shell_startup"], "verified")
         # The prompt is still the last argument and separate stdout still applies.
         self.assertIn("t-codex-worker", child[-1])
 
@@ -615,6 +633,7 @@ class WorkerBindingTest(_Project):
         self.assertEqual(json.loads(ran["input"])["tool_name"], codex_hook.SMOKE_TOOL)
         self.assertNotEqual(ran["env"]["ZDOTDIR"], os.environ.get("ZDOTDIR"))
         self.assertEqual(result.observed_values["codex_policy_hook"], "verified")
+        self.assertEqual(result.observed_values["codex_shell_startup"], "verified")
 
     def test_the_hook_command_carries_policy_root_and_fingerprint(self) -> None:
         words = shlex.split(CodexAdapter.policy_hook_command(self.context))
@@ -683,6 +702,43 @@ class WorkerBindingTest(_Project):
                     self.dispatch(runner, hooks)
                 spawn.assert_not_called()
                 self.assertEqual((runner.calls, hooks.list_calls, hooks.run_calls), ([], [], []))
+
+    def test_a_resolved_policy_that_unpins_shell_startup_starts_nothing(self) -> None:
+        # Lookout LINUX-PINS-003 R1: a config layer the stored args never
+        # name (worker home, profile, project) can filter out or replace
+        # what the pins set, so the check reads the policy Codex resolved,
+        # loaded as the launch loads it.
+        for policy, expected in (
+            ({"include_only": ["HOME", "PATH", "ZDOTDIR"]}, "include_only .* omits SHLVL"),
+            ({"set": {**codex_startup.PINNED_ENV, "ZDOTDIR": "/operator-home"}}, "set.ZDOTDIR replaces"),
+            ({"exclude": ["ZDOTDIR"]}, "removes ZDOTDIR"),
+        ):
+            with self.subTest(policy):
+                self.setUp()
+                binding = CodexAdapter().mcp_binding(self.context)
+                self.with_stored("--profile", "p", "-C", "sub")
+                runner, hooks = StubCodex(resolved(binding)), StubHooks()
+                hooks.policy = policy
+                with self.assertRaisesRegex(ShellStartupUnpinned, expected) as raised, \
+                        mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
+                    self.dispatch(runner, hooks)
+                spawn.assert_not_called()
+                self.assertIn("Codex would not keep operator shell startup files out", str(raised.exception))
+                [call] = hooks.config_calls
+                self.assertEqual(call["codex"], str(self.codex_binary))
+                self.assertEqual(call["cwd"], os.path.join(str(self.project), "sub"))
+                self.assertEqual(call["env"]["CODEX_HOME"], str(self.worker_home))
+                self.assertEqual(call["overrides"][:2], ["-p", "p"])
+                self.assertEqual(call["overrides"], runner.calls[0]["argv"][1:-4])
+
+    def test_a_policy_codex_does_not_report_starts_nothing(self) -> None:
+        binding = CodexAdapter().mcp_binding(self.context)
+        runner, hooks = StubCodex(resolved(binding)), StubHooks()
+        hooks.config_error = "codex app-server config/read timed out after 5s"
+        with self.assertRaisesRegex(ShellStartupUnpinned, "worker shell startup not verified: codex app-server"), \
+                mock.patch.object(supervising.spawn, "spawn_supervised") as spawn:
+            self.dispatch(runner, hooks)
+        spawn.assert_not_called()
 
     def test_other_feature_toggles_and_overrides_still_launch(self) -> None:
         binding = CodexAdapter().mcp_binding(self.context)
@@ -883,6 +939,53 @@ class RealCodexResolutionTest(_Project):
         base = worker_home / "config.toml"
         base.write_text(base.read_text() + '\n[mcp_servers.agent-comms]\nenabled_tools = ["whoami"]\n')
         with self.assertRaisesRegex(McpBindingMismatch, "enabled_tools restricts"):
+            self.native_dispatch(worker_home)
+
+    def test_native_codex_refuses_config_layers_that_unpin_shell_startup(self) -> None:
+        # Lookout LINUX-PINS-003 R1, against Codex itself: each layer the
+        # launch loads can drop or replace what the pins set, and the
+        # dispatch is refused before the worker starts.
+        worker_home = _fresh_codex_home(self.root / "worker-home")
+        provisioning.write_codex_home(worker_home, "t-codex-worker", str(self.project))
+        base = worker_home / "config.toml"
+        original = base.read_text()
+        self.native_dispatch_ok(worker_home)
+        for layer, expected in (
+            ('[shell_environment_policy]\ninclude_only = ["HOME", "PATH", "ZDOTDIR", "LANG", "AGENT_COMMS_*", "CODEX_*"]\n',
+             "include_only .* omits SHLVL"),
+            ('[shell_environment_policy.set]\nZDOTDIR = "/operator-home"\n', "set.ZDOTDIR replaces"),
+            ('[shell_environment_policy]\nexclude = ["ZDOT*"]\n', "removes ZDOTDIR"),
+            ('[shell_environment_policy]\ninherit = "core"\n', "inherit is 'core'"),
+            ('[shell_environment_policy]\ninclude_only = ["HOME", "PATH", "SHLVL"]\n', "include_only .* omits ZDOTDIR"),
+        ):
+            with self.subTest(layer=layer):
+                base.write_text(original + "\n" + layer)
+                with self.assertRaisesRegex(ShellStartupUnpinned, expected):
+                    self.native_dispatch(worker_home)
+        # A lower layer naming a startup file is outranked by the pin, and a
+        # restriction that keeps the protected variables is left alone.
+        base.write_text(
+            original + '\n[shell_environment_policy]\nexclude = ["AWS_*"]\n'
+            'include_only = ["HOME", "PATH", "SHLVL", "ZDOTDIR", "AGENT_COMMS_*", "BASH_ENV", "ENV"]\n'
+            '[shell_environment_policy.set]\nBASH_ENV = "/operator-home/.bashrc"\n'
+        )
+        self.native_dispatch_ok(worker_home)
+        # A profile is loaded only when the stored args name it. Codex
+        # 0.164.0 refuses --profile for app-server, so the configuration of
+        # a profile launch cannot be read and the launch is refused whole.
+        base.write_text(original)
+        profile = worker_home / "t-codex-worker.config.toml"
+        profile.write_text('[shell_environment_policy]\ninclude_only = ["HOME", "PATH"]\n')
+        self.native_dispatch_ok(worker_home)
+        with self.assertRaisesRegex(ShellStartupUnpinned, "worker shell startup not verified: .* config/read"):
+            self.native_dispatch(worker_home, "--profile", "t-codex-worker")
+        profile.unlink()
+        # The project's own layer, which the worker's home trusts.
+        project_config = self.project / ".codex" / "config.toml"
+        project_config.write_text(
+            project_config.read_text() + '\n[shell_environment_policy]\ninclude_only = ["HOME", "PATH"]\n'
+        )
+        with self.assertRaisesRegex(ShellStartupUnpinned, "include_only .* omits SHLVL, ZDOTDIR"):
             self.native_dispatch(worker_home)
 
 

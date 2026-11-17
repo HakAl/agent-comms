@@ -61,7 +61,8 @@ def python_shim_script() -> str:
 
 
 # The worker preflight runs ``codex -c key=value ... mcp get agent-comms
-# --json`` and asks ``codex -c ... app-server`` for ``hooks/list``. With no
+# --json`` and asks ``codex -c ... app-server`` for ``hooks/list`` and
+# ``config/read``. With no
 # other config layer, Codex resolves what the -c values set, so the stand-in
 # answers from those and needs no real Codex. It lists the declared hook as
 # trusted when the -c state gives it a trusted_hash; the hash itself is
@@ -99,6 +100,9 @@ if args == ["app-server"]:
         request = json.loads(line)
         if request.get("id") == 1:
             print(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}), flush=True)
+        elif request.get("method") == "config/read":
+            resolved = {key: config.get(key) for key in ("allow_login_shell", "features", "shell_environment_policy")}
+            print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"config": resolved}}), flush=True)
         elif request.get("id") == 2:
             data = [{"cwd": cwd, "hooks": listed} for cwd in request["params"]["cwds"]]
             print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"data": data}}), flush=True)
@@ -129,7 +133,7 @@ print(json.dumps({
 
 
 def mcp_get_codex_script() -> str:
-    """A ``bin/codex`` that answers ``codex mcp get`` and ``hooks/list`` from
+    """A ``bin/codex`` that answers ``codex mcp get``, ``hooks/list`` and ``config/read`` from
     its ``-c`` values, for tests that dispatch a Codex worker without a real
     Codex."""
     return f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(_MCP_GET_STAND_IN)} "$@"\n'
