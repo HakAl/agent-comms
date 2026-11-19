@@ -101,10 +101,11 @@ login, so there is no agent-comms-specific login to create.
    absent. No launchd code exists yet, so the service manager above is new
    work, not a port. The hermetic tests that resolve a pin on the host get
    one from `tests/hermetic_pins.py` on an uncertified platform. Runtime
-   pins: **done** for Codex on `linux-aarch64` (certified in a Debian 13
-   VM). Still open: the Claude pin on `linux-aarch64`, which waits on
-   evidence of what a Linux Claude worker's shell loads. `linux-x86_64` has
-   no certification host and no pin.
+   pins: **done** for Codex and Claude Code on `linux-aarch64` (certified
+   in a Debian 13 VM). On Linux a Claude worker's command shells loaded
+   `.bashrc`; the Claude adapter now pins them as the Codex adapter does,
+   checked by the same kind of cell. `linux-x86_64` has no certification
+   host and no pin.
 3. **CI on Linux.** The same suite runs on Linux. **Done:** the `test-linux`
    job of [the gate workflow](../.github/workflows/gate.yml) runs the suite
    on Ubuntu as a required job; the runner is `linux-x86_64`, so the live
