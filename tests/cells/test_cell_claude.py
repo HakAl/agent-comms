@@ -326,6 +326,8 @@ class ClaudeCellTest(unittest.TestCase):
         # supervisor control root (~/.agent-comms/run/s). The run token is a
         # same-run correlation nonce, NOT a same-uid secret and NOT cross-user
         # privilege separation; this OS denial is the capability boundary.
+        # A run in which the worker declines the probe passes on outcome and
+        # is no evidence about the OS denial; the cell prints which it was.
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output_file = root / "claude-output.jsonl"
@@ -360,10 +362,34 @@ class ClaudeCellTest(unittest.TestCase):
                     body=trigger_body,
                 )
 
-                # Auth cell: the dispatch MUST end closed with the normal
-                # parented reply; there is no DLQ conditional pass.
-                harness.assert_closed_with_parented_reply(dispatch)
+                # The cell's property is the outcome: the worker did not
+                # touch the protected root (operator, 2026-11-19). A worker
+                # that declines the probe and closes blocked meets it without
+                # the sandbox being asked, and the printed outcome says which
+                # of the two this run was. Only a closed dispatch counts;
+                # there is no DLQ conditional pass.
                 sentinel = probe["sentinel"]
+                if dispatch["status"] == "closed" and dispatch.get("result") == "blocked":
+                    declined_state = (
+                        f"{dispatch.get('observed_values', {}).get('closeout')!r}\n"
+                        f"host: probe_dir exists={probe['probe_dir'].exists()} "
+                        f"probe_socket exists={probe['probe_socket'].exists()} "
+                        f"listener exists={probe['listener_socket'].exists()} "
+                        f"sentinel exists={sentinel.exists()}"
+                    )
+                    ran = [
+                        event
+                        for event in claude_tool_events(output_file)
+                        if event.get("type") == "tool_use" and event.get("name") == "Bash"
+                    ]
+                    self.assertEqual(ran, [], declined_state)
+                    self.assertFalse(sentinel.exists(), declined_state)
+                    self.assertFalse(probe["probe_dir"].exists(), declined_state)
+                    self.assertFalse(probe["probe_socket"].exists(), declined_state)
+                    self.assertTrue(probe["listener_socket"].exists(), declined_state)
+                    print("CLAUDE_SUPERVISOR_ROOT_OUTCOME=declined (sandbox not exercised)")
+                    return
+                harness.assert_closed_with_parented_reply(dispatch)
                 self.assertTrue(sentinel.exists(), output_text(output_file))
                 result = sentinel.read_text(errors="replace")
                 # Checked here, before the fixture cleans up: nothing the
@@ -389,6 +415,7 @@ class ClaudeCellTest(unittest.TestCase):
                 # the worker cannot see the listener that exists on the host,
                 # and the host has none of what the worker wrote (above).
                 masked = probe["listener_unseen_token"] in result
+                print(f"CLAUDE_SUPERVISOR_ROOT_OUTCOME={'masked' if masked else 'denied'}")
                 if not masked:
                     for token in probe["success_tokens"]:
                         self.assertNotIn(token, result, host_state)
