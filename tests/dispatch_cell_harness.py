@@ -654,22 +654,16 @@ class DispatchCellHarness:
 
     # The inline attempt is a probe of what the runtime does with a body that
     # looks like its own tool-call markup; the cell's property is the
-    # file-backed reply. Codex can deliver the inline body, and a worker is
-    # told to send exactly one reply, so its probe is not a reply: delivered
-    # as one, the worker rightly refuses to send the file-backed second.
-    INLINE_PROBE_INSTRUCTION = {
-        "claude": (
-            "First attempt send_message inline with the exact text from collision.txt "
-            "as body and this dispatch message as parent_message_id; print whether it "
-            "was delivered, refused, or absent."
-        ),
-        "codex": (
-            "First, as a probe that is not your reply, attempt send_message inline to "
-            "the sender with the exact text from collision.txt as body, subject "
-            "'inline-probe' and no parent_message_id; print whether it was delivered, "
-            "refused, or absent, and continue whatever the outcome."
-        ),
-    }
+    # file-backed reply. A worker is told to send exactly one reply, so the
+    # probe is not a reply: asked for as one, a worker either skips it (Claude,
+    # seen 2026-11-19) or, when the body is delivered (Codex), rightly refuses
+    # to send the file-backed second.
+    INLINE_PROBE_INSTRUCTION = (
+        "First, as a probe that is not your reply, attempt send_message inline to "
+        "the sender with the exact text from collision.txt as body, subject "
+        "'inline-probe' and no parent_message_id; print whether it was delivered, "
+        "refused, or absent, and continue whatever the outcome."
+    )
 
     def file_backed_reply_roundtrip(self, *, runtime: str) -> tuple[dict, bytes]:
         fixture = (
@@ -681,7 +675,7 @@ class DispatchCellHarness:
             ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
             timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
             body=(
-                self.INLINE_PROBE_INSTRUCTION[runtime]
+                self.INLINE_PROBE_INSTRUCTION
                 + " Then send exactly one reply with "
                 "body_file='collision.txt' and this dispatch message as parent_message_id, "
                 "and close_dispatch satisfied with that file-backed reply id and delta=false."
