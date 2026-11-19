@@ -415,10 +415,13 @@ class ClaudeCellTest(unittest.TestCase):
                 # the worker cannot see the listener that exists on the host,
                 # and the host has none of what the worker wrote (above).
                 masked = probe["listener_unseen_token"] in result
-                print(f"CLAUDE_SUPERVISOR_ROOT_OUTCOME={'masked' if masked else 'denied'}")
                 if not masked:
                     for token in probe["success_tokens"]:
                         self.assertNotIn(token, result, host_state)
+                # Seatbelt hides the listener too, so "masked" is said only
+                # where a create or write went through behind the mask.
+                wrote = any(token in result for token in probe["success_tokens"])
+                print(f"CLAUDE_SUPERVISOR_ROOT_OUTCOME={'masked' if wrote else 'denied'}")
                 self.assertTrue(
                     any(signal in result.lower() for signal in probe["denial_tokens"]),
                     host_state,
