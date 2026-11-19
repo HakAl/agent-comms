@@ -1258,6 +1258,8 @@ def startup_probe_source(result_path: Path) -> str:
         "    'startup': {name: os.environ.get(name, '') for name in names},\n"
         "    'home': os.environ.get('HOME', ''),\n"
         "    'zdotdir': os.environ.get('ZDOTDIR', ''),\n"
+        "    'shell': os.environ.get('SHELL', ''),\n"
+        "    'shlvl': os.environ.get('SHLVL', ''),\n"
         "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
         "}\n"
         f"open({str(result_path)!r}, 'w').write(json.dumps(result))\n"

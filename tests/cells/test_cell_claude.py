@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,8 +23,10 @@ from tests.dispatch_cell_harness import (
     claude_tool_events,
     long_running_worker_spawn,
     make_claude_harness,
+    startup_probe_source,
     supervisor_root_negative_fixture,
     wait_until,
+    write_operator_startup_fixture,
 )
 from agent_comms import supervisor
 from agent_comms.adapters._base import SupervisorUnreachable
@@ -613,6 +616,65 @@ class ClaudeCellTest(unittest.TestCase):
             result = net_sentinel.read_text(errors="replace")
             self.assertNotIn("NETPROBE=200", result, result)
             self.assertIn("CONNECT tunnel failed", result, result)
+
+    def test_claude_command_shell_loads_no_operator_startup_file(self) -> None:
+        """The shell Claude Code starts for a worker's Bash command carries
+        nothing from the operator's zsh, bash or sh startup files. The probe
+        names no shell: it reports the environment of an ordinary command."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            operator_home = root / "operator-home"
+            operator_home.mkdir()
+            write_operator_startup_fixture(operator_home, "rc-derived-admin-secret")
+            output_file = root / "claude-output.jsonl"
+            harness = make_claude_harness(root, output_file=output_file)
+            worker_root = root / CLAUDE_WORKER_ID
+            result_path = worker_root / "startup_probe_result.json"
+            probe_path = worker_root / "startup_probe.py"
+            probe_path.write_text(startup_probe_source(result_path))
+            probe_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe_path))}"
+
+            with mock.patch.dict(os.environ, {"HOME": str(operator_home), "ZDOTDIR": str(operator_home)}):
+                dispatch = harness.dispatch_and_wait(
+                    idempotency_key="claude-startup-file-isolation",
+                    ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
+                    timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
+                    subject="startup file isolation",
+                    body=(
+                        "Run exactly this command once using Bash, as an ordinary command, "
+                        f"without wrapping it in another shell: {probe_command}\n"
+                        "Do not edit the script or its output file. Then send the normal "
+                        "parented reply and call close_dispatch with result=satisfied, "
+                        "that reply id, and delta=true."
+                    ),
+                )
+
+            harness.assert_closed_with_parented_reply(dispatch)
+            with harness.worker_evidence_on_failure(dispatch):
+                commands = [
+                    str(event.get("input", {}).get("command", ""))
+                    for event in claude_tool_events(output_file)
+                    if event.get("type") == "tool_use" and event.get("name") == "Bash"
+                ]
+                self.assertTrue(
+                    any(str(probe_path) in command for command in commands),
+                    f"no Bash probe command in the events: {commands!r}",
+                )
+                self.assertTrue(result_path.exists(), f"missing probe result at {result_path}")
+                payload = json.loads(result_path.read_text())
+                # The answer counts only if it came from this dispatch's worker
+                # under the operator home and the owned empty ZDOTDIR.
+                self.assertEqual(payload["dispatch_id"], dispatch["dispatch_id"], payload)
+                self.assertEqual(payload["home"], str(operator_home), payload)
+                zdotdir = Path(payload["zdotdir"])
+                self.assertEqual(zdotdir.name, "empty-zdotdir", payload)
+                self.assertTrue(
+                    zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CLAUDE_WORKER_ID}-"), payload
+                )
+                print(f"CLAUDE_COMMAND_SHELL={payload['shell']!r} SHLVL={payload['shlvl']!r}")
+                leaked = {name: value for name, value in payload["startup"].items() if value}
+                print(f"CLAUDE_STARTUP_LEAKED={sorted(leaked)}")
+                self.assertEqual(leaked, {}, f"operator startup state reached the worker command: {payload!r}")
 
     def test_claude_hard_ttl_kills_real_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
