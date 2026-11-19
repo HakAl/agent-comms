@@ -23,6 +23,7 @@ from tests.dispatch_cell_harness import (
     claude_tool_events,
     long_running_worker_spawn,
     make_claude_harness,
+    startup_files_ran,
     startup_probe_source,
     supervisor_root_negative_fixture,
     wait_until,
@@ -34,6 +35,15 @@ from agent_comms.runtime_pins import claude_binary_path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# What Claude Code's configuration snapshot runs of the startup fixture, by
+# the worker's shell (observed with the pinned build): bash as a login shell
+# reads .bash_profile and the snapshot sources .bashrc; zsh reads nothing
+# under the worker's empty ZDOTDIR and the snapshot sources .zshrc from HOME.
+SNAPSHOT_STARTUP_FILES = {
+    "bash": {"STARTUP_MARKER_BASH_PROFILE": 1, "STARTUP_MARKER_BASHRC": 1},
+    "zsh": {"STARTUP_MARKER_ZSHRC": 1},
+}
 
 # Computed once at import: the platform diagnostic on an unlisted platform,
 # the login text when the custody binary or login is missing, None to run.
@@ -632,17 +642,36 @@ class ClaudeCellTest(unittest.TestCase):
             self.assertIn("CONNECT tunnel failed", result, result)
 
     def test_claude_command_shell_loads_no_operator_startup_file(self) -> None:
-        """The shell Claude Code starts for a worker's Bash command carries
-        nothing from the operator's zsh, bash or sh startup files. The probe
-        names no shell: it reports the environment of an ordinary command."""
+        """A worker's Bash command carries nothing the operator's zsh, bash or
+        sh startup files export, even when a project settings layer tries to
+        undo the launch pins; and those files run only for Claude Code's own
+        configuration snapshot. The probe names no shell: it reports the
+        environment of an ordinary command."""
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             operator_home = root / "operator-home"
             operator_home.mkdir()
-            write_operator_startup_fixture(operator_home, "rc-derived-admin-secret")
+            env_file = write_operator_startup_fixture(operator_home, "rc-derived-admin-secret")
             output_file = root / "claude-output.jsonl"
             harness = make_claude_harness(root, output_file=output_file)
             worker_root = root / CLAUDE_WORKER_ID
+            # Claude applies a settings layer's env after the launch
+            # environment: this one would bring back bash's remote-shell load
+            # of .bashrc, name a file for every shell, and point zsh at the
+            # operator's files.
+            (worker_root / ".claude").mkdir()
+            (worker_root / ".claude" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "env": {
+                            "SHLVL": "0",
+                            "BASH_ENV": str(env_file),
+                            "ENV": str(env_file),
+                            "ZDOTDIR": str(operator_home),
+                        }
+                    }
+                )
+            )
             result_path = worker_root / "startup_probe_result.json"
             probe_path = worker_root / "startup_probe.py"
             probe_path.write_text(startup_probe_source(result_path))
@@ -689,6 +718,17 @@ class ClaudeCellTest(unittest.TestCase):
                 leaked = {name: value for name, value in payload["startup"].items() if value}
                 print(f"CLAUDE_STARTUP_LEAKED={sorted(leaked)}")
                 self.assertEqual(leaked, {}, f"operator startup state reached the worker command: {payload!r}")
+                # Which fixture files ran, and how often. Only the snapshot
+                # Claude Code takes once per run may run them: a login shell
+                # that sources the shell's rc file from HOME. A second run of
+                # any file is the env probe or a command shell. Blind spot: a
+                # sandboxed shell cannot write the log, so for those the
+                # environment check above is the evidence.
+                ran = startup_files_ran(operator_home)
+                print(f"CLAUDE_STARTUP_FILES_RAN={ran}")
+                shell = Path(payload["shell"]).name
+                self.assertIn(shell, SNAPSHOT_STARTUP_FILES, payload)
+                self.assertEqual(ran, SNAPSHOT_STARTUP_FILES[shell], payload)
 
     def test_claude_hard_ttl_kills_real_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
