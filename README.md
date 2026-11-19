@@ -18,7 +18,10 @@ process. Humans and scripts use the `agent-comms` CLI.
   architect that dispatched it is paged. A monitor process reconciles in-flight dispatches.
 - **Runtimes.** Workers run on `claude`, `codex`, or a `fake` runtime that
   needs no login and exists for demos and tests. Runtime versions are pinned
-  per platform and certified by tests before dispatch trusts them.
+  per platform and certified by tests before dispatch trusts them. Certified
+  today: Codex on `darwin-arm64` and `linux-aarch64`, Claude Code on
+  `darwin-arm64`. No other platform is claimed; a dispatch on one is refused
+  before the worker starts.
 - **Setup and doctor.** `agent-comms setup` creates a team for a project and
   binds the architect's seat in your own Claude Code and Codex;
   `agent-comms doctor` checks the install and prints the fix for every
@@ -54,7 +57,7 @@ Start with the quickstart; it needs no other page.
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | Install, set up a team, check the install, run the no-login demo, then your first real dispatch |
 | [docs/concepts.md](docs/concepts.md) | The vocabulary: runtime root, actors and roles, seats, the mailbox, dispatch and the monitor, runtimes, the MCP tools, the review cycle |
-| [docs/runbook.md](docs/runbook.md) | Operating tasks: the doctor report, keeping the monitor up, logs, the DLQ, acting on a dispatch by hand, the approval signing key, reviewing and landing a dispatch, Codex logins and upgrades, backups and restore, a second install |
+| [docs/runbook.md](docs/runbook.md) | Operating tasks: the doctor report, keeping the monitor up, logs, the DLQ, acting on a dispatch by hand, the approval signing key, reviewing and landing a dispatch, Codex logins, worker shells and your startup files, runtime upgrades, backups and restore, a second install |
 | [docs/mcp-setup.md](docs/mcp-setup.md) | What `setup` wires into each MCP client, seats for other clients, how workers are bound, and every Claude vs Codex difference |
 | [docs/architect-prompt.md](docs/architect-prompt.md) | The operating rules to give an architect seat, and the CLI fallback |
 | [docs/communication_contract.md](docs/communication_contract.md) | When to send, how to reply, how threads end |
@@ -73,6 +76,12 @@ be exercised by a test or by the install smoke test
   port.
 - Claude Code and Codex CLI are the runtimes with adapters and certification
   tests. Any MCP client can use the mailbox.
+- A worker keeps your `HOME`. The shells Codex itself starts for a worker's
+  commands load none of your shell startup files, and zsh reads an empty
+  owned `ZDOTDIR`. That is launch hygiene, not a read boundary: a shell the
+  worker starts itself as `bash -l`, `bash -i` or `sh -l` reads the startup
+  files in `HOME`. The limits are in
+  [docs/runbook.md](docs/runbook.md#worker-shells-and-your-startup-files).
 - The MCP server trusts the `--actor-id` it is started with. Identity is a
   process boundary on one workstation, not authentication; do not expose it
   beyond one.
@@ -90,7 +99,7 @@ Every test process runs in a scratch home and never touches `~/.agent-comms`;
 how the guard works, and its switches, are in
 [CONTRIBUTING.md](CONTRIBUTING.md#development-setup-and-tests). A test that
 needs something the host lacks (a runtime login, a certified pin for the
-platform, a tool such as `git` or `codex` on `PATH`, `/bin/zsh`, or an
+platform, a tool such as `git`, `codex` or `bash` on `PATH`, `/bin/zsh`, or an
 `AF_UNIX` bind the sandbox denies) is skipped and reported as skipped, never
 counted as passing. `make gate` runs every check a push must pass, and
 `make hooks` installs the pre-push hook that enforces hygiene and lint at

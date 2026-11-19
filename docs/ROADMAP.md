@@ -91,18 +91,24 @@ login, so there is no agent-comms-specific login to create.
    launchd, behind one interface.
 2. **Remove macOS assumptions.** The inventory before this milestone found
    these: test temp paths were hardcoded to the macOS private temp directory
-   (now derived from `tempfile`); the shell startup hardening test needs
-   `/bin/zsh` (skipped elsewhere); the control-socket path ceiling stays at
+   (now derived from `tempfile`); shell startup hardening covered zsh only,
+   while Codex on Linux runs worker commands under bash (the Codex adapter
+   now pins its command shells to load no operator startup file, checked by
+   a certification cell that names no shell; the zsh test still needs
+   `/bin/zsh` and is skipped elsewhere); the control-socket path ceiling stays at
    103 bytes on every platform as a deliberate invariant; `pgrep` is looked
    up on PATH; the release script accepts `sha256sum` where `shasum` is
    absent. No launchd code exists yet, so the service manager above is new
    work, not a port. The hermetic tests that resolve a pin on the host get
-   one from `tests/hermetic_pins.py` on an uncertified platform. Still open:
-   Linux runtime pins (needs a certification run on Linux).
+   one from `tests/hermetic_pins.py` on an uncertified platform. Runtime
+   pins: **done** for Codex on `linux-aarch64` (certified in a Debian 13
+   VM). Still open: the Claude pin on `linux-aarch64`, which waits on
+   evidence of what a Linux Claude worker's shell loads. `linux-x86_64` has
+   no certification host and no pin.
 3. **CI on Linux.** The same suite runs on Linux. **Done:** the `test-linux`
    job of [the gate workflow](../.github/workflows/gate.yml) runs the suite
-   on Ubuntu as a required job; the live cells skip there until item 2's
-   pins exist.
+   on Ubuntu as a required job; the runner is `linux-x86_64`, so the live
+   cells skip there while that platform has no pin.
 4. **Repeat the milestone 1 walkthrough** on a clean Linux machine.
 
 ### Later

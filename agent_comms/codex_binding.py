@@ -198,6 +198,7 @@ def get_argv(codex: str, overrides: list[str] | None = None) -> list[str]:
 # these, -c/--config, -p/--profile and -C/--cd change which configuration
 # Codex loads; the rest are skipped with their value.
 _CONFIG, _PROFILE, _CD = ("-c", "--config"), ("-p", "--profile"), ("-C", "--cd")
+_FEATURE_TOGGLES = ("--enable", "--disable")
 _VALUE_SHORTS = frozenset("cpCmsaio")
 _VALUE_LONGS = frozenset({
     "--config", "--profile", "--cd", "--model", "--sandbox", "--ask-for-approval", "--image",
@@ -214,6 +215,9 @@ class LaunchOptions:
     profile: str | None = None
     cd: str | None = None
     flags: list[str] = field(default_factory=list)  # each long option that takes no value
+    # Each --enable/--disable with its feature name, in order. Codex turns
+    # them into features.<name> overrides applied after every -c.
+    feature_toggles: list[tuple[str, str]] = field(default_factory=list)
 
 
 def launch_options(args: list[str]) -> LaunchOptions:
@@ -247,6 +251,8 @@ def launch_options(args: list[str]) -> LaunchOptions:
             options.profile = inline
         elif name in _CD:
             options.cd = inline
+        elif name in _FEATURE_TOGGLES:
+            options.feature_toggles.append((name, inline))
     return options
 
 

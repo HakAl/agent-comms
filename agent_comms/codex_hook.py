@@ -120,13 +120,34 @@ def list_hooks(
     timeout: float = 5.0,
 ) -> tuple[list | None, str | None]:
     """``hooks/list`` for ``cwd`` from ``codex app-server``: (hooks, None) or
-    (None, why). The server answers over stdio and exits on end of input
-    before answering, so it is read up to the answer, then stopped."""
+    (None, why)."""
+    message, error = app_server_request(
+        codex, "hooks/list", {"cwds": [cwd]}, cwd=cwd, env=env, overrides=overrides, timeout=timeout
+    )
+    if message is None:
+        return None, error
+    return _hooks_from(message)
+
+
+def app_server_request(
+    codex: str,
+    method: str,
+    params: dict,
+    *,
+    cwd: str,
+    env: dict[str, str],
+    overrides: list[str],
+    timeout: float = 5.0,
+) -> tuple[dict | None, str | None]:
+    """One request to ``codex app-server`` started in ``cwd`` with
+    ``overrides``: (its answer, None) or (None, why). The server answers
+    over stdio and exits on end of input before answering, so it is read up
+    to the answer, then stopped."""
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"clientInfo": {"name": "agent-comms", "version": "0"}}},
         {"jsonrpc": "2.0", "method": "initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "hooks/list", "params": {"cwds": [cwd]}},
+        {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
     ]
     try:
         process = subprocess.Popen(
@@ -156,13 +177,13 @@ def list_hooks(
                     except ValueError:
                         return None, f"{codex} app-server printed a line that is not JSON"
                     if isinstance(message, dict) and message.get("id") == 2:
-                        return _hooks_from(message)
+                        return message, None
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not selector.select(remaining):
-                    return None, f"{codex} app-server hooks/list timed out after {timeout:g}s"
+                    return None, f"{codex} app-server {method} timed out after {timeout:g}s"
                 chunk = os.read(process.stdout.fileno(), 65536)
                 if not chunk:
-                    return None, f"{codex} app-server exited before answering hooks/list"
+                    return None, f"{codex} app-server exited before answering {method}"
                 buffer += chunk
     finally:
         process.kill()
