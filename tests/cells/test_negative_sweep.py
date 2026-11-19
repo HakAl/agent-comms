@@ -349,6 +349,9 @@ class NegativeSweepTest(unittest.TestCase):
                             self.assertIn(token, output)
                         for token in probe["denial_tokens"]:
                             self.assertNotIn(token, output)
+                        # Unsandboxed, the script sees the architect's listener.
+                        self.assertIn(probe["listener_seen_token"], output)
+                        self.assertNotIn(probe["listener_unseen_token"], output)
                         listener_dir = probe["listener_dir"]
                     # The fixture cleans only the paths it owns.
                     self.assertFalse(listener_dir.exists())

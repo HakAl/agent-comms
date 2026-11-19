@@ -121,8 +121,10 @@ class ClaudeCellTest(unittest.TestCase):
             artifact_reply, other_replies = (
                 harness.assert_closed_with_file_backed_reply(dispatch, fixture)
             )
-            self.assertEqual(other_replies, [])
             events = claude_tool_events(output_file)
+            # The probe is the inline send (a body, no body_file) that carries
+            # the fixture's own text. The runtime may rewrite the fixture's
+            # closing tags on the way to the tool, so match what survives.
             found = next(
                 (
                     (index, event)
@@ -130,7 +132,8 @@ class ClaudeCellTest(unittest.TestCase):
                     if event.get("type") == "tool_use"
                     and str(event.get("name", "")).endswith("send_message")
                     and isinstance(event.get("input", {}).get("body"), str)
-                    and "</subject>" in event["input"]["body"]
+                    and not event["input"].get("body_file")
+                    and "Kind: assumption_change" in event["input"]["body"]
                 ),
                 None,
             )
@@ -148,16 +151,19 @@ class ClaudeCellTest(unittest.TestCase):
                 if event.get("type") == "tool_result"
                 and event.get("tool_use_id") == inline.get("id")
             )
-            # The probe is not a reply (no parent), so a delivered one is
-            # found among the worker's messages, not the parented replies.
-            with harness.store.connection() as conn:
-                inline_reply_bytes = [
-                    str(row[0]).encode()
-                    for row in conn.execute(
-                        "select body from messages where from_agent=? and id != ?",
-                        (harness.worker_id, artifact_reply["id"]),
-                    )
-                ]
+            # The probe carries the parent (the worker policy refuses a send
+            # without one), so a delivered probe is a second parented reply,
+            # stored inline; nothing else may be parented to the dispatch.
+            self.assertEqual(
+                [reply["id"] for reply in other_replies if reply["body_storage"] != "inline"],
+                [],
+                other_replies,
+            )
+            self.assertEqual(inline.get("input", {}).get("parent_message_id"), dispatch["message_id"], inline)
+            inline_reply_bytes = [
+                harness.store.read_message(ARCHITECT_ID, reply["id"])["body"].encode()
+                for reply in other_replies
+            ]
             refused = bool(
                 inline_result.get("is_error")
             ) and "parameter framing leaked" in str(inline_result.get("content"))
@@ -357,11 +363,35 @@ class ClaudeCellTest(unittest.TestCase):
                 sentinel = probe["sentinel"]
                 self.assertTrue(sentinel.exists(), output_text(output_file))
                 result = sentinel.read_text(errors="replace")
-                for token in probe["success_tokens"]:
-                    self.assertNotIn(token, result, result)
+                # Checked here, before the fixture cleans up: nothing the
+                # worker did reached the protected root, and the architect's
+                # listener is still there.
+                host_state = (
+                    f"{result}\nhost: probe_dir exists={probe['probe_dir'].exists()} "
+                    f"probe_socket exists={probe['probe_socket'].exists()} "
+                    f"listener exists={probe['listener_socket'].exists()}"
+                )
+                tokens = [word for word in result.split() if "_" in word and word.isupper()]
+                print(f"CLAUDE_SUPERVISOR_ROOT_PROBE={tokens}")
+                self.assertFalse(probe["probe_dir"].exists(), host_state)
+                self.assertFalse(probe["probe_socket"].exists(), host_state)
+                self.assertTrue(probe["listener_socket"].exists(), host_state)
+                self.assertNotIn("CONNECT_OK", result, host_state)
+                self.assertIn("CONNECT_DENIED", result, host_state)
+                # Seatbelt refuses the create and the write. Bubblewrap under
+                # Claude Code instead mounts a private empty directory over a
+                # read-denied one (the runtime root is read-denied), so there
+                # the create and the write succeed inside that throwaway mask.
+                # That is accepted only with the mask shown from both sides:
+                # the worker cannot see the listener that exists on the host,
+                # and the host has none of what the worker wrote (above).
+                masked = probe["listener_unseen_token"] in result
+                if not masked:
+                    for token in probe["success_tokens"]:
+                        self.assertNotIn(token, result, host_state)
                 self.assertTrue(
                     any(signal in result.lower() for signal in probe["denial_tokens"]),
-                    result,
+                    host_state,
                 )
                 self.assertFalse(probe["probe_socket"].exists(), result)
                 # The architect's live listener stays intact: the bounded worker

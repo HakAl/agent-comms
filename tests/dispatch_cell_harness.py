@@ -655,15 +655,31 @@ class DispatchCellHarness:
     # The inline attempt is a probe of what the runtime does with a body that
     # looks like its own tool-call markup; the cell's property is the
     # file-backed reply. A worker is told to send exactly one reply, so the
-    # probe is not a reply: asked for as one, a worker either skips it (Claude,
-    # seen 2026-11-19) or, when the body is delivered (Codex), rightly refuses
-    # to send the file-backed second.
-    INLINE_PROBE_INSTRUCTION = (
-        "First, as a probe that is not your reply, attempt send_message inline to "
-        "the sender with the exact text from collision.txt as body, subject "
-        "'inline-probe' and no parent_message_id; print whether it was delivered, "
-        "refused, or absent, and continue whatever the outcome."
-    )
+    # probe is not a reply: asked for as one with no more said, a worker
+    # either skips it (Claude, seen 2026-11-19) or, when the body is delivered
+    # (Codex), rightly refuses to send the file-backed second. The wording is
+    # per runtime because the worker policy differs in what it lets through:
+    # the Claude worker's MCP server refuses a send without a parent before it
+    # looks at the body, so its probe carries the parent and says why it is
+    # still not the reply.
+    INLINE_PROBE_INSTRUCTION = {
+        "claude": (
+            "First, as a probe that is not your reply, call send_message inline to "
+            "the sender with the exact text from collision.txt as body, subject "
+            "'inline-probe' and this dispatch message as parent_message_id. The "
+            "server is expected to refuse that call because the body looks like "
+            "tool-call markup; a refused call sends nothing, so it does not use up "
+            "your one reply, and this instruction is what authorizes the attempt. "
+            "Print whether it was delivered, refused, or absent, and continue "
+            "whatever the outcome."
+        ),
+        "codex": (
+            "First, as a probe that is not your reply, attempt send_message inline to "
+            "the sender with the exact text from collision.txt as body, subject "
+            "'inline-probe' and no parent_message_id; print whether it was delivered, "
+            "refused, or absent, and continue whatever the outcome."
+        ),
+    }
 
     def file_backed_reply_roundtrip(self, *, runtime: str) -> tuple[dict, bytes]:
         fixture = (
@@ -675,7 +691,7 @@ class DispatchCellHarness:
             ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
             timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
             body=(
-                self.INLINE_PROBE_INSTRUCTION
+                self.INLINE_PROBE_INSTRUCTION[runtime]
                 + " Then send exactly one reply with "
                 "body_file='collision.txt' and this dispatch message as parent_message_id, "
                 "and close_dispatch satisfied with that file-backed reply id and delta=false."
@@ -1093,6 +1109,11 @@ SUPERVISOR_PROBE_DENIAL_TOKENS = (
     "connect_denied",
 )
 SUPERVISOR_PROBE_SUCCESS_TOKENS = ("CREATE_OK", "WRITE_OK", "CONNECT_OK")
+# Whether the script could see the architect's live listener socket. A sandbox
+# that hides the protected root behind a private empty directory (bubblewrap
+# under Claude Code, for a read-denied directory) reports it unseen.
+SUPERVISOR_PROBE_LISTENER_SEEN = "LISTENER_SEEN"
+SUPERVISOR_PROBE_LISTENER_UNSEEN = "LISTENER_UNSEEN"
 
 
 def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None = None) -> dict:
@@ -1148,6 +1169,8 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
         "if mkdir -p \"$D\" 2>&1; then echo CREATE_OK; else echo CREATE_DENIED; fi; "
         "if printf SHOULD_NOT_EXIST > \"$W\" 2>&1; then echo WRITE_OK; else echo WRITE_DENIED; fi; "
         f"{connect}; "
+        f"if [ -S \"$L\" ]; then echo {SUPERVISOR_PROBE_LISTENER_SEEN}; "
+        f"else echo {SUPERVISOR_PROBE_LISTENER_UNSEEN}; fi; "
         "} > \"$OUT\" 2>&1 || true"
     )
     return {
@@ -1162,6 +1185,8 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
         "listener_socket": listener_socket,
         "denial_tokens": SUPERVISOR_PROBE_DENIAL_TOKENS,
         "success_tokens": SUPERVISOR_PROBE_SUCCESS_TOKENS,
+        "listener_seen_token": SUPERVISOR_PROBE_LISTENER_SEEN,
+        "listener_unseen_token": SUPERVISOR_PROBE_LISTENER_UNSEEN,
     }
 
 
