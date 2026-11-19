@@ -90,6 +90,14 @@ class StartupFixtureIsLiveTest(unittest.TestCase):
         pinned = _run_probe([BASH, "-c"], self.home, stdin=ours.fileno(), SHLVL="1")
         self.assertEqual({k: v for k, v in pinned["startup"].items() if v}, {})
 
+    def test_the_log_counts_each_file_a_shell_ran(self) -> None:
+        self.assertEqual(harness.startup_files_ran(self.home), {})
+        _run_probe([BASH, "-c"], self.home)
+        self.assertEqual(harness.startup_files_ran(self.home), {})
+        _run_probe([BASH, "-lc"], self.home)
+        _run_probe([BASH, "-lc"], self.home)
+        self.assertEqual(harness.startup_files_ran(self.home), {"STARTUP_MARKER_BASH_PROFILE": 2})
+
     def test_every_marker_is_reported(self) -> None:
         payload = _run_probe([BASH, "-c"], self.home)
         self.assertEqual(

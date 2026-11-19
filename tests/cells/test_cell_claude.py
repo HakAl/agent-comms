@@ -138,13 +138,16 @@ class ClaudeCellTest(unittest.TestCase):
                 if event.get("type") == "tool_result"
                 and event.get("tool_use_id") == inline.get("id")
             )
-            inline_replies = [
-                reply for reply in other_replies if reply["body_storage"] == "inline"
-            ]
-            inline_reply_bytes = [
-                harness.store.read_message(ARCHITECT_ID, reply["id"])["body"].encode()
-                for reply in inline_replies
-            ]
+            # The probe is not a reply (no parent), so a delivered one is
+            # found among the worker's messages, not the parented replies.
+            with harness.store.connection() as conn:
+                inline_reply_bytes = [
+                    str(row[0]).encode()
+                    for row in conn.execute(
+                        "select body from messages where from_agent=? and id != ?",
+                        (harness.worker_id, artifact_reply["id"]),
+                    )
+                ]
             refused = bool(
                 inline_result.get("is_error")
             ) and "parameter framing leaked" in str(inline_result.get("content"))
@@ -163,7 +166,8 @@ class ClaudeCellTest(unittest.TestCase):
                 )
             if inline_outcome == "absent":
                 self.fail(
-                    "inline attempt was neither delivered nor refused despite evidenced tool_use"
+                    "inline attempt was neither delivered nor refused despite evidenced tool_use; "
+                    f"tool result: {str(inline_result)[:1500]}"
                 )
             self.assertIn(inline_outcome, {"refused", "altered"})
             file_index, file_send = next(
@@ -572,10 +576,20 @@ class ClaudeCellTest(unittest.TestCase):
             self.assertTrue(read_sentinel.exists(), output_text(output_file))
             result = read_sentinel.read_text(errors="replace")
             self.assertNotIn(marker_token, result, result)
+            # The marker is there and readable outside the sandbox, so a
+            # worker that could not find it was denied the path: bubblewrap
+            # hides a denied directory where Seatbelt refuses the read.
+            self.assertEqual(cred_path.read_text(), marker_token)
             self.assertTrue(
                 any(
                     signal in result.lower()
-                    for signal in ("operation not permitted", "sandbox", "denied", "permission")
+                    for signal in (
+                        "operation not permitted",
+                        "sandbox",
+                        "denied",
+                        "permission",
+                        "no such file or directory",
+                    )
                 ),
                 result,
             )

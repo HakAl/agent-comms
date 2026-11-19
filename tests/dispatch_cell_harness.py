@@ -1218,6 +1218,9 @@ STARTUP_FILE_MARKERS = {
 STARTUP_ENV_FILE_NAME = "startup-variable-file.sh"
 STARTUP_ENV_FILE_MARKER = "STARTUP_MARKER_BASH_ENV"
 STARTUP_MARKERS = (*STARTUP_FILE_MARKERS.values(), STARTUP_ENV_FILE_MARKER)
+# Every startup file appends its marker here when a shell runs it, so a file
+# that ran is seen even when what it exported never reaches the probe.
+STARTUP_RAN_LOG_NAME = "startup-files-ran.log"
 
 
 def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
@@ -1228,8 +1231,11 @@ def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
     secret_path = home / "admin-token"
     secret_path.write_text(secret_value)
 
+    ran_log = home / STARTUP_RAN_LOG_NAME
+
     def body(marker: str) -> str:
         return (
+            f"echo {marker} >> {shlex.quote(str(ran_log))} 2>/dev/null\n"
             f"export {STARTUP_SECRET_NAME}=\"$(cat {shlex.quote(str(secret_path))})\"\n"
             f"export {marker}=1\n"
         )
@@ -1239,6 +1245,17 @@ def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
     env_file = home / STARTUP_ENV_FILE_NAME
     env_file.write_text(body(STARTUP_ENV_FILE_MARKER))
     return env_file
+
+
+def startup_files_ran(home: Path) -> dict[str, int]:
+    """How often each fixture startup file ran, by marker, from the log the
+    files append to. Empty when none ran. A shell that could not write the
+    log (a sandboxed one) is not counted."""
+    try:
+        lines = (home / STARTUP_RAN_LOG_NAME).read_text().split()
+    except FileNotFoundError:
+        return {}
+    return {marker: lines.count(marker) for marker in sorted(set(lines))}
 
 
 def startup_probe_source(result_path: Path) -> str:
