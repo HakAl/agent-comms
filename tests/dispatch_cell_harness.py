@@ -654,14 +654,24 @@ class DispatchCellHarness:
 
     # The inline attempt is a probe of what the runtime does with a body that
     # looks like its own tool-call markup; the cell's property is the
-    # file-backed reply. Codex can deliver the inline body, and a worker is
-    # told to send exactly one reply, so its probe is not a reply: delivered
-    # as one, the worker rightly refuses to send the file-backed second.
+    # file-backed reply. A worker is told to send exactly one reply, so the
+    # probe is not a reply: asked for as one with no more said, a worker
+    # either skips it (Claude, seen 2026-11-19) or, when the body is delivered
+    # (Codex), rightly refuses to send the file-backed second. The wording is
+    # per runtime because the worker policy differs in what it lets through:
+    # the Claude worker's MCP server refuses a send without a parent before it
+    # looks at the body, so its probe carries the parent and says why it is
+    # still not the reply.
     INLINE_PROBE_INSTRUCTION = {
         "claude": (
-            "First attempt send_message inline with the exact text from collision.txt "
-            "as body and this dispatch message as parent_message_id; print whether it "
-            "was delivered, refused, or absent."
+            "First, as a probe that is not your reply, call send_message inline to "
+            "the sender with the exact text from collision.txt as body, subject "
+            "'inline-probe' and this dispatch message as parent_message_id. The "
+            "server is expected to refuse that call because the body looks like "
+            "tool-call markup; a refused call sends nothing, so it does not use up "
+            "your one reply, and this instruction is what authorizes the attempt. "
+            "Print whether it was delivered, refused, or absent, and continue "
+            "whatever the outcome."
         ),
         "codex": (
             "First, as a probe that is not your reply, attempt send_message inline to "
@@ -1099,6 +1109,11 @@ SUPERVISOR_PROBE_DENIAL_TOKENS = (
     "connect_denied",
 )
 SUPERVISOR_PROBE_SUCCESS_TOKENS = ("CREATE_OK", "WRITE_OK", "CONNECT_OK")
+# Whether the script could see the architect's live listener socket. A sandbox
+# that hides the protected root behind a private empty directory (bubblewrap
+# under Claude Code, for a read-denied directory) reports it unseen.
+SUPERVISOR_PROBE_LISTENER_SEEN = "LISTENER_SEEN"
+SUPERVISOR_PROBE_LISTENER_UNSEEN = "LISTENER_UNSEEN"
 
 
 def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None = None) -> dict:
@@ -1154,6 +1169,8 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
         "if mkdir -p \"$D\" 2>&1; then echo CREATE_OK; else echo CREATE_DENIED; fi; "
         "if printf SHOULD_NOT_EXIST > \"$W\" 2>&1; then echo WRITE_OK; else echo WRITE_DENIED; fi; "
         f"{connect}; "
+        f"if [ -S \"$L\" ]; then echo {SUPERVISOR_PROBE_LISTENER_SEEN}; "
+        f"else echo {SUPERVISOR_PROBE_LISTENER_UNSEEN}; fi; "
         "} > \"$OUT\" 2>&1 || true"
     )
     return {
@@ -1168,6 +1185,8 @@ def supervisor_root_negative_probe(worker_cwd: Path, protected_root: Path | None
         "listener_socket": listener_socket,
         "denial_tokens": SUPERVISOR_PROBE_DENIAL_TOKENS,
         "success_tokens": SUPERVISOR_PROBE_SUCCESS_TOKENS,
+        "listener_seen_token": SUPERVISOR_PROBE_LISTENER_SEEN,
+        "listener_unseen_token": SUPERVISOR_PROBE_LISTENER_UNSEEN,
     }
 
 
@@ -1224,6 +1243,9 @@ STARTUP_FILE_MARKERS = {
 STARTUP_ENV_FILE_NAME = "startup-variable-file.sh"
 STARTUP_ENV_FILE_MARKER = "STARTUP_MARKER_BASH_ENV"
 STARTUP_MARKERS = (*STARTUP_FILE_MARKERS.values(), STARTUP_ENV_FILE_MARKER)
+# Every startup file appends its marker here when a shell runs it, so a file
+# that ran is seen even when what it exported never reaches the probe.
+STARTUP_RAN_LOG_NAME = "startup-files-ran.log"
 
 
 def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
@@ -1234,8 +1256,11 @@ def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
     secret_path = home / "admin-token"
     secret_path.write_text(secret_value)
 
+    ran_log = home / STARTUP_RAN_LOG_NAME
+
     def body(marker: str) -> str:
         return (
+            f"echo {marker} >> {shlex.quote(str(ran_log))} 2>/dev/null\n"
             f"export {STARTUP_SECRET_NAME}=\"$(cat {shlex.quote(str(secret_path))})\"\n"
             f"export {marker}=1\n"
         )
@@ -1245,6 +1270,17 @@ def write_operator_startup_fixture(home: Path, secret_value: str) -> Path:
     env_file = home / STARTUP_ENV_FILE_NAME
     env_file.write_text(body(STARTUP_ENV_FILE_MARKER))
     return env_file
+
+
+def startup_files_ran(home: Path) -> dict[str, int]:
+    """How often each fixture startup file ran, by marker, from the log the
+    files append to. Empty when none ran. A shell that could not write the
+    log (a sandboxed one) is not counted."""
+    try:
+        lines = (home / STARTUP_RAN_LOG_NAME).read_text().split()
+    except FileNotFoundError:
+        return {}
+    return {marker: lines.count(marker) for marker in sorted(set(lines))}
 
 
 def startup_probe_source(result_path: Path) -> str:
@@ -1258,6 +1294,8 @@ def startup_probe_source(result_path: Path) -> str:
         "    'startup': {name: os.environ.get(name, '') for name in names},\n"
         "    'home': os.environ.get('HOME', ''),\n"
         "    'zdotdir': os.environ.get('ZDOTDIR', ''),\n"
+        "    'shell': os.environ.get('SHELL', ''),\n"
+        "    'shlvl': os.environ.get('SHLVL', ''),\n"
         "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
         "}\n"
         f"open({str(result_path)!r}, 'w').write(json.dumps(result))\n"

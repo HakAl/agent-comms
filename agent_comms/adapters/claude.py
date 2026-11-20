@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import DispatchContext
+from .. import claude_startup
 from ._base import ProcessSpawnAdapter
 from ..runtime_pins import (
     claude_binary_path,
@@ -36,6 +37,10 @@ class ClaudeSpawnRowNotPinnedError(RuntimeError):
 
 class ClaudeSpawnArgsStaleError(RuntimeError):
     """A Claude actor spawn row asks for stream-json output without --verbose."""
+
+
+class ClaudeShellStartupUnpinned(RuntimeError):
+    """A stored spawn row would let operator startup files reach worker commands."""
 
 
 class ClaudeAdapter(ProcessSpawnAdapter):
@@ -116,6 +121,16 @@ class ClaudeAdapter(ProcessSpawnAdapter):
         if context.recipient.get("runtime") not in self.supported_runtimes:
             return None
         args = [*prefix, *stored]
+        # The shell startup pins ride the one settings value the adapter
+        # renders; any other settings option would be one it did not.
+        problem = claude_startup.settings_option_problem(args)
+        if problem is not None:
+            actor_id = context.recipient.get("id")
+            raise ClaudeShellStartupUnpinned(
+                f"the stored spawn args for {actor_id} carry {problem}; the adapter renders one settings "
+                "option per run, which keeps operator shell startup files out of worker commands; "
+                f"recover with: agent-comms rerender-spawn {actor_id} --apply"
+            )
         stream_json = "--output-format=stream-json" in args or any(
             arg == "--output-format" and value == "stream-json" for arg, value in zip(args, args[1:])
         )
@@ -126,6 +141,30 @@ class ClaudeAdapter(ProcessSpawnAdapter):
                 f"actor_id={actor_id!r}; recover with: agent-comms rerender-spawn {actor_id} --apply"
             )
         return None
+
+    def _spawn_env(self, spawn: dict, context: DispatchContext, policy) -> dict[str, str]:  # type: ignore[no-untyped-def]
+        raw_env = spawn.get("env", {}) or {}
+        if isinstance(raw_env, dict) and context.recipient.get("runtime") in self.supported_runtimes:
+            named = sorted(str(key) for key in raw_env if str(key) in claude_startup.PINNED_ENV)
+            if named:
+                raise ClaudeShellStartupUnpinned(
+                    f"spawn.env for {context.recipient['id']} sets {', '.join(named)}, which the adapter pins "
+                    "to keep operator shell startup files out of worker commands; remove it from the spawn block"
+                )
+        return super()._spawn_env(spawn, context, policy)
+
+    def _build_env(self, context: DispatchContext, policy, spawn: dict, *, zdotdir: Path | None = None) -> dict[str, str]:  # type: ignore[no-untyped-def]
+        env = super()._build_env(context, policy, spawn, zdotdir=zdotdir)
+        if context.recipient.get("runtime") in self.supported_runtimes:
+            env.update(claude_startup.PINNED_ENV)
+        return env
+
+    def _args_for_env(self, args: list[str], env: dict[str, str], context: DispatchContext) -> list[str]:
+        if context.recipient.get("runtime") not in self.supported_runtimes:
+            return args
+        # The binding preflight has established exactly one settings option.
+        at = args.index(claude_startup.SETTINGS_OPTION) + 1
+        return [*args[:at], claude_startup.with_run_env(args[at], env["ZDOTDIR"]), *args[at + 1:]]
 
     @staticmethod
     def _run_version(binary: Path) -> subprocess.CompletedProcess[str]:

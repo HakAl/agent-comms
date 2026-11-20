@@ -129,8 +129,8 @@ to `main`. It is a mirror of the local gates on a fresh macOS runner (minus
 preverify, since CI already is a fresh clone), not a gate in front of the
 push: a failure there means something already public needs fixing. The
 `test-linux` job runs the suite on Ubuntu (Python 3.14) as a required job.
-The only Linux runtime pin is Codex on `linux-aarch64`, certified in a
-Debian 13 VM; the runner is `linux-x86_64`, which has no pin, so the live
+The Linux runtime pins are Codex and Claude on `linux-aarch64`, certified
+in a Debian 13 VM; the runner is `linux-x86_64`, which has no pin, so the live
 cells and the drift cell skip
 there with the `PlatformNotCertified` text, and the hermetic tests that
 build a stub binary named after the pinned version get a pin table entry
@@ -174,8 +174,8 @@ drop every `AGENT_COMMS_*` variable).
 
 An entry is a claim that the gated cells passed on that platform with that
 version, so a platform is listed only with that evidence (see AGENTS.md).
-The entries today: Codex on `darwin-arm64` and `linux-aarch64` (the latter
-certified in a Debian 13 VM), Claude on `darwin-arm64`. `linux-x86_64` and
+The entries today: Codex and Claude, each on `darwin-arm64` and
+`linux-aarch64` (the latter certified in a Debian 13 VM). `linux-x86_64` and
 `darwin-x86_64` have none.
 Where the manifest has no entry for the current platform every consumer of
 a pin fails closed with one message that names the platform, the platforms
@@ -254,7 +254,15 @@ digest already are the pin it does nothing (`CERTIFY_ARGS=--force` re-runs
 it). In certification mode the protected supervisor root probe targets the
 scratch home's control root, with the system temp directories removed from
 a Codex worker's writable roots; a live-home run of the cell probes the
-real root.
+real root. The Claude cell passes on outcome: the worker did not touch the
+protected root. It prints `CLAUDE_SUPERVISOR_ROOT_OUTCOME`, and only two of
+its three values are evidence about the sandbox. `denied` means the sandbox
+refused the create, the write and the connect (Seatbelt). `masked` means
+bubblewrap gave the worker a private empty directory in place of the
+read-denied runtime root, so the create and the write went nowhere, the
+connect was refused, and the host shows the root untouched. `declined`
+means the worker closed the dispatch blocked without running the probe;
+the root is untouched, and the sandbox was not asked.
 
 ## Scope and review
 

@@ -457,8 +457,10 @@ would and exits nonzero when a refresh failed.
 `spawn.env` "set shell startup behavior" or name "a file for the worker's
 command shells to load at startup", because "Codex would not keep operator
 shell startup files out" of the worker's command shells, or with "worker
-shell startup not verified"; or you want to know what of your shell
-configuration a worker sees.
+shell startup not verified"; a Claude dispatch is refused because the
+stored spawn args "carry" a second or joined `--settings` option, or
+`spawn.env` sets a variable "which the adapter pins"; or you want to know
+what of your shell configuration a worker sees.
 
 A worker runs with your `HOME`, so your shell startup files are there for
 any shell that looks for them. Two things keep them out of a worker's
@@ -475,8 +477,35 @@ commands:
   state to replay. The certification cell checks this with a probe that
   names no shell.
 
-A stored spawn option that would undo a pin is refused before the worker
-starts: a `-c` that sets `allow_login_shell`, `features.shell_snapshot`,
+- The shells Claude Code creates, on the certified platforms: every Claude
+  run pins `SHLVL=1` and empty `BASH_ENV` and `ENV`, in the worker's launch
+  environment and again, with the worker's `ZDOTDIR`, as `env` in the
+  `--settings` value agent-comms renders for that run. The second copy is
+  there because Claude Code applies the `env` of its settings files after
+  the launch environment, and the `--settings` value outranks your user,
+  project and local settings files. A command shell then loads no `.bashrc`
+  and no file named by a variable, and carries nothing your startup files
+  export. The certification cell checks this against a project
+  `.claude/settings.json` that tries to undo each pin.
+
+Claude Code also takes a snapshot of your shell configuration once per
+worker run: it starts a login shell and sources `.bashrc` (bash) or
+`.zshrc` (zsh) from `HOME`, whatever `ZDOTDIR` says, and replays the
+functions, aliases and shell options it found ahead of every command. No
+setting turns that off and agent-comms leaves it alone: a worker gets your
+shell configuration, not the environment your startup files export. With
+the certification fixture the snapshot ran `.bash_profile` and `.bashrc`
+once each under bash, and `.zshrc` once under zsh; your own login profile
+may source more.
+
+For Claude, a `spawn.env` that sets `SHLVL`, `BASH_ENV` or `ENV` is refused
+before the worker starts, and so is a stored spawn row with a second
+`--settings` option or the joined `--settings=...` form (recover with
+`agent-comms rerender-spawn <actor> --apply`, which needs the operator
+credential).
+
+For Codex, a stored spawn option that would undo a pin is refused before
+the worker starts: a `-c` that sets `allow_login_shell`, `features.shell_snapshot`,
 `features.shell_snapshot_v2` or anything under `shell_environment_policy`,
 `--enable` or `--disable` of either feature, and `BASH_ENV` or `ENV` in
 `spawn.env`. Remove the option from the worker's spawn block and dispatch
@@ -524,10 +553,18 @@ Limits:
   from them (`set` before `include_only`) was read from its source, not
   observed in a run; the check refuses those configurations instead of
   relying on it.
-- Claude workers: only the zsh item applies. What Claude Code's own shell
-  loads under bash is not established, and no Linux Claude pin exists.
-- Evidence is for Codex 0.164.0 on `darwin-arm64` and `linux-aarch64`.
-  Nothing is claimed for `linux-x86_64`.
+- Claude workers: managed (enterprise) settings outrank the `--settings`
+  value and are outside this claim. There is no read-back of the settings
+  Claude Code resolved, as there is for Codex; the claim rests on settings
+  precedence, checked by the cell against one hostile project layer. The
+  snapshot runs your `.bashrc` or `.zshrc` (and a login profile) once per
+  run, so anything those files do when run still happens; what they export
+  was not seen in a worker command, and why Claude Code drops it was not
+  established from its code.
+- Evidence is for Codex 0.164.0 and Claude Code 2.1.310, each on
+  `darwin-arm64` (zsh) and `linux-aarch64` (bash, in a Debian 13 VM).
+  Other shell and platform pairs are not claimed, and nothing is claimed
+  for `linux-x86_64`.
 
 ## Codex and Claude upgrades
 

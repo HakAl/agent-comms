@@ -19,8 +19,8 @@ process. Humans and scripts use the `agent-comms` CLI.
 - **Runtimes.** Workers run on `claude`, `codex`, or a `fake` runtime that
   needs no login and exists for demos and tests. Runtime versions are pinned
   per platform and certified by tests before dispatch trusts them. Certified
-  today: Codex on `darwin-arm64` and `linux-aarch64`, Claude Code on
-  `darwin-arm64`. No other platform is claimed; a dispatch on one is refused
+  today: Codex and Claude Code, each on `darwin-arm64` and `linux-aarch64`.
+  No other platform is claimed; a dispatch on one is refused
   before the worker starts.
 - **Setup and doctor.** `agent-comms setup` creates a team for a project and
   binds the architect's seat in your own Claude Code and Codex;
@@ -78,7 +78,9 @@ be exercised by a test or by the install smoke test
   tests. Any MCP client can use the mailbox.
 - A worker keeps your `HOME`. The shells Codex itself starts for a worker's
   commands load none of your shell startup files, and zsh reads an empty
-  owned `ZDOTDIR`. That is launch hygiene, not a read boundary: a shell the
+  owned `ZDOTDIR`. Claude Code sources your `.bashrc` or `.zshrc` once per
+  run to copy functions, aliases and options; what those files export is
+  kept out of a Claude worker's commands. That is launch hygiene, not a read boundary: a shell the
   worker starts itself as `bash -l`, `bash -i` or `sh -l` reads the startup
   files in `HOME`. The limits are in
   [docs/runbook.md](docs/runbook.md#worker-shells-and-your-startup-files).

@@ -184,6 +184,7 @@ class ProcessSpawnAdapter:
 
         zdotdir = self._worker_zdotdir(context)
         env = self._build_env(context, policy, spawn, zdotdir=zdotdir)
+        args = self._args_for_env(args, env, context)
 
         # Conservative spawn-time janitor over the protected control root only:
         # it removes just the run directories whose versioned owner marker names
@@ -427,17 +428,22 @@ class ProcessSpawnAdapter:
             resolved[worker_prompt_index] = self._live_worker_prompt(context)
 
         if is_claude:
-            try:
-                settings_index = resolved.index("--settings") + 1
-            except ValueError:
-                settings_index = None
-            if settings_index is not None:
-                if settings_index >= len(resolved):
-                    raise RuntimeError("claude spawn args require a value after --settings")
-                resolved[settings_index] = claude_settings_for_policy(
-                    policy, str(paths.hooks_path()), sys.executable
-                )
+            if "--settings" not in resolved:
+                # A stored row without the option still runs under the
+                # adapter's settings: appended, so no stored index moves.
+                resolved += ["--settings", ""]
+            settings_index = resolved.index("--settings") + 1
+            if settings_index >= len(resolved):
+                raise RuntimeError("claude spawn args require a value after --settings")
+            resolved[settings_index] = claude_settings_for_policy(
+                policy, str(paths.hooks_path()), sys.executable
+            )
         return resolved
+
+    def _args_for_env(self, args: list[str], env: dict[str, str], context: DispatchContext) -> list[str]:
+        """The child arguments once the run's environment exists. Default:
+        unchanged. Must not raise: the run's ZDOTDIR is already allocated."""
+        return args
 
     def _uses_live_worker_prompt(self, context: DispatchContext) -> bool:
         runtime = context.recipient.get("runtime")

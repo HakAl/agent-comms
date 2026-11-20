@@ -5,7 +5,7 @@ import difflib
 import shlex
 import sys
 
-from . import runtimes
+from . import claude_startup, runtimes
 from .policies import compile_policy
 from .protection import require_unprotected_or_override
 from .schema import ValidationError
@@ -256,6 +256,9 @@ def claude_settings_for_policy(policy, hooks_path: str, python: str, *, quote: b
             ]
         },
         "permissions": {"allow": allowed_tools},
+        # Shell startup pins (claude_startup); the adapter adds the run's own
+        # ZDOTDIR at dispatch.
+        "env": dict(claude_startup.PINNED_ENV),
     }
     if policy.claude_sandbox is not None and policy.claude_sandbox.enabled:
         sandbox = policy.claude_sandbox

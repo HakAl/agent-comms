@@ -502,6 +502,12 @@ class UpgradeCompatibilityTest(unittest.TestCase):
             "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
             "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
         },
+        # 33 adds none; a Claude run carries shell startup pins in its
+        # environment and in the settings value the adapter renders.
+        33: {
+            "actor_id", "agent_comms_home", "claude_binary", "claude_settings", "codex_binary", "codex_home",
+            "db_path", "mcp_command", "message_id", "project_root", "python", "worker_prompt",
+        },
     }
 
     def test_spawn_placeholders_are_recorded_for_this_contract(self) -> None:
@@ -531,6 +537,19 @@ class UpgradeCompatibilityTest(unittest.TestCase):
                 code_identity.require_fresh_module()
         self.assertIn(f"v30 -> v{code_identity.CONTRACT_VERSION}", str(raised.exception))
 
+    def test_a_server_loaded_at_contract_32_must_reconnect(self) -> None:
+        # A v32 server launches a Claude worker without the shell startup
+        # pins, so on bash every worker command would load .bashrc.
+        from agent_comms import code_identity
+
+        loaded_surface = {"agent_comms/adapters/claude.py": "before-shell-startup-pins"}
+        with mock.patch.object(code_identity, "LOADED_CODE_IDENTITY", code_identity._identity_from_surface(loaded_surface)), \
+                mock.patch.object(code_identity, "LOADED_SURFACE", loaded_surface), \
+                mock.patch.object(code_identity, "LOADED_CONTRACT_VERSION", 32):
+            with self.assertRaises(code_identity.StaleModuleError) as raised:
+                code_identity.require_fresh_module()
+        self.assertIn("v32 -> v33", str(raised.exception))
+
     def test_a_server_loaded_at_contract_31_must_reconnect(self) -> None:
         # Lookout LINUX-PINS-003 R2: a v31 server pins the startup settings
         # but never reads the configuration Codex resolved, so a config
@@ -543,7 +562,7 @@ class UpgradeCompatibilityTest(unittest.TestCase):
                 mock.patch.object(code_identity, "LOADED_CONTRACT_VERSION", 31):
             with self.assertRaises(code_identity.StaleModuleError) as raised:
                 code_identity.require_fresh_module()
-        self.assertIn("v31 -> v32", str(raised.exception))
+        self.assertIn(f"v31 -> v{code_identity.CONTRACT_VERSION}", str(raised.exception))
 
     def test_a_server_loaded_at_contract_27_must_reconnect(self) -> None:
         # A v27 server would launch Codex workers without the policy hook.

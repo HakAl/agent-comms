@@ -14,11 +14,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_comms import paths, runtime_pins, supervisor
+from agent_comms import claude_startup, paths, runtime_pins, supervisor
 from agent_comms import supervising
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.claude import (
     ClaudeAdapter,
+    ClaudeShellStartupUnpinned,
     ClaudeSpawnArgsStaleError,
     ClaudeSpawnRowNotPinnedError,
     RuntimePinDigestMismatch,
@@ -103,6 +104,7 @@ def _supervised_capture(captured: dict, pid: int = 4321):
 
     def _spawn(child_command, **_kwargs):  # type: ignore[no-untyped-def]
         captured["child_command"] = [str(part) for part in child_command]
+        captured["env"] = dict(_kwargs.get("env") or {})
         return supervisor.SupervisedSpawn(
             popen=types.SimpleNamespace(pid=pid),
             run_token=run_token,
@@ -470,6 +472,83 @@ class RenderSpawnTest(unittest.TestCase):
                                 version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
                                 expected_sha256=_sha256(pinned_binary),
                             ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
+                self.assertNotIn("child_command", captured)
+
+    def _claude_dispatch(self, spawn: dict, captured: dict) -> None:
+        versions_dir = Path(tempfile.mkdtemp(dir=self.tmp)) / "claude-versions"
+        pinned_binary = _write_claude_pin_stub(versions_dir)
+        recipient = dict(self.actors["alpha-claude-worker"])
+        recipient["spawn"] = spawn
+        with mock.patch.dict(os.environ, {"AGENT_COMMS_CLAUDE_VERSIONS_DIR": str(versions_dir)}):
+            with mock.patch.object(paths, "REPO_ROOT", self.tmp), _supervised_capture(captured):
+                ClaudeAdapter(
+                    version_runner=lambda _binary: _version_result(runtime_pins.claude_pin().version),
+                    expected_sha256=_sha256(pinned_binary),
+                ).dispatch(_context(recipient, self.tmp / "agent-comms.sqlite"))
+
+    @staticmethod
+    def _settings_values(command: list[str]) -> list[dict]:
+        return [json.loads(command[index + 1]) for index, arg in enumerate(command) if arg == "--settings"]
+
+    def test_claude_dispatch_pins_shell_startup_in_the_env_and_the_settings(self) -> None:
+        # Claude applies a settings layer's env after the launch environment,
+        # so the pins and the worker's own empty ZDOTDIR ride both.
+        captured: dict = {}
+        self._claude_dispatch(render_spawn("claude", "alpha-claude-worker"), captured)
+        env = captured["env"]
+        for name, value in claude_startup.PINNED_ENV.items():
+            self.assertEqual(env[name], value, name)
+        self.assertEqual(Path(env["ZDOTDIR"]).name, "empty-zdotdir")
+        (settings,) = self._settings_values(captured["child_command"])
+        self.assertEqual(settings["env"], {**claude_startup.PINNED_ENV, "ZDOTDIR": env["ZDOTDIR"]})
+        self.assertIn("hooks", settings)
+
+    def test_claude_settings_template_carries_the_static_pins(self) -> None:
+        settings = json.loads(
+            claude_settings_for_policy(compile_policy(WORKER_DISPATCH_POLICY), "/hooks.py", "/python")
+        )
+        self.assertEqual(settings["env"], claude_startup.PINNED_ENV)
+        self.assertEqual(claude_startup.PINNED_ENV, {"BASH_ENV": "", "ENV": "", "SHLVL": "1"})
+
+    def test_claude_dispatch_adds_the_settings_a_stored_row_lacks(self) -> None:
+        # A row without --settings would get the launch-environment pins only,
+        # which a project settings file can undo.
+        current = render_spawn("claude", "alpha-claude-worker")
+        at = current["args"].index("--settings")
+        without = [*current["args"][:at], *current["args"][at + 2:]]
+        minimal = [f"WakePolicy={WORKER_DISPATCH_POLICY}. {{worker_prompt}}"]
+        for args in (without, minimal):
+            with self.subTest(args=len(args)):
+                captured: dict = {}
+                self._claude_dispatch(dict(current, args=args), captured)
+                (settings,) = self._settings_values(captured["child_command"])
+                self.assertEqual(settings["env"]["SHLVL"], "1")
+                self.assertEqual(settings["env"]["ZDOTDIR"], captured["env"]["ZDOTDIR"])
+                self.assertIn("permissions", settings)
+
+    def test_claude_dispatch_refuses_a_second_or_joined_settings_option(self) -> None:
+        current = render_spawn("claude", "alpha-claude-worker")
+        at = current["args"].index("--settings")
+        duplicate = [*current["args"][:at], "--settings", "{{}}", *current["args"][at:]]
+        joined_extra = [*current["args"][:at], "--settings={{}}", *current["args"][at:]]
+        joined_only = [*current["args"][:at], "--settings={{}}", *current["args"][at + 2:]]
+        for label, args in (("duplicate", duplicate), ("joined extra", joined_extra), ("joined only", joined_only)):
+            with self.subTest(label=label):
+                captured: dict = {}
+                with self.assertRaisesRegex(
+                    ClaudeShellStartupUnpinned,
+                    "settings option .* recover with: agent-comms rerender-spawn alpha-claude-worker --apply",
+                ):
+                    self._claude_dispatch(dict(current, args=args), captured)
+                self.assertNotIn("child_command", captured)
+
+    def test_claude_dispatch_refuses_spawn_env_that_names_a_startup_pin(self) -> None:
+        current = render_spawn("claude", "alpha-claude-worker")
+        for name in ("BASH_ENV", "ENV", "SHLVL"):
+            with self.subTest(name=name):
+                captured: dict = {}
+                with self.assertRaisesRegex(ClaudeShellStartupUnpinned, f"spawn.env for alpha-claude-worker sets {name}"):
+                    self._claude_dispatch(dict(current, env={name: "/operator/file"}), captured)
                 self.assertNotIn("child_command", captured)
 
     def test_claude_dispatch_accepts_args_without_stream_json(self) -> None:

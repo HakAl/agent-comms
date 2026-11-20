@@ -21,8 +21,13 @@
       "platforms": {
         "darwin-arm64": {
           "version": "2.1.310",
-          "certified_on": "2026-10-25",
+          "certified_on": "2026-11-19",
           "sha256": "ffb64331bc0ee1b69efb7c2c428bd3ab516bc31b75bf60886b356c97c1c25ffd"
+        },
+        "linux-aarch64": {
+          "version": "2.1.310",
+          "certified_on": "2026-11-19",
+          "sha256": "9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54"
         }
       }
     }
