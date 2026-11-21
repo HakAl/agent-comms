@@ -88,7 +88,10 @@ login, so there is no agent-comms-specific login to create.
 ### Milestone 2: Linux
 
 1. **Service manager.** The monitor runs under systemd user units as well as
-   launchd, behind one interface.
+   launchd, behind one interface: `agent-comms service install`, `start`,
+   `stop`, `status` and `uninstall` (see the runbook). Checked against a
+   real systemd (Debian 13, aarch64) and a real launchd (macOS, arm64) with
+   `make service-live`.
 2. **Remove macOS assumptions.** The inventory before this milestone found
    these: test temp paths were hardcoded to the macOS private temp directory
    (now derived from `tempfile`); shell startup hardening covered zsh only,

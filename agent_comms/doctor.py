@@ -47,6 +47,7 @@ from .actor_config import load_actor_config
 from .db import LEDGER_SCHEMA_VERSION, Database
 from .dispatch_ledger import DISPATCH_TERMINAL_STATUSES
 from .monitor import heartbeat_is_fresh
+from .service import ServiceError, backend_for_platform
 from .runtime_pins import PlatformNotCertified, RuntimePin, current_platform, pin_for
 from .runtimes.claude import check_claude  # noqa: F401 - doctor's names for callers and tests
 from .runtimes.codex import check_codex, check_codex_custody  # noqa: F401
@@ -287,30 +288,39 @@ def check_monitor(
     pid_alive: Callable[[int], bool] = _pid_alive,
     now: datetime | None = None,
     ledger: LedgerRef | None = None,
+    platform: str | None = None,
 ) -> dict:
     ledger = ledger or LedgerRef(paths.db_path(), False)
     humans = snapshot.humans()
     operator = os.environ.get(OPERATOR_ACTOR_ENV, "").strip()
     human = operator or (humans[0]["id"] if len(humans) == 1 else "<human-actor-id>")
-    fix = ledger.monitor(human)
+    foreground = ledger.monitor(human)
+    try:
+        backend_for_platform(platform)
+    except ServiceError:
+        # No service manager here: the terminal command is the repair.
+        fix, alternative = foreground, ""
+    else:
+        fix, alternative = ledger.service_install(human), f"; to run the monitor in a terminal instead: {foreground}"
+
+    def failing(status: str, detail: str) -> dict:
+        return check("monitor", status, detail + alternative, fix)
+
     heartbeat = snapshot.heartbeat
     if heartbeat is None or not heartbeat.get("last_pass_at"):
         if snapshot.dispatch_count == 0:
-            return check("monitor", WARN, "no monitor heartbeat yet and nothing has been dispatched", fix)
+            return failing(WARN, "no monitor heartbeat yet and nothing has been dispatched")
         monitored = snapshot.dispatch_count if snapshot.monitored_dispatch_count is None else snapshot.monitored_dispatch_count
         if monitored == 0:
             # The demo's finished fake dispatches needed no monitor; the first
             # real dispatch, or unfinished fake work, without one fails below.
-            return check(
-                "monitor", WARN,
-                f"no monitor heartbeat; {snapshot.dispatch_count} dispatches, all to fake workers and finished", fix,
-            )
-        return check("monitor", FAIL, f"no monitor heartbeat; {snapshot.dispatch_count} dispatches recorded", fix)
+            return failing(WARN, f"no monitor heartbeat; {snapshot.dispatch_count} dispatches, all to fake workers and finished")
+        return failing(FAIL, f"no monitor heartbeat; {snapshot.dispatch_count} dispatches recorded")
     if not heartbeat_is_fresh(heartbeat, now=now or datetime.now(timezone.utc)):
-        return check("monitor", FAIL, f"monitor heartbeat is stale (last pass {heartbeat['last_pass_at']})", fix)
+        return failing(FAIL, f"monitor heartbeat is stale (last pass {heartbeat['last_pass_at']})")
     pid = heartbeat.get("pid")
     if not isinstance(pid, int) or pid <= 0 or not pid_alive(pid):
-        return check("monitor", FAIL, f"monitor heartbeat is fresh (last pass {heartbeat['last_pass_at']}) but monitor pid {pid} is not running", fix)
+        return failing(FAIL, f"monitor heartbeat is fresh (last pass {heartbeat['last_pass_at']}) but monitor pid {pid} is not running")
     return check("monitor", OK, f"monitor pid {pid} running, last pass {heartbeat['last_pass_at']}")
 
 

@@ -1,4 +1,4 @@
-.PHONY: help gate hygiene lint lint-baseline test preverify install-smoke claude-seat hooks certify
+.PHONY: help gate hygiene lint lint-baseline test preverify install-smoke claude-seat service-live hooks certify
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
 
@@ -21,6 +21,7 @@ help:
 		'  make preverify      Fresh clone of HEAD: suite on Python 3.11 and 3.14, then lint and hygiene' \
 		'  make install-smoke  Build a wheel from HEAD, uv tool install it, run a mailbox exchange and a fake dispatch outside the checkout' \
 		'  make claude-seat    Bind and check the Claude seat with the real claude CLI on a linked worktree under a scratch HOME (needs claude on PATH)' \
+		'  make service-live   Not in the gate: install, restart, stop, start and uninstall the monitor as a real user service under a throwaway runtime root' \
 		'  make hooks          Install the pre-push hook (hygiene and lint before any push) into .git/hooks' \
 		'  make certify        Certify the installed runtime and update its pin (RUNTIME=codex or claude); runs its login-backed cells isolated' \
 		'Variables: PYTHON=3.11 (make test), RUNTIME=codex|claude CERTIFY_ARGS=--force (make certify), PREVERIFY_ARGS=--allow-dirty, GATES_BASE=<ref>, GATES_PRIVATE_DIR=<dir>, INSTALL_SMOKE_SOURCE=worktree, INSTALL_SMOKE_KEEP=1, CLAUDE_SEAT_SCRATCH=<dir>'
@@ -47,6 +48,9 @@ install-smoke:
 
 claude-seat:
 	sh scripts/gates/claude-seat-worktree.sh
+
+service-live:
+	uv run $(if $(PYTHON),--python $(PYTHON),) --frozen --extra test python scripts/service-live-check.py
 
 hooks:
 	hooks_dir="$$(git rev-parse --git-common-dir)/hooks"; mkdir -p "$$hooks_dir" \
