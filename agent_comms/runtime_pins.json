@@ -25,9 +25,9 @@
           "sha256": "f7c5093b9dd6560d08af28bc27b123fb55091deae3180ac39df199522da86815"
         },
         "linux-aarch64": {
-          "version": "2.1.310",
-          "certified_on": "2026-11-19",
-          "sha256": "9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54"
+          "version": "2.1.330",
+          "certified_on": "2026-11-22",
+          "sha256": "6016f90cac783e367fb1aa97c768a2efb94a0128a5b46b70fb3d8fcbbd9dd444"
         }
       }
     }
