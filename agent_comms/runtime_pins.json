@@ -5,9 +5,9 @@
       "boundary": "exact",
       "platforms": {
         "darwin-arm64": {
-          "version": "0.164.0",
-          "certified_on": "2026-11-17",
-          "sha256": "2bfda010e68e0c2c4156a4562a6248800103132d911e812661cb5a446738e10b"
+          "version": "0.171.0",
+          "certified_on": "2026-11-22",
+          "sha256": "b71b3ddb70c6bb02b130cedfa6982f2e85faab6043883659d661dde4586dd118"
         },
         "linux-aarch64": {
           "version": "0.164.0",
