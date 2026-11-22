@@ -801,12 +801,36 @@ def process_environment(pid: int) -> dict[str, str] | None:
     return None if read is None else read[0]
 
 
-def single_successful_run(events: list[dict], matches: Callable[[dict], bool], *, nonce: str) -> dict:
-    """The one launch of a command in a dispatch's events: started once,
-    and that same item completed with exit 0 and ``nonce`` in its output.
-    A command launched more than once is refused, because a process seen
-    by the host could then belong to a launch other than the one that
-    completed."""
+def standalone_command_matcher(invocation: str) -> Callable[[dict], bool]:
+    """True for a ``command_execution`` item that runs ``invocation`` and
+    nothing else: the bare command, or one ``sh -c`` style wrapper whose
+    whole command string is the invocation. The item's exit status is then
+    the invocation's own, and the item is one launch of it."""
+    wanted = shlex.split(invocation)
+
+    def matches(item: dict) -> bool:
+        if item.get("type") != "command_execution":
+            return False
+        command = str(item.get("command", ""))
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return False
+        if argv == wanted:
+            return True
+        return outer_shell_flags(command) is not None and len(argv) == 3 and shell_words(argv[2]) == wanted
+
+    return matches
+
+
+def single_successful_run(events: list[dict], invocation: str, *, nonce: str) -> dict:
+    """The one launch of ``invocation`` in a dispatch's events: one item
+    started that runs it at all, that same item completed, it runs the
+    invocation on its own, and it ended with exit 0 and ``nonce`` in its
+    output. A second launch is refused, and so is an item that covers more
+    than the invocation (a chain, a retry, a wrapper): a process the host
+    saw could then be a launch other than the one whose success is shown."""
+    matches = command_matcher(invocation)
     started = [item for item in event_items(events, "started") if matches(item)]
     completed = [item for item in event_items(events, "completed") if matches(item)]
     if len(started) != 1 or len(completed) != 1:
@@ -816,11 +840,21 @@ def single_successful_run(events: list[dict], matches: Callable[[dict], bool], *
     run = completed[0]
     if run.get("id") != started[0].get("id"):
         raise AssertionError(f"the completed command is not the one that started: {started[0]!r} {run!r}")
+    if not standalone_command_matcher(invocation)(run):
+        raise AssertionError(f"the command was not run on its own: {run.get('command')!r}")
     if run.get("status") != "completed" or run.get("exit_code") != 0:
         raise AssertionError(f"the command did not run to a successful end: {run!r}")
     if nonce not in str(run.get("aggregated_output", "")):
         raise AssertionError(f"the command's output does not hold this attempt's nonce: {run!r}")
     return run
+
+
+def assert_value_absent(text: str, value: str, what: str) -> None:
+    """Fail when ``value`` is in ``text``, saying only ``what`` was found:
+    the text is a process's whole environment and must not reach a failure
+    message, a log or a certification record."""
+    if value in text:
+        raise AssertionError(f"{what} was found in the observed environment (the environment is not shown)")
 
 
 class CommandEnvironmentObserver:

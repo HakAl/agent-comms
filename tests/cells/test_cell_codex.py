@@ -21,6 +21,7 @@ from tests.dispatch_cell_harness import (
     HOOK_REFUSAL_REASON,
     assert_evidence_outside,
     assert_supervisor_listener_unreached,
+    assert_value_absent,
     POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
     POSITIVE_CELL_TTL_SECONDS,
     ProbeAttempt,
@@ -472,7 +473,7 @@ class CodexCellTest(unittest.TestCase):
         )
         # One launch only: the process the host saw is then the launch that
         # completed, not an earlier one that a retry replaced.
-        single_successful_run(read_worker_events(dispatch), attempt.matches, nonce=context["nonce"])
+        single_successful_run(read_worker_events(dispatch), context["invocation"], nonce=context["nonce"])
         self.assertEqual(json.loads(context["receipt_path"].read_text()), {"nonce": context["nonce"]})
         return observed_command_environment(context["observer"].snapshot, dispatch)
 
@@ -559,9 +560,9 @@ class CodexCellTest(unittest.TestCase):
                 self.assertEqual(leaked, [], "operator startup state reached the worker command")
                 # Looked for in the text the host read, where a value is
                 # whole: from ps a parsed value ends at its first space.
-                self.assertNotIn(
-                    secret_value, attempt.context["observer"].snapshot["environment_text"],
-                    "the startup fixture's secret value is in the worker command's environment",
+                assert_value_absent(
+                    attempt.context["observer"].snapshot["environment_text"], secret_value,
+                    "the startup fixture's secret value",
                 )
                 # Mechanism, for this pinned Codex: no command shell was started
                 # as a login or interactive shell.

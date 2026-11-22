@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -500,6 +501,7 @@ class CommandEnvironmentObserverTest(unittest.TestCase):
     def hold(self, **env: str) -> subprocess.Popen:
         full = {"PATH": "/usr/bin:/bin", "AGENT_COMMS_DISPATCH_ID": "d1", **env}
         child = subprocess.Popen([sys.executable, str(self.script)], env=full, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(child.stdout.close)
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         return child
@@ -568,13 +570,14 @@ class SingleRunTest(unittest.TestCase):
     """The host's sample of a command's process counts only when the
     dispatch launched that command once and that launch succeeded."""
 
-    def run_events(self, item_id: str, *, exit_code=0, output='{"nonce": "n1"}') -> list[dict]:
-        completed = _command(INVOCATION, exit_code=exit_code, output=output)
+    def run_events(self, item_id: str, *, exit_code=0, output='{"nonce": "n1"}', command=None) -> list[dict]:
+        command = command or f"/bin/zsh -c '{INVOCATION}'"
+        completed = _command(command, exit_code=exit_code, output=output)
         completed["item"]["id"] = item_id
-        return [_started(INVOCATION, item_id), completed]
+        return [_started(command, item_id), completed]
 
     def check(self, events) -> dict:
-        return cell_harness.single_successful_run(events, cell_harness.command_matcher(INVOCATION), nonce="n1")
+        return cell_harness.single_successful_run(events, INVOCATION, nonce="n1")
 
     def test_one_successful_launch_is_returned(self):
         events = [_started("ls", "item_0"), *self.run_events("item_3"), CLOSE_CALL]
@@ -596,6 +599,40 @@ class SingleRunTest(unittest.TestCase):
         ):
             with self.subTest(name=name), self.assertRaises(AssertionError):
                 self.check(events)
+
+    def test_the_bare_command_and_one_shell_wrapper_are_standalone(self):
+        for command in (INVOCATION, f"/bin/zsh -c '{INVOCATION}'", f"bash -lc '{INVOCATION}'"):
+            with self.subTest(command=command):
+                self.assertEqual(self.check(self.run_events("item_3", command=command))["id"], "item_3")
+
+    def test_one_item_that_covers_more_than_the_command_is_refused(self):
+        # One native item, exit 0 and the nonce printed, but the item's
+        # status is another command's, or the probe ran more than once.
+        for command in (
+            f"/bin/zsh -c '{INVOCATION}; true'",
+            f"/bin/zsh -c '{INVOCATION} || true'",
+            f"/bin/zsh -c '{INVOCATION} && {INVOCATION}'",
+            f"/bin/zsh -c 'cd /work && {INVOCATION}'",
+            f"/bin/zsh -c '{INVOCATION} &'",
+            f"/bin/zsh -c 'timeout 1 {INVOCATION}'",
+            f"/bin/bash -lc \"zsh -c '{INVOCATION}'\"",
+            f"/bin/zsh -c '{INVOCATION} extra'",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaisesRegex(AssertionError, "not launched exactly once|not run on its own"):
+                    self.check(self.run_events("item_3", command=command))
+
+
+class ValueAbsentTest(unittest.TestCase):
+    def test_a_found_value_fails_without_showing_the_text(self):
+        text = "HOME=/h OTHER_PRIVATE=second-synthetic-value LABEL=prefix sample-marker"
+        cell_harness.assert_value_absent(text, "not-there", "the fixture value")
+        with self.assertRaises(AssertionError) as caught:
+            cell_harness.assert_value_absent(text, "sample-marker", "the fixture value")
+        shown = "".join(traceback.format_exception(caught.exception))
+        self.assertIn("the fixture value", shown)
+        for private in ("second-synthetic-value", "OTHER_PRIVATE", "sample-marker", "/h"):
+            self.assertNotIn(private, shown)
 
 
 class PsEnvironmentTest(unittest.TestCase):
