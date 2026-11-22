@@ -744,11 +744,13 @@ def hold_probe_source(receipt_path: Path, *, nonce: str, seconds: int) -> str:
     """A script that prints one line holding ``nonce``, writes the same line
     to ``receipt_path`` and then waits, so the host can read the
     environment of the command's process while it runs. It reads nothing
-    from its environment."""
+    from its environment. The receipt is created, never overwritten: a
+    launch that finds one fails before it prints, so of several launches at
+    most the first can end with exit 0 and the nonce in its output."""
     return (
         "import json, time\n"
         f"text = json.dumps({{'nonce': {nonce!r}}})\n"
-        f"open({str(receipt_path)!r}, 'w').write(text)\n"
+        f"open({str(receipt_path)!r}, 'x').write(text)\n"
         "print(text, flush=True)\n"
         f"time.sleep({int(seconds)})\n"
     )
@@ -860,10 +862,13 @@ def assert_value_absent(text: str, value: str, what: str) -> None:
 class CommandEnvironmentObserver:
     """Watches the process table for the command ``invocation`` (its exact
     argv, so a shell that only carries the text as an argument is not it)
-    and keeps the first environment the host can read from that process,
+    and keeps the first environment the host can read from such a process,
     with the text it was read from and the pids of its ancestors at that
-    moment. A cell pairs it with single_successful_run, so the process seen
-    is the dispatch's only launch of the command."""
+    moment. It keeps watching until stopped and records the pid of every
+    process it sees with that argv, however it was launched (a wrapper the
+    event matcher does not count still shows here). A cell pairs
+    sole_observed_launch with single_successful_run, so the process sampled
+    is the one launch that the events show completing."""
 
     POLL_SECONDS = 0.2
 
@@ -873,6 +878,7 @@ class CommandEnvironmentObserver:
         self._stop = threading.Event()
         self._found = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        self._seen: set[int] = set()
         self.snapshot: dict | None = None
 
     def start(self) -> None:
@@ -887,13 +893,16 @@ class CommandEnvironmentObserver:
         self._found.wait(timeout_seconds)
         return self.snapshot
 
+    def launches(self) -> list[int]:
+        """The pid of every process seen running the command so far."""
+        return sorted(self._seen)
+
     def _run(self) -> None:
         while not self._stop.is_set() and time.monotonic() < self._deadline:
             snapshot = self._look()
-            if snapshot is not None:
+            if snapshot is not None and self.snapshot is None:
                 self.snapshot = snapshot
                 self._found.set()
-                return
             self._stop.wait(self.POLL_SECONDS)
 
     def _look(self) -> dict | None:
@@ -910,6 +919,9 @@ class CommandEnvironmentObserver:
             parents[pid] = ppid
             if fields[2].split() == self._argv:
                 candidates.append(pid)
+        self._seen = self._seen | set(candidates)
+        if self.snapshot is not None:
+            return None
         for pid in candidates:
             read = read_process_environment(pid)
             if read is None:
@@ -922,6 +934,24 @@ class CommandEnvironmentObserver:
                 parent = parents.get(parent)
             return {"pid": pid, "ancestors": ancestors, "environment": environment, "environment_text": text}
         return None
+
+
+def sole_observed_launch(observer: CommandEnvironmentObserver) -> dict:
+    """The observer's sample, once it is shown to be of the only process
+    that ran the command while the observer watched. With the events'
+    single successful run, which lasts as long as the script holds and so
+    cannot go unseen, that process is the one that completed: an earlier
+    launch the events do not count (through a wrapper, say) would be a
+    second process here."""
+    launches = observer.launches()
+    snapshot = observer.snapshot
+    if not launches or snapshot is None:
+        raise AssertionError("the command's process was never seen with a readable environment")
+    if len(launches) != 1:
+        raise AssertionError(f"{len(launches)} processes ran the command, not one: the sample may be of another launch")
+    if snapshot["pid"] != launches[0]:
+        raise AssertionError("the sampled process is not the one launch seen")
+    return snapshot
 
 
 def observed_command_environment(snapshot: dict | None, dispatch: dict) -> dict[str, str]:

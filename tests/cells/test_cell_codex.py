@@ -38,6 +38,7 @@ from tests.dispatch_cell_harness import (
     hold_probe_source,
     observed_command_environment,
     single_successful_run,
+    sole_observed_launch,
     long_running_worker_spawn,
     make_codex_harness,
     outer_shell_flags,
@@ -471,11 +472,12 @@ class CodexCellTest(unittest.TestCase):
         self.assertEqual(
             context["probe_path"].read_text(), context["source"], "the fixture script changed during the dispatch"
         )
-        # One launch only: the process the host saw is then the launch that
-        # completed, not an earlier one that a retry replaced.
+        # One launch only, by the events and by the host's own count of
+        # processes: the process the host sampled is then the launch that
+        # completed, not an earlier one that a retry or a wrapper replaced.
         single_successful_run(read_worker_events(dispatch), context["invocation"], nonce=context["nonce"])
         self.assertEqual(json.loads(context["receipt_path"].read_text()), {"nonce": context["nonce"]})
-        return observed_command_environment(context["observer"].snapshot, dispatch)
+        return observed_command_environment(sole_observed_launch(context["observer"]), dispatch)
 
     def test_codex_spawn_env_strips_write_credentials(self) -> None:
         """Write credentials in the operator's environment do not reach a

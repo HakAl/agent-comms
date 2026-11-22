@@ -507,10 +507,10 @@ class CommandEnvironmentObserverTest(unittest.TestCase):
         return child
 
     def observe(self, **env: str) -> dict:
-        observer = cell_harness.CommandEnvironmentObserver(self.invocation, timeout_seconds=20)
+        observer = self.observer = cell_harness.CommandEnvironmentObserver(self.invocation, timeout_seconds=20)
         observer.start()
         self.addCleanup(observer.stop)
-        child = self.hold(**env)
+        child = self.child = self.hold(**env)
         self.assertEqual(json.loads(child.stdout.readline()), {"nonce": "n1"})
         snapshot = observer.wait(10)
         if snapshot is None:
@@ -524,6 +524,42 @@ class CommandEnvironmentObserverTest(unittest.TestCase):
         self.assertGreaterEqual(time.monotonic() - started, 3)
         self.assertEqual(json.loads(done.stdout), {"nonce": "n1"})
         self.assertEqual(json.loads(self.receipt.read_text()), {"nonce": "n1"})
+
+    def test_a_second_launch_of_the_hold_script_fails_before_it_prints(self):
+        # The receipt is created exclusively: of several launches only the
+        # first can print the nonce and end with exit 0.
+        first = self.hold()
+        self.assertEqual(json.loads(first.stdout.readline()), {"nonce": "n1"})
+        second = subprocess.run([sys.executable, str(self.script)], capture_output=True, text=True, check=False)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertEqual(second.stdout, "")
+        self.assertIn("FileExistsError", second.stderr)
+
+    def test_the_sole_launch_seen_is_the_one_sampled(self):
+        snapshot = self.observe()
+        observer = self.observer
+        self.assertEqual(observer.launches(), [snapshot["pid"]])
+        self.assertIs(cell_harness.sole_observed_launch(observer), snapshot)
+
+    def test_a_wrapped_launch_before_the_standalone_one_is_refused(self):
+        # The events of this pair pass single_successful_run: the wrapped
+        # launch is no launch to the event matcher. The host saw two
+        # processes with the command's argv, so the sample is not evidence.
+        snapshot = self.observe()
+        self.child.kill()
+        self.assertNotEqual(self.child.wait(), 0)
+        self.receipt.unlink()
+        later = self.hold()
+        self.assertEqual(json.loads(later.stdout.readline()), {"nonce": "n1"})
+        cell_harness.wait_until(lambda: len(self.observer.launches()) == 2, timeout_seconds=10)
+        self.assertEqual(self.observer.launches(), sorted([snapshot["pid"], later.pid]))
+        with self.assertRaisesRegex(AssertionError, "2 processes ran the command"):
+            cell_harness.sole_observed_launch(self.observer)
+
+    def test_no_launch_seen_is_refused(self):
+        observer = cell_harness.CommandEnvironmentObserver(self.invocation, timeout_seconds=20)
+        with self.assertRaisesRegex(AssertionError, "never seen"):
+            cell_harness.sole_observed_launch(observer)
 
     def test_the_command_s_environment_and_ancestry_are_seen(self):
         snapshot = self.observe(FIXTURE_PLACEHOLDER="set")
@@ -604,6 +640,14 @@ class SingleRunTest(unittest.TestCase):
         for command in (INVOCATION, f"/bin/zsh -c '{INVOCATION}'", f"bash -lc '{INVOCATION}'"):
             with self.subTest(command=command):
                 self.assertEqual(self.check(self.run_events("item_3", command=command))["id"], "item_3")
+
+    def test_a_wrapped_launch_is_not_counted_by_the_events(self):
+        # Why the cells also require sole_observed_launch: a launch through
+        # a wrapper is not a launch here, so a wrapped attempt followed by a
+        # standalone success reads as one launch.
+        wrapped = self.run_events("item_2", exit_code=124, output="", command=f"/bin/zsh -c 'timeout 1 {INVOCATION}'")
+        events = [*wrapped, *self.run_events("item_3"), CLOSE_CALL]
+        self.assertEqual(self.check(events)["id"], "item_3")
 
     def test_one_item_that_covers_more_than_the_command_is_refused(self):
         # One native item, exit 0 and the nonce printed, but the item's
