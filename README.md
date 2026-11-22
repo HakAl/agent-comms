@@ -48,7 +48,13 @@ Release 0.2.0 was walked through on a clean Mac against milestone 1 of
 [docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md).
 Every criterion was met except a clean `doctor` report with native runtimes:
 one seat check failed on a bug fixed since and now rerun by CI on every
-change, while the seat worked. There is no PyPI
+change, while the seat worked. The 0.3.0 candidate was walked through
+the same way on a clean Debian 13 machine (aarch64) against milestone 2
+(Linux), with the monitor as a systemd user service, and met every
+criterion; one input, the Codex login, was copied in and not made on that
+machine:
+[docs/releases/0.3.0-linux-walkthrough.md](docs/releases/0.3.0-linux-walkthrough.md).
+There is no PyPI
 release yet: the package installs from a wheel built out of a clone.
 
 ## Documentation
@@ -65,6 +71,7 @@ Start with the quickstart; it needs no other page.
 | [docs/communication_contract.md](docs/communication_contract.md) | When to send, how to reply, how threads end |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Where this is going and what is not planned |
 | [docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md) | The 0.2.0 walkthrough on a clean Mac: every command and result, a verdict per milestone criterion, the departures and findings |
+| [docs/releases/0.3.0-linux-walkthrough.md](docs/releases/0.3.0-linux-walkthrough.md) | The 0.3.0 walkthrough on a clean Debian 13 machine (aarch64), the same shape, with the systemd user service |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, the gates, runtime pins and certification, review, failure reports |
 | [AGENTS.md](AGENTS.md) | How to work on this repository |
 

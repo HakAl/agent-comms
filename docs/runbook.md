@@ -103,7 +103,10 @@ What to know about it:
 - It is a user service. On macOS it runs while you are logged in. On Linux
   it stops when your last session ends unless lingering is on; `install`
   and `status` report that and print the command, `loginctl enable-linger`
-  with your user name, which agent-comms does not run for you.
+  with your user name, which agent-comms does not run for you. Without
+  lingering the unit also starts again at your next login, so a service you
+  stopped with `stop` in one session is running in the next; with lingering
+  on, `stop` holds until `start`.
 - After a crash the manager waits before restarting: 10 seconds under
   launchd, 5 under systemd. A clean exit is not restarted.
 - `install` replaces a unit of the same name, including one you wrote by
@@ -112,10 +115,11 @@ What to know about it:
   aside first or expect it to be unloaded and rewritten.
 - Checked against a real service manager with `make service-live`: systemd
   user units on Debian 13 (aarch64, systemd 257) and launchd on macOS
-  26.6.2 (arm64). A real worker dispatch under the service
-  (which on macOS needs the login keychain for Claude Code's login) is part
-  of the Linux release walkthrough, not shown here. Elsewhere (Windows) use
-  the terminal.
+  26.6.2 (arm64). Real worker dispatches under the systemd
+  service, with and without lingering, are in the
+  [0.3.0 Linux walkthrough](releases/0.3.0-linux-walkthrough.md); one under
+  launchd (which needs the login keychain for Claude Code's login) has not
+  been recorded. Elsewhere (Windows) use the terminal.
 - The watchdog below is not scheduled by the service.
 
 Foreground, in its own terminal:

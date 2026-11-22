@@ -2,8 +2,12 @@
 
 From nothing to a dispatch that a worker answers, on one Mac or one Linux
 machine. Part 1 needs no
-model login and takes a few minutes; it is the path CI proves on every change
-(`make install-smoke`). Part 2 adds your real runtimes.
+model login and takes a few minutes. CI proves it on macOS on every change
+(`make install-smoke`, from a built wheel); on Linux, CI runs the hermetic
+test suite on x86_64 and not this installed path, which was walked through
+by hand on Debian 13 aarch64 for
+[release 0.3.0](releases/0.3.0-linux-walkthrough.md). Part 2 adds your real
+runtimes.
 
 Requirements: macOS or Linux, Python 3.11 or newer (3.11 and 3.14 are the
 tested interpreters; see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup-and-tests)
@@ -161,10 +165,12 @@ without a browser, add `--device-auth` to `codex login` and finish the
 sign-in from another device. The Claude custody copy is a file you place:
 the fix names the version and the path, and the installer keeps that
 version's binary under `~/.local/share/claude/versions/`, so copy it from
-there with `install -m 0755`. The release walkthrough in
+there with `install -m 0755`. The release walkthroughs show each of these as it was run:
+[releases/0.3.0-linux-walkthrough.md](releases/0.3.0-linux-walkthrough.md)
+on Debian 13, and
 [releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
-shows each of these as it was run; it predates the shared login, so it
-shows a third, worker-only Codex login that is no longer asked for.
+on macOS, which predates the shared login and so shows a third,
+worker-only Codex login that is no longer asked for.
 
 ### 7. Start the monitor
 
@@ -183,6 +189,7 @@ Leave it running while you work; stop it with Ctrl-C. `--once` runs a single
 pass instead, for a scheduler. To keep it up without a terminal, install it
 as a user service with `agent-comms service install` and the same
 `--human-actor-id`; see the [runbook](runbook.md). On Linux the service
+needs a systemd user manager (without one, use the terminal), and it
 stops when your last session ends unless lingering is on; `install` prints
 the command that turns it on.
 
