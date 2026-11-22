@@ -120,8 +120,8 @@ candidate on a clean Debian 13 machine (aarch64), recorded in
 [releases/0.3.0-linux-walkthrough.md](releases/0.3.0-linux-walkthrough.md)
 with every command and result. Every milestone 1 criterion was met there,
 including a clean `doctor` report with native runtimes, a real dispatch to
-a Codex worker and to a Claude Code worker under the systemd user service,
-and the review and landing cycle. One input did not come from the docs'
+a Codex worker and to a Claude Code worker while the monitor ran as a
+systemd user service, and the review and landing cycle. One input did not come from the docs'
 path: the Codex login was copied from another machine, so
 `codex login --device-auth` on a headless machine is not evidence from
 that run. Native support is claimed for Linux on aarch64 only; on x86_64

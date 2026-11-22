@@ -170,7 +170,9 @@ there with `install -m 0755`. The release walkthroughs show each of these as it 
 on Debian 13, and
 [releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
 on macOS, which predates the shared login and so shows a third,
-worker-only Codex login that is no longer asked for.
+worker-only Codex login that is no longer asked for. Neither shows
+`codex login --device-auth`: the Linux run copied an existing login in
+instead.
 
 ### 7. Start the monitor
 
