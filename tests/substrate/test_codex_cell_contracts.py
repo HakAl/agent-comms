@@ -256,6 +256,8 @@ class CommandMatcherTest(unittest.TestCase):
             f"/bin/zsh -c '{INVOCATION}'",
             f"bash -lc '{INVOCATION}'",
             f"/bin/bash -c 'cd /work && {INVOCATION}'",
+            f"/bin/bash -c 'cd /work; {INVOCATION} && ls'",
+            f"/bin/bash -lc \"zsh -c '{INVOCATION}'\"",
         ):
             with self.subTest(command=command):
                 self.assertTrue(matches(_command(command)["item"]))
@@ -265,6 +267,11 @@ class CommandMatcherTest(unittest.TestCase):
         for item in (
             _command("/bin/zsh -c 'ls -l probe_1.py && cat /work/probe_1.py'")["item"],
             _command("cat /work/probe_1.py")["item"],
+            _command(f"/bin/zsh -c 'echo \"{INVOCATION}\"'")["item"],
+            _command(f"/bin/zsh -c 'echo {INVOCATION}'")["item"],
+            _command(f"grep -n '{INVOCATION}' notes.txt")["item"],
+            _command("/usr/bin/python3 /work/probe_2.py")["item"],
+            _command("/bin/zsh -c 'unterminated")["item"],
             _item("completed", "agent_message", text=f"I will not run {INVOCATION}")["item"],
         ):
             with self.subTest(item=item):
@@ -280,7 +287,8 @@ class DispatchUntilAttemptedTest(unittest.TestCase):
         self.harness.dispatch_and_wait = lambda **kwargs: (
             self.calls.append(kwargs) or {"dispatch_id": f"d{len(self.calls)}", "status": "closed"}
         )
-        self.harness.settle_dispatch = lambda dispatch: None
+        self.settled = True
+        self.harness.settle_dispatch = lambda dispatch: self.settled
         self.harness.classify_probe_attempt = lambda dispatch, attempt: (
             self.classes[len(self.calls) - 1], "detail"
         )
@@ -316,6 +324,13 @@ class DispatchUntilAttemptedTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "declined the probe in all 3 attempts"):
             self.run_cell()
         self.assertEqual(len(self.calls), cell_harness.PROBE_ATTEMPTS)
+
+    def test_a_refusal_from_a_worker_not_confirmed_gone_is_inconclusive(self):
+        self.classes = [cell_harness.DECLINED]
+        self.settled = False
+        with self.assertRaisesRegex(AssertionError, "exit was not confirmed"):
+            self.run_cell()
+        self.assertEqual(len(self.calls), 1)
 
     def test_inconclusive_evidence_is_not_retried(self):
         self.classes = [cell_harness.INCONCLUSIVE]

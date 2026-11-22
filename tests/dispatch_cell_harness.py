@@ -512,9 +512,11 @@ class DeterministicFakeCellAdapter:
 # A model-driven worker may refuse a probe before running it and close the
 # dispatch blocked. That run says nothing about the control the cell is
 # there to observe, so a verified refusal is dispatched again, this many
-# times in all; a cell whose probe was never run fails. Each attempt keeps
-# the positive-cell TTL and terminal wait, so a cell is bounded by
-# PROBE_ATTEMPTS times POSITIVE_CELL_TERMINAL_WAIT_SECONDS.
+# attempts in all (not this many retries); a cell whose probe was never run
+# fails. Each attempt keeps the positive-cell TTL and terminal wait, so the
+# polling of a cell is bounded by PROBE_ATTEMPTS times
+# POSITIVE_CELL_TERMINAL_WAIT_SECONDS, plus up to RUNTIME_KILL_GRACE_SECONDS
+# + 5 per attempt to confirm the worker's exit.
 PROBE_ATTEMPTS = 3
 ATTEMPTED = "attempted"
 DECLINED = "declined"
@@ -536,28 +538,58 @@ class ProbeAttempt:
 
 
 def inner_command(command: str) -> str:
-    """The command string an outer ``sh -c`` style wrapper was given, or
-    ``command`` itself when it is not such a wrapper."""
-    if outer_shell_flags(command) is None:
-        return command
-    argv = shlex.split(command)
-    for index, token in enumerate(argv[1:], start=1):
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-            return argv[index + 1] if index + 1 < len(argv) else ""
-        if not token.startswith("-"):
-            break
+    """The command string that ``sh -c`` style wrappers were given, however
+    many are nested, or ``command`` itself when it is not such a wrapper."""
+    for _ in range(4):
+        if outer_shell_flags(command) is None:
+            return command
+        argv = shlex.split(command)
+        inner = None
+        for index, token in enumerate(argv[1:], start=1):
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+                inner = argv[index + 1] if index + 1 < len(argv) else ""
+                break
+            if not token.startswith("-"):
+                break
+        if inner is None:
+            return command
+        command = inner
     return command
 
 
+_SHELL_OPERATOR = re.compile(r"[;&|()]+")
+
+
+def shell_words(command: str) -> list[str] | None:
+    """``command`` as shell words, with control operators as words of their
+    own; ``None`` when it does not parse. Quoted text stays one word, so a
+    command that only quotes another is not mistaken for it."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
 def command_matcher(invocation: str) -> Callable[[dict], bool]:
-    """True for a ``command_execution`` item that runs ``invocation``. An
-    item that only names the script (a listing, a ``cat``) does not match,
-    since ``invocation`` holds the interpreter and the path together."""
+    """True for a ``command_execution`` item that runs ``invocation``: its
+    words appear, in order, where a command starts (at the beginning, or
+    after a control operator such as ``&&``). A listing or ``cat`` of the
+    script does not match, nor does a command that quotes or echoes the
+    invocation."""
+    wanted = shlex.split(invocation)
 
     def matches(item: dict) -> bool:
-        return (
-            item.get("type") == "command_execution"
-            and invocation in inner_command(str(item.get("command", "")))
+        if item.get("type") != "command_execution":
+            return False
+        words = shell_words(inner_command(str(item.get("command", ""))))
+        if not words:
+            return False
+        return any(
+            words[index : index + len(wanted)] == wanted
+            and (index == 0 or _SHELL_OPERATOR.fullmatch(words[index - 1]) is not None)
+            for index in range(len(words) - len(wanted) + 1)
         )
 
     return matches
@@ -823,19 +855,23 @@ class DispatchCellHarness:
                 pass
         return terminal
 
-    def settle_dispatch(self, dispatch: dict) -> None:
+    def settle_dispatch(self, dispatch: dict) -> bool:
         """Wait for the dispatch's wrapper to exit, so its event log is final
-        and the worker is gone before another attempt starts."""
+        and the worker is gone. True only when the exit was confirmed."""
         handle = dispatch.get("spawn_handle")
         process = getattr(self.adapter, "_processes", {}).get(handle)
         if process is None:
-            return
+            return False
         if process.poll() is None:
             try:
                 self._halt_wrapper(handle)
             except Exception:
                 pass
-        process.wait(timeout=RUNTIME_KILL_GRACE_SECONDS + 5)
+        try:
+            process.wait(timeout=RUNTIME_KILL_GRACE_SECONDS + 5)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
 
     def classify_probe_attempt(self, dispatch: dict, attempt: ProbeAttempt) -> tuple[str, str]:
         """``(ATTEMPTED | DECLINED | INCONCLUSIVE, why)`` for a terminal row.
@@ -917,8 +953,12 @@ class DispatchCellHarness:
                 subject=subject,
                 body=attempt.body,
             )
-            self.settle_dispatch(dispatch)
+            # Settled first: the events and the host are read only once the
+            # worker is confirmed gone, or a refusal cannot count as one.
+            settled = self.settle_dispatch(dispatch)
             outcome, why = self.classify_probe_attempt(dispatch, attempt)
+            if outcome == DECLINED and not settled:
+                outcome, why = INCONCLUSIVE, f"the worker's exit was not confirmed after a blocked close ({why})"
             if outcome == ATTEMPTED:
                 print(f"PROBE_ATTEMPTS {idempotency_key}: attempted on try {number}, declined before: {reasons}")
                 return dispatch, attempt, declines
