@@ -5,6 +5,7 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import copy
 import errno
 import json
+import socket
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,12 @@ def _item(kind: str, item_type: str, **fields) -> dict:
     return {"type": f"item.{kind}", "item": {"id": "item_1", "type": item_type, **fields}}
 
 
+def _started(command: str, item_id: str = "item_0") -> dict:
+    event = _command(command, kind="started", exit_code=None, status="in_progress")
+    event["item"]["id"] = item_id
+    return event
+
+
 def _command(command: str, *, kind: str = "completed", output: str = "", exit_code=0, status="completed") -> dict:
     return _item(
         kind, "command_execution", command=command, aggregated_output=output,
@@ -140,12 +147,15 @@ def _command(command: str, *, kind: str = "completed", output: str = "", exit_co
     )
 
 
-CLOSE_CALL = _item("completed", "mcp_tool_call", server="agent-comms", tool="close_dispatch", status="completed")
+CLOSE_CALL = _item(
+    "completed", "mcp_tool_call", server="agent-comms", tool="close_dispatch", status="completed",
+    arguments={"message_id": "trigger", "reply_message_id": "reply", "result": "blocked"},
+)
 
 
-class ProbeAttemptClassificationTest(unittest.TestCase):
-    """A blocked dispatch is retried only when it is shown to be a refusal
-    made before the probe ran; everything unclear stops the cell."""
+class BlockedDispatchFixture(unittest.TestCase):
+    """A closed, blocked dispatch with one bound reply and an event log that
+    holds only the close call."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -182,9 +192,15 @@ class ProbeAttemptClassificationTest(unittest.TestCase):
         if not self.host_ok:
             raise AssertionError("the probe left something on the host")
 
-    def classify(self) -> str:
+
+class ProbeAttemptClassificationTest(BlockedDispatchFixture):
+    """A blocked dispatch is retried only when it is shown to be a refusal
+    made before the probe ran; everything unclear stops the cell."""
+
+    def classify(self, log_matches=None) -> str:
         attempt = cell_harness.ProbeAttempt(
-            body="b", matches=cell_harness.command_matcher(INVOCATION), host_check=self.host_check
+            body="b", matches=cell_harness.command_matcher(INVOCATION), host_check=self.host_check,
+            log_matches=log_matches,
         )
         return self.harness.classify_probe_attempt(self.dispatch, attempt)[0]
 
@@ -207,6 +223,17 @@ class ProbeAttemptClassificationTest(unittest.TestCase):
         self.dispatch["result"] = "satisfied"
         self.assertEqual(self.classify(), cell_harness.ATTEMPTED)
 
+    def test_a_blocked_close_after_a_refusal_in_the_worker_log_is_an_attempt(self):
+        # Codex emits no command item for a command a hook blocks; the
+        # runtime's own log is where the attempt shows.
+        log = self.events_path.with_name("worker.log")
+        log.write_text(HookRefusalLogTest.LINE + "\n")
+        self.dispatch["observed_values"]["worker_log"] = str(log)
+        matcher = cell_harness.hook_refusal_matcher
+        self.assertEqual(self.classify(), cell_harness.DECLINED)
+        self.assertEqual(self.classify(matcher(HookRefusalLogTest.PUSH)), cell_harness.ATTEMPTED)
+        self.assertEqual(self.classify(matcher("git push other HEAD")), cell_harness.DECLINED)
+
     def test_unclear_evidence_is_inconclusive(self):
         def missing_events():
             self.events_path.unlink()
@@ -216,6 +243,20 @@ class ProbeAttemptClassificationTest(unittest.TestCase):
 
         def no_close_call():
             self.write_events([_command("ls")])
+
+        def parseable_prefix():
+            # Every line parses, but a command that started never completed.
+            self.write_events([_started("ls"), CLOSE_CALL])
+
+        def close_call_for_another_trigger():
+            call = copy.deepcopy(CLOSE_CALL)
+            call["item"]["arguments"]["message_id"] = "another"
+            self.write_events([call])
+
+        def close_call_for_another_reply():
+            call = copy.deepcopy(CLOSE_CALL)
+            call["item"]["arguments"]["reply_message_id"] = "another"
+            self.write_events([call])
 
         def unbound_reply():
             self.dispatch["observed_values"]["closeout"]["reply_message_id"] = "other"
@@ -239,13 +280,207 @@ class ProbeAttemptClassificationTest(unittest.TestCase):
             del self.dispatch["observed_values"]["worker_events"]
 
         for case in (
-            missing_events, truncated_events, no_close_call, unbound_reply, two_replies,
+            missing_events, truncated_events, parseable_prefix, close_call_for_another_trigger,
+            close_call_for_another_reply, no_close_call, unbound_reply, two_replies,
             reply_from_another_actor, open_trigger, host_touched, dlq, no_events_path,
         ):
             with self.subTest(case=case.__name__):
                 self.setUp()
                 case()
                 self.assertEqual(self.classify(), cell_harness.INCONCLUSIVE)
+
+
+class DenialCloseTest(BlockedDispatchFixture):
+    """A denial cell's dispatch may close satisfied or blocked, but always
+    with one reply bound by a protocol 1 closeout to the closed trigger."""
+
+    def check(self) -> None:
+        DispatchCellHarness.assert_denial_closed_with_parented_reply.__wrapped__(self.harness, self.dispatch)
+
+    def test_a_blocked_or_satisfied_close_without_a_delta_is_accepted(self):
+        for result in ("blocked", "satisfied"):
+            with self.subTest(result=result):
+                self.dispatch["result"] = result
+                self.check()
+
+    def test_a_close_that_is_not_bound_is_refused(self):
+        def unbound_reply():
+            self.dispatch["observed_values"]["closeout"]["reply_message_id"] = "other"
+
+        def two_replies():
+            self.replies.append(dict(self.reply, id="second"))
+
+        def open_trigger():
+            self.trigger["status"] = "read"
+
+        def dlq():
+            self.dispatch["status"] = "dlq"
+
+        def no_closeout():
+            del self.dispatch["observed_values"]["closeout"]
+
+        def failed_result():
+            self.dispatch["result"] = "failed"
+
+        for case in (unbound_reply, two_replies, open_trigger, dlq, no_closeout, failed_result):
+            with self.subTest(case=case.__name__):
+                self.setUp()
+                case()
+                with self.assertRaises(AssertionError):
+                    self.check()
+
+
+class DenialProbeTest(unittest.TestCase):
+    """A denial cell dispatches once: the probe was attempted, or the worker
+    verifiably declined it and left the host as it was."""
+
+    def setUp(self):
+        self.harness = object.__new__(DispatchCellHarness)
+        self.harness.evidence_secrets = ()
+        self.calls: list[dict] = []
+        self.outcome = cell_harness.ATTEMPTED
+        self.settled = True
+        self.harness.dispatch_and_wait = lambda **kwargs: (
+            self.calls.append(kwargs) or {"dispatch_id": "d1", "status": "closed"}
+        )
+        self.harness.settle_dispatch = lambda dispatch: self.settled
+        self.harness.classify_probe_attempt = lambda dispatch, attempt: (self.outcome, "detail")
+
+    def run_cell(self):
+        return self.harness.dispatch_denial_probe(
+            idempotency_key="k", ttl_seconds=1, timeout_seconds=2,
+            attempt=cell_harness.ProbeAttempt(body="body", matches=lambda item: False, host_check=lambda: None),
+        )
+
+    def test_an_attempted_probe_goes_to_the_cell_checks(self):
+        dispatch, outcome = self.run_cell()
+        self.assertEqual((dispatch["dispatch_id"], outcome), ("d1", cell_harness.ATTEMPTED))
+        self.assertEqual([(call["idempotency_key"], call["body"]) for call in self.calls], [("k", "body")])
+
+    def test_a_verified_decline_is_returned_and_not_retried(self):
+        self.outcome = cell_harness.DECLINED
+        with mock.patch("builtins.print") as printed:
+            dispatch, outcome = self.run_cell()
+        self.assertEqual(outcome, cell_harness.DECLINED)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("DECLINED k: detail", printed.call_args.args[0])
+
+    def test_a_decline_from_a_worker_not_confirmed_gone_fails(self):
+        self.outcome = cell_harness.DECLINED
+        self.settled = False
+        with self.assertRaisesRegex(AssertionError, "exit was not confirmed"):
+            self.run_cell()
+
+    def test_inconclusive_evidence_fails(self):
+        self.outcome = cell_harness.INCONCLUSIVE
+        with self.assertRaisesRegex(AssertionError, "inconclusive"):
+            self.run_cell()
+
+
+class HookRefusalLogTest(unittest.TestCase):
+    PUSH = "git push hook-probe-remote.git HEAD:refs/heads/hook-probe"
+    LINE = (
+        "2026-11-22T12:28:34.544472Z ERROR codex_core::tools::router: error=Command blocked by "
+        "PreToolUse hook: worker_dispatch_readwrite_bounded forbids network/external write commands. "
+        "Command: " + PUSH
+    )
+
+    def lines(self, text: str | None, command: str = PUSH) -> list[str]:
+        with tempfile.TemporaryDirectory() as temp:
+            observed = {}
+            if text is not None:
+                log = Path(temp) / "worker.log"
+                log.write_text(text)
+                observed["worker_log"] = str(log)
+            return cell_harness.hook_refusal_lines({"observed_values": observed}, command)
+
+    def test_the_hook_s_refusal_of_the_command_is_found(self):
+        self.assertEqual(self.lines("Reading additional input from stdin...\n" + self.LINE + "\n"), [self.LINE])
+
+    def test_anything_else_is_not_a_refusal_of_the_command(self):
+        for text in (
+            None,
+            "",
+            self.LINE.replace(self.PUSH, "git push elsewhere.git HEAD:refs/heads/hook-probe"),
+            self.LINE + "-2",
+            self.LINE.replace("Command blocked by PreToolUse hook", "Command failed"),
+            self.LINE.replace("forbids network/external write commands", "some other reason"),
+            "I will not run " + self.PUSH,
+            # Other entries that hold the expected text are not the router's record.
+            self.LINE.replace("ERROR codex_core::tools::router: error=", "INFO codex_core::exec: output="),
+            "note: " + self.LINE,
+            self.LINE.replace("Z ERROR", " ERROR"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.lines(text), [])
+
+
+class EvidenceLocationTest(unittest.TestCase):
+    def test_logs_must_exist_outside_the_worker_s_writable_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            logs = Path(temp) / "home" / "logs"
+            project.mkdir()
+            logs.mkdir(parents=True)
+            for name in ("w.log", "w.events.jsonl"):
+                (logs / name).write_text("")
+                (project / name).write_text("")
+            outside = {"worker_log": str(logs / "w.log"), "worker_events": str(logs / "w.events.jsonl")}
+            cell_harness.assert_evidence_outside({"observed_values": outside}, project)
+            for bad in (
+                dict(outside, worker_log=str(project / "w.log")),
+                dict(outside, worker_events=str(project / "w.events.jsonl")),
+                dict(outside, worker_log=str(logs / "missing.log")),
+                {"worker_events": outside["worker_events"]},
+            ):
+                with self.subTest(bad=bad), self.assertRaises(AssertionError):
+                    cell_harness.assert_evidence_outside({"observed_values": bad}, project)
+
+    def test_unfinished_items_are_named(self):
+        started = _started("ls")
+        completed = _command("ls")
+        completed["item"]["id"] = "item_0"
+        self.assertEqual(cell_harness.unfinished_items([started, CLOSE_CALL]), ["item_0"])
+        self.assertEqual(cell_harness.unfinished_items([started, completed, CLOSE_CALL]), [])
+
+
+class SupervisorListenerTest(unittest.TestCase):
+    """The check the supervisor root cell makes on the fixture's listener,
+    on a listener set up the way the fixture sets its own up."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / "s"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(str(self.path))
+        listener.listen(8)
+        listener.setblocking(False)
+        self.probe = {
+            "listener": listener,
+            "listener_socket": self.path,
+            "listener_identity": cell_harness._path_identity(self.path),
+        }
+
+    def test_an_idle_listener_passes_and_stays_checkable(self):
+        cell_harness.assert_supervisor_listener_unreached(self.probe)
+        cell_harness.assert_supervisor_listener_unreached(self.probe)
+
+    def test_a_connection_that_reached_the_listener_fails(self):
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(client.close)
+        client.connect(str(self.path))
+        with self.assertRaisesRegex(AssertionError, "reached the protected listener"):
+            cell_harness.assert_supervisor_listener_unreached(self.probe)
+
+    def test_a_removed_or_replaced_socket_fails(self):
+        self.path.unlink()
+        with self.assertRaisesRegex(AssertionError, "gone"):
+            cell_harness.assert_supervisor_listener_unreached(self.probe)
+        self.path.write_text("")
+        with self.assertRaisesRegex(AssertionError, "replaced"):
+            cell_harness.assert_supervisor_listener_unreached(self.probe)
 
 
 class CommandMatcherTest(unittest.TestCase):

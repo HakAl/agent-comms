@@ -57,7 +57,8 @@ EXPECTED_POSITIVE_DISPATCHES = {"codex": 7, "claude": 11}
 
 # dispatch_until_attempted repeats a probe a worker refused, each attempt
 # under the budgets it is given (harness PROBE_ATTEMPTS bounds the count).
-WAITING_DISPATCH_CALL_NAMES = {"dispatch_and_wait", "dispatch_until_attempted"}
+# dispatch_denial_probe dispatches a denial cell's probe once.
+WAITING_DISPATCH_CALL_NAMES = {"dispatch_and_wait", "dispatch_until_attempted", "dispatch_denial_probe"}
 DISPATCH_CALL_NAMES = {*WAITING_DISPATCH_CALL_NAMES, "dispatch_agent"}
 
 
