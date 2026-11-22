@@ -57,6 +57,10 @@ class LedgerRef:
     def monitor(self, human: str) -> str:
         return home_prefix() + sh("agent-comms-monitor", *self.db_args(), "--human-actor-id", human)
 
+    def service_install(self, human: str) -> str:
+        """The command that installs (or reinstalls and restarts) the monitor service."""
+        return self.cli("service", "install", "--human-actor-id", human)
+
 
 def home_prefix() -> str:
     """``AGENT_COMMS_HOME=<root> `` for an install with its own home, else empty."""

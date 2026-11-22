@@ -126,8 +126,9 @@ worker no longer can: it starts queued dispatches, reconciles exited
 supervisors, releases expired rows, pages for the DLQ and kicks a Codex
 login refresh when a token has gone stale. It writes a heartbeat the
 `doctor` reads; after five minutes without one the heartbeat is stale. It
-runs in the foreground, or once per invocation with `--once` from a
-scheduler. Only the `fake` runtime's demo drives itself without it.
+runs as a user service (`agent-comms service install`: launchd on macOS,
+a systemd user unit on Linux), in the foreground, or once per invocation
+with `--once` from a scheduler. Only the `fake` runtime's demo drives itself without it.
 
 The operator can act on a dispatch from the shell with `agent-comms admin`
 (`dispatch`, `cancel-dispatch`, `settle-dispatch`, `retry-spawn`, `send`),
@@ -170,7 +171,7 @@ An install puts four commands on `PATH` (a checkout has the same four under
 |---|---|---|
 | `agent-comms` | you, scripts | setup, doctor, demo, the read side, the admin side |
 | `agent-comms-mcp` | your MCP client | the seat server, one process per identity |
-| `agent-comms-monitor` | you or a scheduler | the reconciler described above |
+| `agent-comms-monitor` | the user service, you, or a scheduler | the reconciler described above |
 | `agent-comms-seat` | you | launches a client in a directory under a checked seat |
 
 ## MCP tools

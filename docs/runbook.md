@@ -35,7 +35,7 @@ nothing and repairs nothing.
 | `runtime:codex`, `runtime:codex:auth` | custody copy; the runtime's shared `auth.json` links to your own Codex login, which is a file Codex can share | `agent-comms custody codex`; `codex login`; `agent-comms bind-codex-login` (with `--replace` for a separate worker login from an earlier install, which warns rather than fails); unset a `CODEX_HOME` inside the runtime root; `cli_auth_credentials_store = "file"` when Codex keeps the login in the keyring |
 | `runtime:codex:home:<worker>` | each worker home and its link to the login | `codex login`; the `CODEX_HOME=<home>` form only for a home that keeps its own file |
 | `runtime:codex:login:<lineage>` | a login that expired and refresh could not recover (`expired`, `revoked`, or `reused` by another process) | the same `codex login` |
-| `monitor` | heartbeat present, fresh, and its pid alive | the monitor command |
+| `monitor` | heartbeat present, fresh, and its pid alive | `agent-comms service install`; the detail names the terminal command as the alternative |
 | `mcp:<architect>:<client>` | the seat each client records, and for Codex what it resolves | the `bind-seat` line printed; trust the project in Codex |
 | `admin_token` | `admin-token` present, mode 600 | see Operator credential |
 
@@ -49,6 +49,74 @@ tasks below comes from, with your paths filled in.
 ## Keep the monitor running
 
 **When:** always, while any claude or codex worker may be dispatched.
+
+As a user service, which starts at login and is restarted if it crashes:
+
+```sh
+agent-comms service install --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG
+agent-comms service status
+```
+
+`install` writes a launchd user agent on macOS
+(`~/Library/LaunchAgents/com.agent-comms.monitor.plist`) or a systemd user
+unit on Linux (`~/.config/systemd/user/agent-comms-monitor.service`, under
+`XDG_CONFIG_HOME` when that is set), mode 600, and starts it. It needs no
+root and no operator credential, and prints the command, the environment
+and the ledger the service is bound to. An install with its own
+`AGENT_COMMS_HOME` gets a service of its own, named with a suffix derived
+from that root, so two installs do not collide; a ledger named with `--db`
+or `AGENT_COMMS_DB` is passed to the monitor on its command line. Run
+`install` again to change anything: it rewrites the unit and restarts the
+service.
+
+```sh
+agent-comms service stop
+agent-comms service start
+agent-comms service uninstall
+```
+
+`status` exits 0 when the service is running and the fresh heartbeat in the
+ledger is from the service's own process, and 3 otherwise, naming what is
+wrong: not installed, not running (with the last exit), no heartbeat yet, or
+a second monitor on the same ledger. The service logs to
+`logs/monitor.log` under the runtime root.
+
+What to know about it:
+
+- The unit carries the `PATH` of the shell that ran `install`, and workers
+  inherit it. A service manager's own `PATH` has neither your tools nor, on
+  Linux, `~/.local/bin`. After changing `PATH`, run `install` again. An
+  entry that is not an absolute directory is refused. The monitor is started
+  directly, not through a shell, so no shell startup file is read.
+- The unit sets `AGENT_COMMS_HOME` and every other variable that could move
+  the runtime root, the ledger or the runtime pins, to this install's value
+  or to empty, so a variable the service manager holds cannot redirect it.
+  It carries no token or credential.
+- Stopping, restarting, reinstalling or uninstalling the service does not
+  stop workers that are already running. Each keeps its own supervisor and
+  time limit, and the next monitor reconciles it; `stop` and `uninstall`
+  say how many dispatches are in flight. Cancel work with the commands under
+  "Act on a dispatch by hand".
+- `install` refuses while a monitor that the service does not own is alive
+  on the same ledger (one left in a terminal, say): stop that one first.
+  This is a check at install time, not a lock.
+- It is a user service. On macOS it runs while you are logged in. On Linux
+  it stops when your last session ends unless lingering is on; `install`
+  and `status` report that and print the command, `loginctl enable-linger`
+  with your user name, which agent-comms does not run for you.
+- After a crash the manager waits before restarting: 10 seconds under
+  launchd, 5 under systemd. A clean exit is not restarted.
+- `install` replaces a unit of the same name, including one you wrote by
+  hand: if `~/Library/LaunchAgents/com.agent-comms.monitor.plist` or the
+  systemd unit already exists from an earlier setup of your own, move it
+  aside first or expect it to be unloaded and rewritten.
+- Checked against a real service manager with `make service-live`: systemd
+  user units on Debian 13 (aarch64, systemd 257) and launchd on macOS
+  26.6.2 (arm64). A real worker dispatch under the service
+  (which on macOS needs the login keychain for Claude Code's login) is part
+  of the Linux release walkthrough, not shown here. Elsewhere (Windows) use
+  the terminal.
+- The watchdog below is not scheduled by the service.
 
 Foreground, in its own terminal:
 
@@ -75,8 +143,8 @@ the exit. A pass every minute or two keeps the heartbeat fresh (it counts as
 stale after five minutes without a pass). Know what `doctor` makes of this:
 its `monitor` check wants a fresh heartbeat and the pid that wrote it still
 running, and a `--once` pass exits as soon as it is done, so between
-scheduled passes `doctor` fails that check with the foreground command above
-as the fix. The install walkthrough ends on exactly that state after its
+scheduled passes `doctor` fails that check with `service install` as the
+fix and the foreground command above as the alternative. The install walkthrough ends on exactly that state after its
 `--once` passes, which is why its last `doctor` exits 3. Under a scheduler,
 use the watchdog below, which checks freshness only, rather than `doctor` to
 tell whether passes are happening.
@@ -94,9 +162,9 @@ is unreadable, say) it exits 2 instead and records the alarm outside the
 database: a line in `logs/monitor-watchdog.page.log` under the runtime root,
 throttled by a marker file beside it, and, when `--fallback-page-root DIR` is
 given, a `new_messages` semaphore under `DIR/.agent-comms/monitor-watchdog/`
-for a client that watches that directory. There is no service manager yet;
-running the monitor under launchd is a milestone 2 item in the
-[roadmap](ROADMAP.md).
+for a client that watches that directory. Scheduling the watchdog is yours
+to do (cron, a launchd or systemd timer); `agent-comms service` manages the
+monitor only.
 
 ## Find the logs
 
@@ -108,7 +176,8 @@ running the monitor under launchd is a milestone 2 item in the
 - `dispatch-status` prints each row's `worker_log` and `worker_events`
   paths below the table once they are known; the demo prints `worker_log` in
   its JSON.
-- The monitor writes to its terminal or to `--log-file`.
+- The monitor writes to its terminal or to `--log-file`; as a service, to
+  `logs/monitor.log` under the runtime root.
 - The MCP server prints one `agent-comms startup:` line to stderr when a
   client starts it, which the client's own MCP log keeps; it names the
   release so a client log can be matched to an install.

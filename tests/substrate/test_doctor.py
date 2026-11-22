@@ -774,7 +774,8 @@ class MonitorCheckTest(unittest.TestCase):
     def test_absent_heartbeat_warns_before_the_first_dispatch_and_fails_after(self) -> None:
         result = doctor.check_monitor(self._snapshot())
         self.assertEqual(result["status"], doctor.WARN)
-        self.assertEqual(result["fix"], f"agent-comms-monitor --human-actor-id {HUMAN}")
+        self.assertEqual(result["fix"], f"agent-comms service install --human-actor-id {HUMAN}")
+        self.assertIn(f"; to run the monitor in a terminal instead: agent-comms-monitor --human-actor-id {HUMAN}", result["detail"])
         result = doctor.check_monitor(self._snapshot(dispatches=3))
         self.assertEqual(result["status"], doctor.FAIL)
         self.assertIn("3 dispatches", result["detail"])
@@ -787,7 +788,7 @@ class MonitorCheckTest(unittest.TestCase):
         result = doctor.check_monitor(snapshot)
         self.assertEqual(result["status"], doctor.WARN)
         self.assertIn("2 dispatches, all to fake workers and finished", result["detail"])
-        self.assertEqual(result["fix"], f"agent-comms-monitor --human-actor-id {HUMAN}")
+        self.assertEqual(result["fix"], f"agent-comms service install --human-actor-id {HUMAN}")
         snapshot.monitored_dispatch_count = 1
         result = doctor.check_monitor(snapshot)
         self.assertEqual(result["status"], doctor.FAIL)
@@ -822,16 +823,33 @@ class MonitorCheckTest(unittest.TestCase):
     def test_fix_uses_the_operator_override_when_set(self) -> None:
         with mock.patch.dict(os.environ, {"AGENT_COMMS_OPERATOR_ACTOR": "op"}):
             result = doctor.check_monitor(self._snapshot(humans=(HUMAN, "other")))
-        self.assertEqual(result["fix"], "agent-comms-monitor --human-actor-id op")
+        self.assertEqual(result["fix"], "agent-comms service install --human-actor-id op")
 
     def test_fix_names_an_explicit_ledger(self) -> None:
         # DOCTOR-001 F1: the monitor repair runs against the ledger doctor inspected.
         explicit = doctor.LedgerRef(Path("/ledgers/scratch.sqlite"), True)
         result = doctor.check_monitor(self._snapshot(dispatches=1), ledger=explicit)
         self.assertEqual(result["status"], doctor.FAIL)
-        self.assertEqual(result["fix"], f"agent-comms-monitor --db /ledgers/scratch.sqlite --human-actor-id {HUMAN}")
+        self.assertEqual(result["fix"], f"agent-comms --db /ledgers/scratch.sqlite service install --human-actor-id {HUMAN}")
+        self.assertIn(f"agent-comms-monitor --db /ledgers/scratch.sqlite --human-actor-id {HUMAN}", result["detail"])
         result = doctor.check_monitor(self._snapshot(dispatches=1), ledger=doctor.LedgerRef(Path("/ledgers/scratch.sqlite"), False))
+        self.assertEqual(result["fix"], f"agent-comms service install --human-actor-id {HUMAN}")
+
+    def test_fix_is_the_terminal_command_where_no_service_manager_is_supported(self) -> None:
+        result = doctor.check_monitor(self._snapshot(dispatches=1), platform="win32")
+        self.assertEqual(result["status"], doctor.FAIL)
         self.assertEqual(result["fix"], f"agent-comms-monitor --human-actor-id {HUMAN}")
+        self.assertNotIn("terminal", result["detail"])
+        for platform in ("darwin", "linux"):
+            result = doctor.check_monitor(self._snapshot(dispatches=1), platform=platform)
+            self.assertEqual(result["fix"], f"agent-comms service install --human-actor-id {HUMAN}", platform)
+
+    def test_a_running_monitor_names_no_repair(self) -> None:
+        fresh = {"last_pass_at": (NOW - timedelta(seconds=10)).isoformat(), "pid": 4242}
+        result = doctor.check_monitor(self._snapshot(fresh), pid_alive=lambda _pid: True, now=NOW)
+        self.assertEqual(result["status"], doctor.OK)
+        self.assertIsNone(result["fix"])
+        self.assertNotIn("terminal", result["detail"])
 
 
 class McpCheckTest(_Scratch):
@@ -1221,7 +1239,7 @@ class DoctorCommandTest(_Scratch):
         by_id = {item["id"]: item for item in result["checks"]}
         self.assertEqual(by_id["ledger"]["status"], doctor.FAIL)
         self.assertEqual(by_id["monitor"]["status"], doctor.WARN)
-        self.assertEqual(by_id["monitor"]["fix"], f"agent-comms-monitor --db {self.db} --human-actor-id <human-actor-id>")
+        self.assertEqual(by_id["monitor"]["fix"], f"agent-comms --db {self.db} service install --human-actor-id <human-actor-id>")
         self.assertEqual(by_id["mcp:t-architect:codex"]["status"], doctor.FAIL)
 
     def test_seat_on_another_ledger_exits_three(self) -> None:
@@ -1261,14 +1279,14 @@ class DoctorCommandTest(_Scratch):
         result = json.loads(buffer.getvalue())
         self.assertEqual(rc, 3)
         by_id = {item["id"]: item for item in result["checks"]}
-        self.assertEqual(by_id["monitor"]["fix"], f"agent-comms-monitor --human-actor-id {HUMAN}")
+        self.assertEqual(by_id["monitor"]["fix"], f"agent-comms service install --human-actor-id {HUMAN}")
         self.assertEqual(by_id["mcp:t-architect:codex"]["fix"], self.bind_seat_fix("codex", db=False))
         with mock.patch.dict(os.environ, {"AGENT_COMMS_DB": str(self.db)}):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 cli.run(["doctor"])
         by_id = {item["id"]: item for item in json.loads(buffer.getvalue())["checks"]}
-        self.assertEqual(by_id["monitor"]["fix"], f"agent-comms-monitor --db {self.db} --human-actor-id {HUMAN}")
+        self.assertEqual(by_id["monitor"]["fix"], f"agent-comms --db {self.db} service install --human-actor-id {HUMAN}")
 
     def test_run_doctor_normalizes_a_relative_ledger_path(self) -> None:
         # A library caller passing a relative path gets the same absolute binding the CLI would.
@@ -1280,7 +1298,7 @@ class DoctorCommandTest(_Scratch):
         result = doctor.run_doctor(db_path=Path(self.db.name), db_explicit=True)
         by_id = {item["id"]: item for item in result["checks"]}
         self.assertEqual(by_id["mcp:t-architect:codex"]["status"], doctor.OK, by_id["mcp:t-architect:codex"])
-        self.assertTrue(by_id["monitor"]["fix"].startswith(f"agent-comms-monitor --db {shlex.quote(os.path.abspath(self.db.name))} "), by_id["monitor"])
+        self.assertTrue(by_id["monitor"]["fix"].startswith(f"agent-comms --db {shlex.quote(os.path.abspath(self.db.name))} service install "), by_id["monitor"])
 
     def test_native_runtimes_are_checked_through_the_injected_runners(self) -> None:
         self.bootstrap(workers=("claude", "codex"), seats={"t-architect": []})

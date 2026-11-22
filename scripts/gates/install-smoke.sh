@@ -309,8 +309,8 @@ failing = [c["id"] for c in report["checks"] if c["status"] == "fail"]
 problems = []
 if failing != ["monitor"]:
     problems.append(f"failing checks {failing}, expected ['monitor']")
-if len(report["fixes"]) != 1 or not report["fixes"][0].startswith("agent-comms-monitor "):
-    problems.append(f"fixes {report['fixes']}, expected the one monitor command")
+if len(report["fixes"]) != 1 or not (report["fixes"][0].startswith("agent-comms ") and " service install --human-actor-id " in report["fixes"][0]):
+    problems.append(f"fixes {report['fixes']}, expected the one service install command")
 if problems:
     sys.exit("FAIL install-smoke: " + "; ".join(problems) + ": " + json.dumps(report, sort_keys=True))
 PY

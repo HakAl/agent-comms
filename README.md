@@ -15,7 +15,9 @@ process. Humans and scripts use the `agent-comms` CLI.
 - **Dispatch.** An architect hands a bounded task to a worker it owns. The
   worker runs under a supervisor with a time limit and a restricted tool
   surface. Work that fails or times out lands in a dead-letter queue and the
-  architect that dispatched it is paged. A monitor process reconciles in-flight dispatches.
+  architect that dispatched it is paged. A monitor process reconciles
+  in-flight dispatches; `agent-comms service` runs it as a user service (a
+  systemd user unit on Linux, a launchd agent on macOS).
 - **Runtimes.** Workers run on `claude`, `codex`, or a `fake` runtime that
   needs no login and exists for demos and tests. Runtime versions are pinned
   per platform and certified by tests before dispatch trusts them. Certified

@@ -161,8 +161,8 @@ shows a third, worker-only Codex login that is no longer asked for.
 ### 7. Start the monitor
 
 Real workers do not drive themselves. In a second terminal, with the human id
-`setup` printed in step 2 (the monitor warning in `doctor` prints this exact
-command):
+`setup` printed in step 2 (the monitor warning in `doctor` names this exact
+command as the terminal alternative):
 
 ```sh
 agent-comms-monitor --human-actor-id 01M36YTJV9XBW95S6ZWV47C4RG
@@ -172,8 +172,9 @@ It starts queued dispatches, reconciles finished ones, pages the architect
 when its work lands in the dead-letter queue, and writes a heartbeat
 `doctor` checks.
 Leave it running while you work; stop it with Ctrl-C. `--once` runs a single
-pass instead, for a scheduler. See the [runbook](runbook.md) for keeping it
-up.
+pass instead, for a scheduler. To keep it up without a terminal, install it
+as a user service with `agent-comms service install` and the same
+`--human-actor-id`; see the [runbook](runbook.md).
 
 ### 8. The first real dispatch
 

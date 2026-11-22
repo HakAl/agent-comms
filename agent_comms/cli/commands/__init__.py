@@ -32,6 +32,7 @@ from . import (
     setup,
     bind_seat,
     demo,
+    service,
 )
 
 COMMAND_MODULES = [
@@ -66,6 +67,7 @@ COMMAND_MODULES = [
     setup,
     bind_seat,
     demo,
+    service,
 ]
 
 COMMANDS = {module.NAME: module for module in COMMAND_MODULES}
