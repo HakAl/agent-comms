@@ -56,9 +56,10 @@ jobs:
 
   # The hermetic suite on Linux (Milestone 2, ac-ssl.3): the same steps as
   # the macOS test job, one interpreter. Hygiene and lint are platform
-  # independent and run once, on macOS. No Linux runtime pin exists, so the
-  # live cells and the drift cell skip here with the PlatformNotCertified
-  # text; hermetic tests that need a pin get one from tests/hermetic_pins.py.
+  # independent and run once, on macOS. The runner is linux-x86_64, which has
+  # no runtime pin (the Linux pins are linux-aarch64), so the live cells and
+  # the drift cell skip here with the PlatformNotCertified text; hermetic
+  # tests that need a pin get one from tests/hermetic_pins.py.
   test-linux:
     name: test-linux (Python 3.14)
     runs-on: ubuntu-latest
