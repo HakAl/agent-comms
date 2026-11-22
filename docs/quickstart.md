@@ -1,13 +1,21 @@
 # Quickstart
 
-From nothing to a dispatch that a worker answers, on one Mac. Part 1 needs no
+From nothing to a dispatch that a worker answers, on one Mac or one Linux
+machine. Part 1 needs no
 model login and takes a few minutes; it is the path CI proves on every change
 (`make install-smoke`). Part 2 adds your real runtimes.
 
-Requirements: macOS, Python 3.11 or newer (3.11 and 3.14 are the tested
-interpreters; see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup-and-tests)
+Requirements: macOS or Linux, Python 3.11 or newer (3.11 and 3.14 are the
+tested interpreters; see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup-and-tests)
 before using another), Git, and
-[uv](https://docs.astral.sh/uv/). Words such as actor, team, seat and
+[uv](https://docs.astral.sh/uv/). On Linux, Part 2 also needs what the
+runtimes themselves need there: `bubblewrap` and `socat` for Claude Code's
+sandbox, and Node.js with npm to install Codex. The runtime pins cover
+macOS on arm64 and Linux on aarch64 (Debian 13 is the tested distribution);
+on another platform Part 1 works and a native dispatch is refused with a
+message that names the certified ones. Two [runbook](runbook.md) recipes
+use tools a minimal Linux install may lack: `xxd` for the operator
+credential and `ssh-keygen` for the review approval key. Words such as actor, team, seat and
 dispatch are defined in [concepts.md](concepts.md); you do not need that
 page to finish this one.
 
@@ -174,7 +182,9 @@ when its work lands in the dead-letter queue, and writes a heartbeat
 Leave it running while you work; stop it with Ctrl-C. `--once` runs a single
 pass instead, for a scheduler. To keep it up without a terminal, install it
 as a user service with `agent-comms service install` and the same
-`--human-actor-id`; see the [runbook](runbook.md).
+`--human-actor-id`; see the [runbook](runbook.md). On Linux the service
+stops when your last session ends unless lingering is on; `install` prints
+the command that turns it on.
 
 ### 8. The first real dispatch
 
