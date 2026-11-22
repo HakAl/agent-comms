@@ -176,7 +176,9 @@ instead.
 
 ### 7. Start the monitor
 
-Real workers do not drive themselves. In a second terminal, with the human id
+A dispatch usually starts its worker at once, but nothing in the worker
+picks up what it leaves behind, or a dispatch that could not start. That
+is the monitor's job. In a second terminal, with the human id
 `setup` printed in step 2 (the monitor warning in `doctor` names this exact
 command as the terminal alternative):
 
@@ -216,8 +218,11 @@ repository's top-level directory names.' and wait_for_reply."
 
 What happens:
 
-1. `dispatch_agent` writes the dispatch; the monitor starts the worker under
-   its supervisor with the bounded policy.
+1. `dispatch_agent` writes the dispatch and starts the worker under its
+   supervisor with the bounded policy. When it cannot start one at once
+   (the architect already has as many dispatches in flight as it may, or a
+   Codex login is stale or being refreshed) the row stays `queued` and the
+   monitor starts it on a later pass.
 2. The worker does the task, sends its reply threaded under the dispatch,
    and calls `close_dispatch` with its result.
 3. The reply reaches the architect's inbox; `wait_for_reply` returns it.
