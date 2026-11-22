@@ -20,9 +20,9 @@
       "boundary": "exact",
       "platforms": {
         "darwin-arm64": {
-          "version": "2.1.310",
-          "certified_on": "2026-11-19",
-          "sha256": "ffb64331bc0ee1b69efb7c2c428bd3ab516bc31b75bf60886b356c97c1c25ffd"
+          "version": "2.1.330",
+          "certified_on": "2026-11-22",
+          "sha256": "f7c5093b9dd6560d08af28bc27b123fb55091deae3180ac39df199522da86815"
         },
         "linux-aarch64": {
           "version": "2.1.310",
