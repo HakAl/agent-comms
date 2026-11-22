@@ -36,6 +36,7 @@ from tests.dispatch_cell_harness import (
     hook_refusal_matcher,
     hold_probe_source,
     observed_command_environment,
+    single_successful_run,
     long_running_worker_spawn,
     make_codex_harness,
     outer_shell_flags,
@@ -469,13 +470,9 @@ class CodexCellTest(unittest.TestCase):
         self.assertEqual(
             context["probe_path"].read_text(), context["source"], "the fixture script changed during the dispatch"
         )
-        runs = [
-            item
-            for item in event_items(read_worker_events(dispatch), "completed")
-            if attempt.matches(item) and item.get("exit_code") == 0
-            and context["nonce"] in str(item.get("aggregated_output", ""))
-        ]
-        self.assertTrue(runs, f"no successful run of the command in the worker events: {context['invocation']}")
+        # One launch only: the process the host saw is then the launch that
+        # completed, not an earlier one that a retry replaced.
+        single_successful_run(read_worker_events(dispatch), attempt.matches, nonce=context["nonce"])
         self.assertEqual(json.loads(context["receipt_path"].read_text()), {"nonce": context["nonce"]})
         return observed_command_environment(context["observer"].snapshot, dispatch)
 
@@ -560,8 +557,10 @@ class CodexCellTest(unittest.TestCase):
                 leaked = sorted(name for name in (STARTUP_SECRET_NAME, *STARTUP_MARKERS) if name in environment)
                 print(f"CODEX_STARTUP_LEAKED={leaked}")
                 self.assertEqual(leaked, [], "operator startup state reached the worker command")
-                self.assertFalse(
-                    any(secret_value in value for value in environment.values()),
+                # Looked for in the text the host read, where a value is
+                # whole: from ps a parsed value ends at its first space.
+                self.assertNotIn(
+                    secret_value, attempt.context["observer"].snapshot["environment_text"],
                     "the startup fixture's secret value is in the worker command's environment",
                 )
                 # Mechanism, for this pinned Codex: no command shell was started

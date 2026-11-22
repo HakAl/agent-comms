@@ -564,6 +564,70 @@ class CommandEnvironmentObserverTest(unittest.TestCase):
             cell_harness.observed_command_environment(snapshot, dispatch)
 
 
+class SingleRunTest(unittest.TestCase):
+    """The host's sample of a command's process counts only when the
+    dispatch launched that command once and that launch succeeded."""
+
+    def run_events(self, item_id: str, *, exit_code=0, output='{"nonce": "n1"}') -> list[dict]:
+        completed = _command(INVOCATION, exit_code=exit_code, output=output)
+        completed["item"]["id"] = item_id
+        return [_started(INVOCATION, item_id), completed]
+
+    def check(self, events) -> dict:
+        return cell_harness.single_successful_run(events, cell_harness.command_matcher(INVOCATION), nonce="n1")
+
+    def test_one_successful_launch_is_returned(self):
+        events = [_started("ls", "item_0"), *self.run_events("item_3"), CLOSE_CALL]
+        self.assertEqual(self.check(events)["id"], "item_3")
+
+    def test_a_failed_launch_and_a_successful_retry_do_not_add_up(self):
+        events = [*self.run_events("item_3", exit_code=1, output=""), *self.run_events("item_4"), CLOSE_CALL]
+        with self.assertRaisesRegex(AssertionError, "not launched exactly once: 2 started, 2 completed"):
+            self.check(events)
+
+    def test_what_is_not_one_successful_launch_is_refused(self):
+        for name, events in (
+            ("never launched", [CLOSE_CALL]),
+            ("started only", [_started(INVOCATION, "item_3")]),
+            ("failed", self.run_events("item_3", exit_code=1)),
+            ("another nonce", self.run_events("item_3", output='{"nonce": "n2"}')),
+            ("two starts", [_started(INVOCATION, "item_2"), *self.run_events("item_3")]),
+            ("mismatched ids", [_started(INVOCATION, "item_2"), self.run_events("item_3")[1]]),
+        ):
+            with self.subTest(name=name), self.assertRaises(AssertionError):
+                self.check(events)
+
+
+class PsEnvironmentTest(unittest.TestCase):
+    def test_names_are_parsed_and_a_value_after_a_space_stays_in_the_text(self):
+        text = "/usr/bin/python3 /work/hold.py LABEL=prefix sample-marker AGENT_COMMS_DISPATCH_ID=d1 EMPTY=\n"
+        environment = cell_harness.parse_ps_environment(text)
+        self.assertEqual(environment, {"LABEL": "prefix", "AGENT_COMMS_DISPATCH_ID": "d1", "EMPTY": ""})
+        # The parsed value lost what follows the space; the text did not,
+        # and the text is what a cell searches for a value.
+        self.assertFalse(any("sample-marker" in value for value in environment.values()))
+        self.assertIn("sample-marker", text)
+
+    def test_the_observer_keeps_the_text_with_whole_values(self):
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "hold.py"
+            script.write_text(cell_harness.hold_probe_source(Path(temp) / "r.json", nonce="n1", seconds=3))
+            observer = cell_harness.CommandEnvironmentObserver(f"{sys.executable} {script}", timeout_seconds=20)
+            observer.start()
+            self.addCleanup(observer.stop)
+            child = subprocess.Popen(
+                [sys.executable, str(script)], stdout=subprocess.DEVNULL,
+                env={"PATH": "/usr/bin:/bin", "LABEL": "prefix sample-marker", "AGENT_COMMS_DISPATCH_ID": "d1"},
+            )
+            self.addCleanup(child.wait)
+            self.addCleanup(child.kill)
+            snapshot = observer.wait(10)
+            if snapshot is None:
+                self.skipTest("this host does not show a child process's environment")
+            self.assertIn("sample-marker", snapshot["environment_text"])
+            self.assertEqual(snapshot["environment"]["AGENT_COMMS_DISPATCH_ID"], "d1")
+
+
 class CommandMatcherTest(unittest.TestCase):
     def test_the_exact_invocation_matches_bare_or_under_a_shell(self):
         matches = cell_harness.command_matcher(INVOCATION)

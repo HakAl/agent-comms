@@ -757,12 +757,25 @@ def hold_probe_source(receipt_path: Path, *, nonce: str, seconds: int) -> str:
 _ENVIRONMENT_WORD = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
 
 
-def process_environment(pid: int) -> dict[str, str] | None:
-    """The environment process ``pid`` was started with, read by the host:
-    from ``/proc`` where there is one, else from ``ps``. ``None`` when the
-    host does not show it (the process is gone, or the platform hides it,
-    as macOS does for system binaries). From ``ps`` a value ends at its
-    first space; the names are what the cells judge."""
+def parse_ps_environment(text: str) -> dict[str, str]:
+    """The names in a ``ps eww`` display of a command and its environment.
+    The display is space separated, so a value ends at its first space and
+    what follows the space is lost here: judge names from this, and look
+    for a value in the display itself."""
+    environment: dict[str, str] = {}
+    for word in text.split():
+        found = _ENVIRONMENT_WORD.fullmatch(word)
+        if found:
+            environment.setdefault(found.group(1), found.group(2))
+    return environment
+
+
+def read_process_environment(pid: int) -> tuple[dict[str, str], str] | None:
+    """The environment process ``pid`` was started with, read by the host,
+    and the text it was read from (which holds every value whole): from
+    ``/proc`` where there is one, else from ``ps``. ``None`` when the host
+    does not show it (the process is gone, or the platform hides it, as
+    macOS does for system binaries)."""
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()
     except FileNotFoundError:
@@ -771,26 +784,52 @@ def process_environment(pid: int) -> dict[str, str] | None:
     except OSError:
         return None
     else:
-        pairs = [entry.split(b"=", 1) for entry in raw.split(b"\0") if b"=" in entry]
-        return {name.decode(errors="replace"): value.decode(errors="replace") for name, value in pairs} or None
+        entries = [entry.decode(errors="replace") for entry in raw.split(b"\0") if b"=" in entry]
+        environment = dict(entry.split("=", 1) for entry in entries)
+        return (environment, "\n".join(entries)) if environment else None
     shown = subprocess.run(
         ["ps", "eww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False
     )
     if shown.returncode != 0:
         return None
-    environment = {}
-    for word in shown.stdout.split():
-        found = _ENVIRONMENT_WORD.fullmatch(word)
-        if found:
-            environment.setdefault(found.group(1), found.group(2))
-    return environment or None
+    environment = parse_ps_environment(shown.stdout)
+    return (environment, shown.stdout) if environment else None
+
+
+def process_environment(pid: int) -> dict[str, str] | None:
+    read = read_process_environment(pid)
+    return None if read is None else read[0]
+
+
+def single_successful_run(events: list[dict], matches: Callable[[dict], bool], *, nonce: str) -> dict:
+    """The one launch of a command in a dispatch's events: started once,
+    and that same item completed with exit 0 and ``nonce`` in its output.
+    A command launched more than once is refused, because a process seen
+    by the host could then belong to a launch other than the one that
+    completed."""
+    started = [item for item in event_items(events, "started") if matches(item)]
+    completed = [item for item in event_items(events, "completed") if matches(item)]
+    if len(started) != 1 or len(completed) != 1:
+        raise AssertionError(
+            f"the command was not launched exactly once: {len(started)} started, {len(completed)} completed"
+        )
+    run = completed[0]
+    if run.get("id") != started[0].get("id"):
+        raise AssertionError(f"the completed command is not the one that started: {started[0]!r} {run!r}")
+    if run.get("status") != "completed" or run.get("exit_code") != 0:
+        raise AssertionError(f"the command did not run to a successful end: {run!r}")
+    if nonce not in str(run.get("aggregated_output", "")):
+        raise AssertionError(f"the command's output does not hold this attempt's nonce: {run!r}")
+    return run
 
 
 class CommandEnvironmentObserver:
     """Watches the process table for the command ``invocation`` (its exact
     argv, so a shell that only carries the text as an argument is not it)
     and keeps the first environment the host can read from that process,
-    with the pids of its ancestors at that moment."""
+    with the text it was read from and the pids of its ancestors at that
+    moment. A cell pairs it with single_successful_run, so the process seen
+    is the dispatch's only launch of the command."""
 
     POLL_SECONDS = 0.2
 
@@ -838,15 +877,16 @@ class CommandEnvironmentObserver:
             if fields[2].split() == self._argv:
                 candidates.append(pid)
         for pid in candidates:
-            environment = process_environment(pid)
-            if environment is None:
+            read = read_process_environment(pid)
+            if read is None:
                 continue
+            environment, text = read
             ancestors = []
             parent = parents.get(pid)
             while parent and parent not in ancestors:
                 ancestors.append(parent)
                 parent = parents.get(parent)
-            return {"pid": pid, "ancestors": ancestors, "environment": environment}
+            return {"pid": pid, "ancestors": ancestors, "environment": environment, "environment_text": text}
         return None
 
 
