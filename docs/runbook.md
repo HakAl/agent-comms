@@ -631,7 +631,12 @@ Limits:
   was not seen in a worker command, and why Claude Code drops it was not
   established from its code.
 - Evidence is for Codex 0.164.0 and Claude Code 2.1.310, each on
-  `darwin-arm64` (zsh) and `linux-aarch64` (bash, in a Debian 13 VM).
+  `darwin-arm64` (zsh) and `linux-aarch64` (bash, in a Debian 13 VM). For
+  Claude Code 2.1.330 the certification cell repeated two of those checks
+  on both platforms: how often each startup file ran, and that a worker
+  command sees none of what they export. The snapshot's replay of
+  functions, aliases and options, and the absence of a setting that turns
+  it off, were traced at 2.1.310 and not repeated.
   Other shell and platform pairs are not claimed, and nothing is claimed
   for `linux-x86_64`.
 
