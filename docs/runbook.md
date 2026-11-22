@@ -630,7 +630,7 @@ Limits:
   run, so anything those files do when run still happens; what they export
   was not seen in a worker command, and why Claude Code drops it was not
   established from its code.
-- Evidence is for Codex 0.164.0 and Claude Code 2.1.310, each on
+- Evidence is for Codex 0.164.0 and Claude Code 2.1.330, each on
   `darwin-arm64` (zsh) and `linux-aarch64` (bash, in a Debian 13 VM).
   Other shell and platform pairs are not claimed, and nothing is claimed
   for `linux-x86_64`.
