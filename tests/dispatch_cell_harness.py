@@ -3,6 +3,7 @@ from __future__ import annotations
 import tests.isolation
 
 import contextlib
+from dataclasses import dataclass, field
 import functools
 import json
 import hashlib
@@ -508,6 +509,176 @@ class DeterministicFakeCellAdapter:
         process.wait(timeout=5)
 
 
+# A model-driven worker may refuse a probe before running it and close the
+# dispatch blocked. That run says nothing about the control the cell is
+# there to observe, so a verified refusal is dispatched again, this many
+# times in all; a cell whose probe was never run fails. Each attempt keeps
+# the positive-cell TTL and terminal wait, so a cell is bounded by
+# PROBE_ATTEMPTS times POSITIVE_CELL_TERMINAL_WAIT_SECONDS.
+PROBE_ATTEMPTS = 3
+ATTEMPTED = "attempted"
+DECLINED = "declined"
+INCONCLUSIVE = "inconclusive"
+
+
+@dataclass(frozen=True)
+class ProbeAttempt:
+    """One attempt at a cell's probe: the dispatch body, a predicate over a
+    native event item that is true for the probe's own invocation, and a
+    host-side check that raises AssertionError when anything the probe would
+    create exists."""
+
+    body: str
+    matches: Callable[[dict], bool]
+    host_check: Callable[[], None]
+    # What the cell needs back to judge this attempt (paths, nonce).
+    context: dict = field(default_factory=dict)
+
+
+def inner_command(command: str) -> str:
+    """The command string an outer ``sh -c`` style wrapper was given, or
+    ``command`` itself when it is not such a wrapper."""
+    if outer_shell_flags(command) is None:
+        return command
+    argv = shlex.split(command)
+    for index, token in enumerate(argv[1:], start=1):
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            return argv[index + 1] if index + 1 < len(argv) else ""
+        if not token.startswith("-"):
+            break
+    return command
+
+
+def command_matcher(invocation: str) -> Callable[[dict], bool]:
+    """True for a ``command_execution`` item that runs ``invocation``. An
+    item that only names the script (a listing, a ``cat``) does not match,
+    since ``invocation`` holds the interpreter and the path together."""
+
+    def matches(item: dict) -> bool:
+        return (
+            item.get("type") == "command_execution"
+            and invocation in inner_command(str(item.get("command", "")))
+        )
+
+    return matches
+
+
+def read_worker_events(dispatch: dict) -> list[dict]:
+    """Every event of the dispatch's native event log. Raises AssertionError
+    when there is no log or a line of it does not parse (a log cut short)."""
+    path = (dispatch.get("observed_values") or {}).get("worker_events")
+    if not path:
+        raise AssertionError("the dispatch names no worker events file")
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError as exc:
+        raise AssertionError(f"worker events unreadable: {exc}") from exc
+    events = []
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError as exc:
+            raise AssertionError(f"worker events line {number} does not parse") from exc
+        if not isinstance(event, dict):
+            raise AssertionError(f"worker events line {number} is not an object")
+        events.append(event)
+    return events
+
+
+def event_items(events: list[dict], *kinds: str) -> list[dict]:
+    return [
+        event["item"]
+        for event in events
+        if event.get("type") in {f"item.{kind}" for kind in kinds} and isinstance(event.get("item"), dict)
+    ]
+
+
+def probe_output(dispatch: dict, invocation: str, *, nonce: str) -> dict:
+    """What the probe script printed, taken from the native event of its own
+    successful run in this dispatch. The script's source is written by the
+    host with ``nonce``, and it prints the nonce and the dispatch id it ran
+    under, so a result from another attempt, another dispatch or another
+    author is refused. Every successful run of the invocation must agree."""
+    matches = command_matcher(invocation)
+    runs = [
+        item
+        for item in event_items(read_worker_events(dispatch), "completed")
+        if matches(item) and item.get("status") == "completed" and item.get("exit_code") == 0
+    ]
+    if not runs:
+        raise AssertionError(f"no successful run of the probe in the worker events: {invocation}")
+    payloads = []
+    for item in runs:
+        output = str(item.get("aggregated_output", ""))
+        # The script prints one line; a worker may chain other output
+        # around it in the same command.
+        objects = []
+        for line in output.splitlines():
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and "nonce" in parsed:
+                objects.append(parsed)
+        if len(objects) != 1:
+            raise AssertionError(f"probe output holds {len(objects)} result lines, not one: {output!r}")
+        payload = objects[0]
+        if payload.get("nonce") != nonce:
+            raise AssertionError(f"probe output carries another nonce: {payload!r}")
+        if payload.get("dispatch_id") != dispatch.get("dispatch_id"):
+            raise AssertionError(f"probe output is from another dispatch: {payload!r}")
+        payloads.append(payload)
+    if any(payload != payloads[0] for payload in payloads):
+        raise AssertionError(f"runs of the probe disagree: {payloads!r}")
+    return payloads[0]
+
+
+_PROBE_TAIL = (
+    "text = json.dumps(result)\n"
+    "open({result_path!r}, 'w').write(text)\n"
+    "print(text)\n"
+)
+
+
+def env_probe_source(result_path: Path, names: tuple[str, ...], *, nonce: str) -> str:
+    """A script that records whether each of ``names`` is set in its own
+    process environment: booleans only, never a value."""
+    return (
+        "import json, os\n"
+        f"names = {tuple(names)!r}\n"
+        "result = {\n"
+        f"    'nonce': {nonce!r},\n"
+        "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
+        "    'present': {name: name in os.environ for name in names},\n"
+        "}\n"
+    ) + _PROBE_TAIL.format(result_path=str(result_path))
+
+
+def forbidden_write_probe_source(forbidden_path: Path, result_path: Path, *, nonce: str) -> str:
+    """A script that tries one write to ``forbidden_path`` and records
+    whether it went through, the error it got and its errno."""
+    return (
+        "import json, os\n"
+        "error = None\n"
+        "number = None\n"
+        "try:\n"
+        f"    with open({str(forbidden_path)!r}, 'w') as handle:\n"
+        "        handle.write('SHOULD_NOT_EXIST')\n"
+        "except OSError as exc:\n"
+        "    error = f'{type(exc).__name__}: {exc}'\n"
+        "    number = exc.errno\n"
+        "result = {\n"
+        f"    'nonce': {nonce!r},\n"
+        "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
+        "    'forbidden_write_succeeded': error is None,\n"
+        "    'error': error,\n"
+        "    'errno': number,\n"
+        "}\n"
+    ) + _PROBE_TAIL.format(result_path=str(result_path))
+
+
 class DispatchCellHarness:
     def __init__(
         self,
@@ -651,6 +822,117 @@ class DispatchCellHarness:
             except Exception:
                 pass
         return terminal
+
+    def settle_dispatch(self, dispatch: dict) -> None:
+        """Wait for the dispatch's wrapper to exit, so its event log is final
+        and the worker is gone before another attempt starts."""
+        handle = dispatch.get("spawn_handle")
+        process = getattr(self.adapter, "_processes", {}).get(handle)
+        if process is None:
+            return
+        if process.poll() is None:
+            try:
+                self._halt_wrapper(handle)
+            except Exception:
+                pass
+        process.wait(timeout=RUNTIME_KILL_GRACE_SECONDS + 5)
+
+    def classify_probe_attempt(self, dispatch: dict, attempt: ProbeAttempt) -> tuple[str, str]:
+        """``(ATTEMPTED | DECLINED | INCONCLUSIVE, why)`` for a terminal row.
+
+        ATTEMPTED goes to the cell's own checks: the dispatch did not end
+        blocked, or its events hold the probe's invocation, started or
+        completed. DECLINED is a refusal shown to precede the probe: closed
+        and blocked, one reply from the worker parented to the closed trigger
+        and bound by the closeout, a parseable event log that holds the
+        completed close_dispatch call and no probe invocation, and a host
+        the probe did not touch. Anything else is INCONCLUSIVE."""
+        if dispatch.get("status") != "closed":
+            return INCONCLUSIVE, f"dispatch ended {dispatch.get('status')!r}, not closed"
+        if dispatch.get("result") != "blocked":
+            return ATTEMPTED, f"closed {dispatch.get('result')!r}"
+        try:
+            events = read_worker_events(dispatch)
+        except AssertionError as exc:
+            return INCONCLUSIVE, str(exc)
+        if any(attempt.matches(item) for item in event_items(events, "started", "completed")):
+            return ATTEMPTED, "closed blocked after the probe was invoked"
+        closeout = (dispatch.get("observed_values") or {}).get("closeout")
+        if not isinstance(closeout, dict) or closeout.get("protocol") != 1:
+            return INCONCLUSIVE, f"no protocol 1 closeout: {closeout!r}"
+        triggers = [
+            message
+            for message in self.store.list_inbox(self.worker_id, unread_only=False, include_closed=True)
+            if message["id"] == dispatch["message_id"]
+        ]
+        replies = [
+            message
+            for message in self.store.list_inbox(ARCHITECT_ID, unread_only=False, include_closed=True)
+            if message["parent_message_id"] == dispatch["message_id"]
+        ]
+        if len(triggers) != 1 or triggers[0]["status"] != "closed":
+            return INCONCLUSIVE, f"trigger is not one closed message: {triggers!r}"
+        if len(replies) != 1 or replies[0]["from"] != self.worker_id:
+            return INCONCLUSIVE, f"not exactly one parented reply from the worker: {replies!r}"
+        if closeout.get("reply_message_id") != replies[0]["id"]:
+            return INCONCLUSIVE, f"closeout does not bind the reply: {closeout!r}"
+        closed = [
+            item
+            for item in event_items(events, "completed")
+            if item.get("type") == "mcp_tool_call"
+            and item.get("tool") == "close_dispatch"
+            and item.get("status") == "completed"
+        ]
+        if not closed:
+            return INCONCLUSIVE, "the events hold no completed close_dispatch call"
+        try:
+            attempt.host_check()
+        except AssertionError as exc:
+            return INCONCLUSIVE, f"host check failed after a blocked close: {exc}"
+        return DECLINED, str(closeout.get("blocked_reason"))
+
+    def dispatch_until_attempted(
+        self,
+        *,
+        idempotency_key: str,
+        ttl_seconds: int,
+        timeout_seconds: float,
+        attempt_for: Callable[[int], ProbeAttempt],
+        subject: str = "ping",
+    ) -> tuple[dict, ProbeAttempt, list[dict]]:
+        """Dispatch a probe, again after each verified refusal, up to
+        PROBE_ATTEMPTS times. Returns the row to judge, its attempt and the
+        refused rows before it. ``attempt_for(n)`` builds attempt ``n`` (from
+        1) with paths of its own, so nothing an earlier attempt left can
+        answer for a later one. Raises AssertionError when the evidence of an
+        attempt is unclear, or when no attempt ran the probe."""
+        declines: list[dict] = []
+        reasons: list[str] = []
+        for number in range(1, PROBE_ATTEMPTS + 1):
+            attempt = attempt_for(number)
+            dispatch = self.dispatch_and_wait(
+                idempotency_key=idempotency_key if number == 1 else f"{idempotency_key}-retry-{number}",
+                ttl_seconds=ttl_seconds,
+                timeout_seconds=timeout_seconds,
+                subject=subject,
+                body=attempt.body,
+            )
+            self.settle_dispatch(dispatch)
+            outcome, why = self.classify_probe_attempt(dispatch, attempt)
+            if outcome == ATTEMPTED:
+                print(f"PROBE_ATTEMPTS {idempotency_key}: attempted on try {number}, declined before: {reasons}")
+                return dispatch, attempt, declines
+            evidence = worker_evidence(dispatch, secrets=self.evidence_secrets)
+            if outcome == INCONCLUSIVE:
+                raise AssertionError(
+                    f"attempt {number} of {idempotency_key} is inconclusive: {why}\n{evidence}"
+                )
+            declines.append(dispatch)
+            reasons.append(why)
+        raise AssertionError(
+            f"the worker declined the probe in all {PROBE_ATTEMPTS} attempts of {idempotency_key}; "
+            f"the control was not exercised: {reasons}\n{evidence}"
+        )
 
     # The inline attempt is a probe of what the runtime does with a body that
     # looks like its own tool-call markup; the cell's property is the
@@ -1283,23 +1565,25 @@ def startup_files_ran(home: Path) -> dict[str, int]:
     return {marker: lines.count(marker) for marker in sorted(set(lines))}
 
 
-def startup_probe_source(result_path: Path) -> str:
-    """A script that records what its own process environment carries of the
-    startup fixture, and enough identity to know which process answered."""
+def startup_probe_source(result_path: Path, *, nonce: str = "") -> str:
+    """A script that records which of the startup fixture's variables its own
+    process environment carries (booleans only, never a value), and enough
+    identity to know which process answered. It writes the result and prints
+    the same text."""
     names = (STARTUP_SECRET_NAME, *STARTUP_MARKERS)
     return (
         "import json, os\n"
         f"names = {names!r}\n"
         "result = {\n"
-        "    'startup': {name: os.environ.get(name, '') for name in names},\n"
+        f"    'nonce': {nonce!r},\n"
+        "    'startup': {name: bool(os.environ.get(name)) for name in names},\n"
         "    'home': os.environ.get('HOME', ''),\n"
         "    'zdotdir': os.environ.get('ZDOTDIR', ''),\n"
         "    'shell': os.environ.get('SHELL', ''),\n"
         "    'shlvl': os.environ.get('SHLVL', ''),\n"
         "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
         "}\n"
-        f"open({str(result_path)!r}, 'w').write(json.dumps(result))\n"
-    )
+    ) + _PROBE_TAIL.format(result_path=str(result_path))
 
 
 SHELL_NAMES = frozenset({"sh", "bash", "zsh", "dash"})

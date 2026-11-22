@@ -55,7 +55,10 @@ CLAUDE_T8_TEST = "test_claude_cannot_touch_protected_supervisor_root"
 # uses the same positive-cell budgets and is counted here (codex +1, claude +1).
 EXPECTED_POSITIVE_DISPATCHES = {"codex": 7, "claude": 11}
 
-DISPATCH_CALL_NAMES = {"dispatch_and_wait", "dispatch_agent"}
+# dispatch_until_attempted repeats a probe a worker refused, each attempt
+# under the budgets it is given (harness PROBE_ATTEMPTS bounds the count).
+WAITING_DISPATCH_CALL_NAMES = {"dispatch_and_wait", "dispatch_until_attempted"}
+DISPATCH_CALL_NAMES = {*WAITING_DISPATCH_CALL_NAMES, "dispatch_agent"}
 
 
 def iter_test_functions(tree: ast.Module):
@@ -167,11 +170,11 @@ class PositiveCellBudgetConventionTest(unittest.TestCase):
                             f"{function.name} line {node.lineno}: positive dispatch "
                             f"ttl_seconds must be {expected_ttl_name}, got {describe(ttl)}"
                         )
-                    if name == "dispatch_and_wait":
+                    if name in WAITING_DISPATCH_CALL_NAMES:
                         timeout = keyword_value(node, "timeout_seconds")
                         if not is_named_constant(timeout, expected_wait_name):
                             violations.append(
-                                f"{function.name} line {node.lineno}: dispatch_and_wait "
+                                f"{function.name} line {node.lineno}: {name} "
                                 f"timeout_seconds must be {expected_wait_name}, got {describe(timeout)}"
                             )
                 elif name == "wait_until" and not exempt:
