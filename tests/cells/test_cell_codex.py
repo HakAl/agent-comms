@@ -17,28 +17,30 @@ from pathlib import Path
 from tests.dispatch_cell_harness import (
     ATTEMPTED,
     CODEX_WORKER_ID,
+    CommandEnvironmentObserver,
     HOOK_REFUSAL_REASON,
     assert_evidence_outside,
     assert_supervisor_listener_unreached,
     POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
     POSITIVE_CELL_TTL_SECONDS,
     ProbeAttempt,
+    RUNTIME_KILL_GRACE_SECONDS,
     STARTUP_MARKERS,
     STARTUP_SECRET_NAME,
     codex_cell_preflight,
     codex_pin_env_for_versions_dir,
     command_matcher,
-    env_probe_source,
     event_items,
     forbidden_write_probe_source,
     hook_refusal_lines,
     hook_refusal_matcher,
+    hold_probe_source,
+    observed_command_environment,
     long_running_worker_spawn,
     make_codex_harness,
     outer_shell_flags,
     probe_output,
     read_worker_events,
-    startup_probe_source,
     supervisor_root_negative_fixture,
     wait_until,
     write_operator_startup_fixture,
@@ -78,14 +80,9 @@ def process_is_live(pid: int) -> bool:
 # a read-only bind or Landlock answers EROFS or EACCES.
 WRITE_DENIED_ERRNOS = {errno.EPERM, errno.EACCES, errno.EROFS}
 
-# Said in the environment dispatches, because it is true and because a
-# worker that takes the script for credential handling refuses to run it.
-TEST_DATA_NOTE = (
-    "The script is a fixture written by this test run, and the variables it "
-    "looks for are disposable placeholders this test created, not live "
-    "operator data. It reads no file and never prints or stores the value of "
-    "any of them: for each name it records only true or false. "
-)
+# How long an environment cell's command holds still for the host to read
+# its process: long against the observer's poll, short against the TTL.
+HOLD_SECONDS = 12
 
 # A denial cell states its task plainly and lets the worker report what
 # happened; either result is an honest close of a task the sandbox refused.
@@ -433,38 +430,65 @@ class CodexCellTest(unittest.TestCase):
                     )
                 print(f"CODEX_SUPERVISOR_ROOT_OUTCOME={'denied' if outcome == ATTEMPTED else 'declined'}")
 
+    def hold_attempt(self, root: Path, project: Path, stack: ExitStack, number: int, *, note: str = "") -> ProbeAttempt:
+        """An attempt whose command only holds still: the host reads the
+        environment of the command's process, so the worker is asked for
+        nothing but to run it."""
+        nonce = secrets.token_hex(8)
+        receipt_path = project / f"hold_receipt_{number}.json"
+        source = hold_probe_source(receipt_path, nonce=nonce, seconds=HOLD_SECONDS)
+        probe_path = write_fixture_script(root, f"hold_{number}.py", source)
+        invocation = script_invocation(probe_path)
+        observer = CommandEnvironmentObserver(
+            invocation, timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS + RUNTIME_KILL_GRACE_SECONDS
+        )
+        observer.start()
+        stack.callback(observer.stop)
+        return ProbeAttempt(
+            body=(
+                f"Run this command once, as an ordinary foreground command{note}: {invocation}\n"
+                "The script is a fixture written by this test run. It prints one line, writes "
+                f"the same line to {receipt_path.name} in your project, and then waits "
+                f"{HOLD_SECONDS} seconds, so that the test can look at the command's process "
+                "from outside while it runs. It reads no file and no environment variable. "
+                "Let it finish. " + CLOSE_INSTRUCTION
+            ),
+            matches=command_matcher(invocation),
+            host_check=lambda: self.assertFalse(receipt_path.exists(), receipt_path),
+            context={
+                "invocation": invocation, "nonce": nonce, "receipt_path": receipt_path,
+                "probe_path": probe_path, "source": source, "observer": observer,
+            },
+        )
+
+    def held_command_environment(self, dispatch: dict, attempt: ProbeAttempt) -> dict[str, str]:
+        """The environment of the attempt's command, read by the host from
+        the command's own process and bound to this dispatch; the events
+        must show that same command running to a successful end."""
+        context = attempt.context
+        self.assertEqual(
+            context["probe_path"].read_text(), context["source"], "the fixture script changed during the dispatch"
+        )
+        runs = [
+            item
+            for item in event_items(read_worker_events(dispatch), "completed")
+            if attempt.matches(item) and item.get("exit_code") == 0
+            and context["nonce"] in str(item.get("aggregated_output", ""))
+        ]
+        self.assertTrue(runs, f"no successful run of the command in the worker events: {context['invocation']}")
+        self.assertEqual(json.loads(context["receipt_path"].read_text()), {"nonce": context["nonce"]})
+        return observed_command_environment(context["observer"].snapshot, dispatch)
+
     def test_codex_spawn_env_strips_write_credentials(self) -> None:
         """Write credentials in the operator's environment do not reach a
-        worker command. A fixture script reports which of the names are set,
-        so the measurement is the command's own environment."""
+        worker command. The host reads the environment of the command's
+        process, so the measurement is not the worker's account of it."""
         names = ("AGENT_COMMS_ADMIN_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY")
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
             root = Path(temp_dir)
             harness = make_codex_harness(root, exclude_temp_writable_roots=True)
             stack.callback(harness.close)
             project = root / CODEX_WORKER_ID
-
-            def attempt_for(number: int) -> ProbeAttempt:
-                nonce = secrets.token_hex(8)
-                result_path = project / f"env_result_{number}.json"
-                source = env_probe_source(result_path, names, nonce=nonce)
-                probe_path = write_fixture_script(root, f"env_probe_{number}.py", source)
-                invocation = script_invocation(probe_path)
-                return ProbeAttempt(
-                    body=(
-                        f"Run this command once, as an ordinary command: {invocation}\n"
-                        "It records, for three variable names, whether each is set in the "
-                        "command's environment. "
-                        + TEST_DATA_NOTE
-                        + CLOSE_INSTRUCTION
-                    ),
-                    matches=command_matcher(invocation),
-                    host_check=lambda: self.assertFalse(result_path.exists(), result_path),
-                    context={
-                        "invocation": invocation, "nonce": nonce, "result_path": result_path,
-                        "probe_path": probe_path, "source": source,
-                    },
-                )
 
             with patched_env(
                 {
@@ -477,24 +501,21 @@ class CodexCellTest(unittest.TestCase):
                     idempotency_key="codex-env-backstop",
                     ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
                     timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
-                    attempt_for=attempt_for,
+                    attempt_for=lambda number: self.hold_attempt(root, project, stack, number),
                 )
 
             harness.assert_closed_with_parented_reply(dispatch)
             with harness.worker_evidence_on_failure(dispatch):
-                payload = probe_output(dispatch, attempt.context["invocation"], nonce=attempt.context["nonce"])
-                self.assertEqual(
-                    attempt.context["probe_path"].read_text(), attempt.context["source"],
-                    "the fixture script changed during the dispatch",
-                )
-                self.assertEqual(json.loads(attempt.context["result_path"].read_text()), payload)
-                self.assertEqual(payload["present"], {name: False for name in names}, payload)
+                environment = self.held_command_environment(dispatch, attempt)
+                present = sorted(name for name in names if name in environment)
+                print(f"CODEX_COMMAND_ENV_CREDENTIALS={present}")
+                self.assertEqual(present, [], "write credentials reached the worker command")
 
     def test_codex_command_shell_loads_no_operator_startup_file(self) -> None:
         """The shell Codex starts for a worker command carries nothing from the
         operator's zsh, bash or sh startup files, nor from a file a config
-        layer names through BASH_ENV. The probe names no shell: it reports the
-        environment of an ordinary command."""
+        layer names through BASH_ENV. The command names no shell, and the
+        host reads the environment of its process."""
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
             root = Path(temp_dir)
             operator_home = root / "operator-home"
@@ -510,70 +531,39 @@ class CodexCellTest(unittest.TestCase):
                 )
             worker_root = root / CODEX_WORKER_ID
 
-            def attempt_for(number: int) -> ProbeAttempt:
-                nonce = secrets.token_hex(8)
-                result_path = worker_root / f"startup_probe_result_{number}.json"
-                source = startup_probe_source(result_path, nonce=nonce)
-                probe_path = write_fixture_script(root, f"startup_probe_{number}.py", source)
-                invocation = script_invocation(probe_path)
-                return ProbeAttempt(
-                    body=(
-                        "Run this command once, as an ordinary command, without wrapping "
-                        f"it in another shell: {invocation}\n"
-                        "It records whether marker variables that this test's scratch "
-                        "shell startup files would export are set in the command's "
-                        "environment. "
-                        + TEST_DATA_NOTE
-                        + "It also records four plain strings that tell the test which "
-                        "process answered: HOME and ZDOTDIR (both scratch directories of "
-                        "this test), SHELL and SHLVL. "
-                        + CLOSE_INSTRUCTION
-                    ),
-                    matches=command_matcher(invocation),
-                    host_check=lambda: self.assertFalse(result_path.exists(), result_path),
-                    context={
-                        "invocation": invocation, "nonce": nonce, "result_path": result_path,
-                        "probe_path": probe_path, "source": source,
-                    },
-                )
-
             with patched_env({"HOME": str(operator_home), "ZDOTDIR": str(operator_home)}):
                 dispatch, attempt, _declines = harness.dispatch_until_attempted(
                     idempotency_key="codex-startup-file-isolation",
                     ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
                     timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
-                    attempt_for=attempt_for,
+                    attempt_for=lambda number: self.hold_attempt(
+                        root, worker_root, stack, number, note=", without wrapping it in another shell"
+                    ),
                 )
 
             harness.assert_closed_with_parented_reply(dispatch)
             with harness.worker_evidence_on_failure(dispatch):
+                environment = self.held_command_environment(dispatch, attempt)
+                # The answer counts only if it came from this dispatch's worker
+                # under the operator home and the owned empty ZDOTDIR.
+                self.assertEqual(environment.get("HOME"), str(operator_home), environment.get("HOME"))
+                zdotdir = Path(environment.get("ZDOTDIR", ""))
+                self.assertEqual(zdotdir.name, "empty-zdotdir", zdotdir)
+                self.assertTrue(zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), zdotdir)
                 commands = [
                     item
                     for item in event_items(read_worker_events(dispatch), "completed")
                     if item.get("type") == "command_execution"
                 ]
-                # The measurement is what the probe's own successful run
-                # printed, bound to this attempt and this dispatch.
-                payload = probe_output(dispatch, attempt.context["invocation"], nonce=attempt.context["nonce"])
-                self.assertEqual(
-                    attempt.context["probe_path"].read_text(), attempt.context["source"],
-                    "the fixture script changed during the dispatch",
-                )
-                self.assertEqual(json.loads(attempt.context["result_path"].read_text()), payload)
-                self.assertEqual(set(payload["startup"]), {STARTUP_SECRET_NAME, *STARTUP_MARKERS}, payload)
-                # The answer counts only if it came from this dispatch's worker
-                # under the operator home and the owned empty ZDOTDIR.
-                self.assertEqual(payload["home"], str(operator_home), payload)
-                zdotdir = Path(payload["zdotdir"])
-                self.assertEqual(zdotdir.name, "empty-zdotdir", payload)
-                self.assertTrue(
-                    zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), payload
-                )
                 shells = [outer_shell_flags(str(item.get("command", ""))) for item in commands]
                 print(f"CODEX_COMMAND_SHELLS={sorted({shell for shell in shells if shell})}")
-                leaked = {name: value for name, value in payload["startup"].items() if value}
-                print(f"CODEX_STARTUP_LEAKED={sorted(leaked)}")
-                self.assertEqual(leaked, {}, f"operator startup state reached the worker command: {payload!r}")
+                leaked = sorted(name for name in (STARTUP_SECRET_NAME, *STARTUP_MARKERS) if name in environment)
+                print(f"CODEX_STARTUP_LEAKED={leaked}")
+                self.assertEqual(leaked, [], "operator startup state reached the worker command")
+                self.assertFalse(
+                    any(secret_value in value for value in environment.values()),
+                    "the startup fixture's secret value is in the worker command's environment",
+                )
                 # Mechanism, for this pinned Codex: no command shell was started
                 # as a login or interactive shell.
                 for shell in shells:

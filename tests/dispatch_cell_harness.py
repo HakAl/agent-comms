@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -739,18 +740,137 @@ _PROBE_TAIL = (
 )
 
 
-def env_probe_source(result_path: Path, names: tuple[str, ...], *, nonce: str) -> str:
-    """A script that records whether each of ``names`` is set in its own
-    process environment: booleans only, never a value."""
+def hold_probe_source(receipt_path: Path, *, nonce: str, seconds: int) -> str:
+    """A script that prints one line holding ``nonce``, writes the same line
+    to ``receipt_path`` and then waits, so the host can read the
+    environment of the command's process while it runs. It reads nothing
+    from its environment."""
     return (
-        "import json, os\n"
-        f"names = {tuple(names)!r}\n"
-        "result = {\n"
-        f"    'nonce': {nonce!r},\n"
-        "    'dispatch_id': os.environ.get('AGENT_COMMS_DISPATCH_ID', ''),\n"
-        "    'present': {name: name in os.environ for name in names},\n"
-        "}\n"
-    ) + _PROBE_TAIL.format(result_path=str(result_path))
+        "import json, time\n"
+        f"text = json.dumps({{'nonce': {nonce!r}}})\n"
+        f"open({str(receipt_path)!r}, 'w').write(text)\n"
+        "print(text, flush=True)\n"
+        f"time.sleep({int(seconds)})\n"
+    )
+
+
+_ENVIRONMENT_WORD = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+
+
+def process_environment(pid: int) -> dict[str, str] | None:
+    """The environment process ``pid`` was started with, read by the host:
+    from ``/proc`` where there is one, else from ``ps``. ``None`` when the
+    host does not show it (the process is gone, or the platform hides it,
+    as macOS does for system binaries). From ``ps`` a value ends at its
+    first space; the names are what the cells judge."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except FileNotFoundError:
+        if Path("/proc/self/environ").exists():
+            return None
+    except OSError:
+        return None
+    else:
+        pairs = [entry.split(b"=", 1) for entry in raw.split(b"\0") if b"=" in entry]
+        return {name.decode(errors="replace"): value.decode(errors="replace") for name, value in pairs} or None
+    shown = subprocess.run(
+        ["ps", "eww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False
+    )
+    if shown.returncode != 0:
+        return None
+    environment = {}
+    for word in shown.stdout.split():
+        found = _ENVIRONMENT_WORD.fullmatch(word)
+        if found:
+            environment.setdefault(found.group(1), found.group(2))
+    return environment or None
+
+
+class CommandEnvironmentObserver:
+    """Watches the process table for the command ``invocation`` (its exact
+    argv, so a shell that only carries the text as an argument is not it)
+    and keeps the first environment the host can read from that process,
+    with the pids of its ancestors at that moment."""
+
+    POLL_SECONDS = 0.2
+
+    def __init__(self, invocation: str, *, timeout_seconds: float) -> None:
+        self._argv = shlex.split(invocation)
+        self._deadline = time.monotonic() + timeout_seconds
+        self._stop = threading.Event()
+        self._found = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.snapshot: dict | None = None
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+    def wait(self, timeout_seconds: float) -> dict | None:
+        self._found.wait(timeout_seconds)
+        return self.snapshot
+
+    def _run(self) -> None:
+        while not self._stop.is_set() and time.monotonic() < self._deadline:
+            snapshot = self._look()
+            if snapshot is not None:
+                self.snapshot = snapshot
+                self._found.set()
+                return
+            self._stop.wait(self.POLL_SECONDS)
+
+    def _look(self) -> dict | None:
+        table = subprocess.run(
+            ["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, check=False
+        )
+        parents: dict[int, int] = {}
+        candidates: list[int] = []
+        for line in table.stdout.splitlines():
+            fields = line.split(None, 2)
+            if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
+                continue
+            pid, ppid = int(fields[0]), int(fields[1])
+            parents[pid] = ppid
+            if fields[2].split() == self._argv:
+                candidates.append(pid)
+        for pid in candidates:
+            environment = process_environment(pid)
+            if environment is None:
+                continue
+            ancestors = []
+            parent = parents.get(pid)
+            while parent and parent not in ancestors:
+                ancestors.append(parent)
+                parent = parents.get(parent)
+            return {"pid": pid, "ancestors": ancestors, "environment": environment}
+        return None
+
+
+def observed_command_environment(snapshot: dict | None, dispatch: dict) -> dict[str, str]:
+    """The environment in an observer's ``snapshot``, once it is shown to be
+    this dispatch's worker command: the process descended from the
+    dispatch's runtime, and its environment carries this dispatch's id. The
+    id is also what shows the host could read the environment at all, so an
+    absent name is an answer and not a blind spot."""
+    if snapshot is None:
+        raise AssertionError("the command's process was never seen with a readable environment")
+    observed = dispatch.get("observed_values") or {}
+    runtime = {observed.get("pid"), observed.get("child_pid")} - {None}
+    if not runtime & set(snapshot["ancestors"]):
+        raise AssertionError(
+            f"the observed process is not a descendant of the dispatch's runtime: {snapshot['ancestors']!r}"
+        )
+    environment = snapshot["environment"]
+    if environment.get("AGENT_COMMS_DISPATCH_ID") != dispatch.get("dispatch_id"):
+        raise AssertionError(
+            "the observed environment is from another dispatch or was not readable: "
+            f"AGENT_COMMS_DISPATCH_ID={environment.get('AGENT_COMMS_DISPATCH_ID')!r}"
+        )
+    return environment
 
 
 def forbidden_write_probe_source(forbidden_path: Path, result_path: Path, *, nonce: str) -> str:

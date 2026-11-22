@@ -5,10 +5,12 @@ import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_com
 import copy
 import errno
 import json
+import os
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -483,6 +485,85 @@ class SupervisorListenerTest(unittest.TestCase):
             cell_harness.assert_supervisor_listener_unreached(self.probe)
 
 
+class CommandEnvironmentObserverTest(unittest.TestCase):
+    """The environment of a worker command is read from its process by the
+    host, so the answer does not pass through the worker."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.script = Path(temp.name) / "hold.py"
+        self.receipt = Path(temp.name) / "receipt.json"
+        self.script.write_text(cell_harness.hold_probe_source(self.receipt, nonce="n1", seconds=3))
+        self.invocation = f"{sys.executable} {self.script}"
+
+    def hold(self, **env: str) -> subprocess.Popen:
+        full = {"PATH": "/usr/bin:/bin", "AGENT_COMMS_DISPATCH_ID": "d1", **env}
+        child = subprocess.Popen([sys.executable, str(self.script)], env=full, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        return child
+
+    def observe(self, **env: str) -> dict:
+        observer = cell_harness.CommandEnvironmentObserver(self.invocation, timeout_seconds=20)
+        observer.start()
+        self.addCleanup(observer.stop)
+        child = self.hold(**env)
+        self.assertEqual(json.loads(child.stdout.readline()), {"nonce": "n1"})
+        snapshot = observer.wait(10)
+        if snapshot is None:
+            self.skipTest("this host does not show a child process's environment")
+        self.assertEqual(snapshot["pid"], child.pid)
+        return snapshot
+
+    def test_the_hold_script_leaves_a_receipt_and_holds(self):
+        started = time.monotonic()
+        done = subprocess.run([sys.executable, str(self.script)], capture_output=True, text=True, check=True)
+        self.assertGreaterEqual(time.monotonic() - started, 3)
+        self.assertEqual(json.loads(done.stdout), {"nonce": "n1"})
+        self.assertEqual(json.loads(self.receipt.read_text()), {"nonce": "n1"})
+
+    def test_the_command_s_environment_and_ancestry_are_seen(self):
+        snapshot = self.observe(FIXTURE_PLACEHOLDER="set")
+        self.assertEqual(snapshot["environment"].get("FIXTURE_PLACEHOLDER"), "set")
+        self.assertNotIn("FIXTURE_ABSENT", snapshot["environment"])
+        self.assertIn(os.getpid(), snapshot["ancestors"])
+
+    def test_a_command_that_only_names_the_script_is_not_observed(self):
+        observer = cell_harness.CommandEnvironmentObserver(self.invocation, timeout_seconds=20)
+        observer.start()
+        self.addCleanup(observer.stop)
+        other = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(2)", self.invocation], stdout=subprocess.DEVNULL
+        )
+        self.addCleanup(other.wait)
+        self.assertIsNone(observer.wait(1.5))
+
+    def test_the_observation_is_bound_to_the_dispatch(self):
+        snapshot = self.observe()
+        no_such_pid = 2**31 - 1
+        dispatch = {"dispatch_id": "d1", "observed_values": {"pid": no_such_pid, "child_pid": os.getpid()}}
+        environment = cell_harness.observed_command_environment(snapshot, dispatch)
+        self.assertEqual(environment["AGENT_COMMS_DISPATCH_ID"], "d1")
+        for bad, why in (
+            (dict(dispatch, dispatch_id="d2"), "another dispatch"),
+            (dict(dispatch, observed_values={"pid": no_such_pid, "child_pid": no_such_pid - 1}), "not a descendant"),
+            (dict(dispatch, observed_values={}), "not a descendant"),
+        ):
+            with self.subTest(why=why), self.assertRaisesRegex(AssertionError, why):
+                cell_harness.observed_command_environment(snapshot, bad)
+        with self.assertRaisesRegex(AssertionError, "never seen"):
+            cell_harness.observed_command_environment(None, dispatch)
+
+    def test_an_environment_without_the_dispatch_id_is_not_evidence(self):
+        # A host that hides environments would show nothing, and nothing
+        # must not read as "the credentials are absent".
+        snapshot = {"pid": 5, "ancestors": [os.getpid()], "environment": {}}
+        dispatch = {"dispatch_id": "d1", "observed_values": {"child_pid": os.getpid()}}
+        with self.assertRaisesRegex(AssertionError, "another dispatch"):
+            cell_harness.observed_command_environment(snapshot, dispatch)
+
+
 class CommandMatcherTest(unittest.TestCase):
     def test_the_exact_invocation_matches_bare_or_under_a_shell(self):
         matches = cell_harness.command_matcher(INVOCATION)
@@ -629,15 +710,6 @@ class ProbeSourceTest(unittest.TestCase):
                 capture_output=True, text=True, check=True, timeout=30,
             )
             return json.loads(done.stdout), json.loads((Path(temp) / "result.json").read_text())
-
-    def test_env_probe_reports_presence_only(self):
-        names = ("TOKEN_A", "TOKEN_B")
-        source = cell_harness.env_probe_source(Path("RESULT"), names, nonce="n1")
-        printed, written = self.run_source(source, TOKEN_A="the-value", AGENT_COMMS_DISPATCH_ID="d1")
-        self.assertEqual(printed, written)
-        self.assertEqual(printed, {"nonce": "n1", "dispatch_id": "d1", "present": {"TOKEN_A": True, "TOKEN_B": False}})
-        absent, _ = self.run_source(source)
-        self.assertEqual(absent["present"], {"TOKEN_A": False, "TOKEN_B": False})
 
     def test_forbidden_write_probe_reports_a_refused_and_an_allowed_write(self):
         with tempfile.TemporaryDirectory() as temp:
