@@ -636,7 +636,13 @@ Limits:
   on both platforms: how often each startup file ran, and that a worker
   command sees none of what they export. The snapshot's replay of
   functions, aliases and options, and the absence of a setting that turns
-  it off, were traced at 2.1.310 and not repeated.
+  it off, were traced at 2.1.310 and not repeated. For Codex 0.171.0 the
+  certification cell repeated one check on both platforms: a worker
+  command's environment, read by the host from the command's process,
+  holds none of what the startup files export, and no command shell was a
+  login or interactive shell. The `--profile` refusal and the reading of
+  how Codex builds a command's environment are from 0.164.0 and were not
+  repeated.
   Other shell and platform pairs are not claimed, and nothing is claimed
   for `linux-x86_64`.
 
