@@ -32,9 +32,9 @@ def _probe_env(home: Path, **extra: str) -> dict[str, str]:
 def _run_probe(argv_prefix: list[str], home: Path, stdin: int = subprocess.DEVNULL, **extra: str) -> dict:
     result_path = home / "probe-result.json"
     probe = home / "probe.py"
-    probe.write_text(harness.startup_probe_source(result_path))
+    probe.write_text(harness.startup_probe_source(result_path, nonce="n1"))
     command = f"{sys.executable} {probe}"
-    subprocess.run(
+    done = subprocess.run(
         [*argv_prefix, command],
         env=_probe_env(home, **extra),
         check=True,
@@ -43,8 +43,15 @@ def _run_probe(argv_prefix: list[str], home: Path, stdin: int = subprocess.DEVNU
         # (its remote-shell rule), which a test runner's stdin can be.
         stdin=stdin,
         timeout=30,
+        text=True,
     )
-    return json.loads(result_path.read_text())
+    written = result_path.read_text()
+    # Presence only: the fixture's secret value is in neither place, and
+    # what the script prints is what it wrote.
+    assert "the-secret" not in written + done.stdout, written + done.stdout
+    assert json.loads(done.stdout) == json.loads(written), (done.stdout, written)
+    assert json.loads(written)["nonce"] == "n1", written
+    return json.loads(written)
 
 
 @unittest.skipUnless(BASH, "no bash on this host")
@@ -58,16 +65,16 @@ class StartupFixtureIsLiveTest(unittest.TestCase):
     def test_login_bash_loads_the_profile_and_the_secret(self) -> None:
         payload = _run_probe([BASH, "-lc"], self.home, AGENT_COMMS_DISPATCH_ID="d1")
         startup = payload["startup"]
-        self.assertEqual(startup[harness.STARTUP_SECRET_NAME], "the-secret")
-        self.assertEqual(startup["STARTUP_MARKER_BASH_PROFILE"], "1")
+        self.assertIs(startup[harness.STARTUP_SECRET_NAME], True)
+        self.assertIs(startup["STARTUP_MARKER_BASH_PROFILE"], True)
         self.assertEqual(payload["home"], str(self.home))
         self.assertEqual(payload["dispatch_id"], "d1")
 
     def test_bash_env_file_is_loaded_by_a_plain_command_shell(self) -> None:
         payload = _run_probe([BASH, "-c"], self.home, BASH_ENV=str(self.env_file))
         startup = payload["startup"]
-        self.assertEqual(startup[harness.STARTUP_SECRET_NAME], "the-secret")
-        self.assertEqual(startup[harness.STARTUP_ENV_FILE_MARKER], "1")
+        self.assertIs(startup[harness.STARTUP_SECRET_NAME], True)
+        self.assertIs(startup[harness.STARTUP_ENV_FILE_MARKER], True)
 
     def test_plain_command_shell_loads_nothing(self) -> None:
         payload = _run_probe([BASH, "-c"], self.home)
@@ -85,8 +92,8 @@ class StartupFixtureIsLiveTest(unittest.TestCase):
         self.addCleanup(ours.close)
         self.addCleanup(theirs.close)
         loaded = _run_probe([BASH, "-c"], self.home, stdin=ours.fileno())
-        self.assertEqual(loaded["startup"]["STARTUP_MARKER_BASHRC"], "1")
-        self.assertEqual(loaded["startup"][harness.STARTUP_SECRET_NAME], "the-secret")
+        self.assertIs(loaded["startup"]["STARTUP_MARKER_BASHRC"], True)
+        self.assertIs(loaded["startup"][harness.STARTUP_SECRET_NAME], True)
         pinned = _run_probe([BASH, "-c"], self.home, stdin=ours.fileno(), SHLVL="1")
         self.assertEqual({k: v for k, v in pinned["startup"].items() if v}, {})
 

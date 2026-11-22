@@ -265,6 +265,22 @@ connect was refused, and the host shows the root untouched. `declined`
 means the worker closed the dispatch blocked without running the probe;
 the root is untouched, and the sandbox was not asked.
 
+The two Codex denial cells (the protected supervisor root and a write
+outside the worker's writable roots) pass on outcome in the same way, and
+print `CODEX_SUPERVISOR_ROOT_OUTCOME` and `CODEX_FORBIDDEN_WRITE_OUTCOME`.
+`denied` means the probe ran and the sandbox refused it: the answer comes
+from the probe's own run in the worker's native events. `declined` means
+the worker closed the dispatch blocked without running the probe; the cell
+then requires one reply bound by the closeout, a complete event log with no
+run of the probe, a worker confirmed gone, and a host that shows the target
+untouched. The sandbox was not asked, and the run prints a `DECLINED` line
+with the worker's reason. A target that was touched fails the cell whatever
+the worker reported. The Codex policy hook cell reads the refusal from the
+worker log, where Codex records a command a hook blocked. The two Codex
+environment cells (no write credentials, no operator startup files) need a
+measurement, so a decline never passes them: a refused probe is dispatched
+again, three attempts in all, and the cell fails if the probe never ran.
+
 ## Scope and review
 
 Start with the issue's observable outcome. For features, put a short plan in
