@@ -119,7 +119,7 @@
       {
         "id": "platform",
         "status": "ok",
-        "detail": "darwin-arm64 certified: claude 2.1.330, codex 0.164.0",
+        "detail": "darwin-arm64 certified: claude 2.1.330, codex 0.171.0",
         "fix": null
       },
       {
@@ -131,7 +131,7 @@
       {
         "id": "runtime:codex",
         "status": "fail",
-        "detail": "no custody copy of codex 0.164.0: <RUNTIME_ROOT>/runtime-custody/codex/0.164.0/bin/codex is missing",
+        "detail": "no custody copy of codex 0.171.0: <RUNTIME_ROOT>/runtime-custody/codex/0.171.0/bin/codex is missing",
         "fix": "agent-comms custody codex"
       },
       {
