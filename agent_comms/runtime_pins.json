@@ -10,9 +10,9 @@
           "sha256": "b71b3ddb70c6bb02b130cedfa6982f2e85faab6043883659d661dde4586dd118"
         },
         "linux-aarch64": {
-          "version": "0.164.0",
-          "certified_on": "2026-11-17",
-          "sha256": "e274dda342111cbb591c042e51a24b631506e9a8465354db74d5e96e4fefd4c8"
+          "version": "0.171.0",
+          "certified_on": "2026-11-22",
+          "sha256": "ec62517c759aa059581a100eb77e817850fdac0b48bc6541812a9a8fd0b7960e"
         }
       }
     },
