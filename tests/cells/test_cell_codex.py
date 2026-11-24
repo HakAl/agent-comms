@@ -166,20 +166,6 @@ class CodexCellTest(unittest.TestCase):
                 ),
                 "missing turn.completed after clean wrapper exit",
             )
-            with harness.store.connection() as conn:
-                delivered = conn.execute(
-                    "select 1 from messages where from_agent=? and body like ? limit 1",
-                    (harness.worker_id, "%</subject>%"),
-                ).fetchone()
-            if delivered is not None:
-                outcome = "delivered"
-            elif any(item.get("status") == "failed" for item in calls) or any(
-                event.get("type") == "error" for event in events
-            ):
-                outcome = "refused"
-            else:
-                outcome = "absent"
-            print(f"CODEX_INLINE_OUTCOME={outcome}")
 
     def test_two_same_lineage_dispatches_run_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
