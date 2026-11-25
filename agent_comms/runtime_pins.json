@@ -11,7 +11,7 @@
         },
         "linux-aarch64": {
           "version": "0.171.0",
-          "certified_on": "2026-11-22",
+          "certified_on": "2026-11-25",
           "sha256": "ec62517c759aa059581a100eb77e817850fdac0b48bc6541812a9a8fd0b7960e"
         }
       }
