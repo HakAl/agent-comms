@@ -162,6 +162,7 @@ EXCLUDED_WITH_REASON = {
     "agent_comms/release.py": "release metadata self-reporting for operator CLI, off the dispatch spawn path",
     "agent_comms/status.py": "Store imports it, but it has no dispatch allow-decision or worker-execution dependency",
     "agent_comms/__init__.py": "package marker with no dispatch logic",
+    "scripts/guarded-push": "checkout guarded-push launcher; its logic is the excluded agent_comms/push_approval.py and agent_comms/review.py, off the dispatch spawn path",
 }
 
 

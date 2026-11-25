@@ -516,6 +516,26 @@ class CodeIdentityTest(unittest.TestCase):
         self.assertTrue(code_identity.is_included_surface("agent_comms/mailbox.py"))
         self.assertTrue(code_identity.is_included_surface("agent_comms/adapters/__init__.py"))
 
+    def test_T10b_extensionless_python_scripts_are_classified(self) -> None:
+        repo_root = code_identity.SURFACE_ROOT
+        scripts = []
+        for path in sorted((repo_root / "scripts").glob("**/*")):
+            if not path.is_file() or path.is_symlink() or path.suffix:
+                continue
+            with path.open("rb") as handle:
+                first_line = handle.readline()
+            if first_line.startswith(b"#!") and b"python" in first_line:
+                scripts.append(path.relative_to(repo_root).as_posix())
+
+        self.assertIn("scripts/guarded-push", scripts)
+        unclassified = [
+            relpath
+            for relpath in scripts
+            if not code_identity.is_included_surface(relpath) and not code_identity.exclusion_reason(relpath)
+        ]
+        self.assertEqual(unclassified, [])
+        self.assertFalse(code_identity.is_included_surface("scripts/guarded-push"))
+
     def test_T11_require_fresh_module_names_changed_included_file_and_noops_when_equal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
