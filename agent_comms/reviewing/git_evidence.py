@@ -461,7 +461,9 @@ def _stat_key(st) -> tuple[int, int, int, int, int]:
 def bounded_regular_file_digest(
     path, *, dir_fd: int | None = None, max_bytes: int = INDEX_DIGEST_MAX_BYTES
 ) -> str:
-    """SHA-256 of a regular file, read in two bounded no-follow, nonblocking passes.
+    """SHA-256 of a regular file, read in two bounded passes, each opened no-follow
+    and ``O_NONBLOCK``. The flag only keeps the open from blocking on a FIFO or
+    device; a read of a regular file can still wait on storage.
 
     When ``dir_fd`` is given, ``path`` is opened descriptor-relative to that
     retained directory (``openat``), so a concurrently renamed or replaced
@@ -497,6 +499,11 @@ def bounded_regular_file_digest(
        of two versions) yields agreeing digests over bytes the file may never
        have held at one instant. Undetected only if every such write leaves all
        compared fields equal from the first fstat A to the last fstat B.
+
+    4. Replacement of the name during the second pass. Each fstat checks the
+       inode its descriptor holds, not the name. A rename over ``index`` after
+       the second pass's open leaves the held inode's compared fields equal,
+       so the digest returned is of the file that was replaced.
 
     The index is read twice, each read bounded by ``max_bytes``.
     """
