@@ -1,13 +1,25 @@
 # Quickstart
 
-From nothing to a dispatch that a worker answers, on one Mac. Part 1 needs no
-model login and takes a few minutes; it is the path CI proves on every change
-(`make install-smoke`). Part 2 adds your real runtimes.
+From nothing to a dispatch that a worker answers, on one Mac or one Linux
+machine. Part 1 needs no
+model login and takes a few minutes. CI proves it on macOS on every change
+(`make install-smoke`, from a built wheel); on Linux, CI runs the hermetic
+test suite on x86_64 and not this installed path, which was walked through
+by hand on Debian 13 aarch64 for
+[release 0.3.0](releases/0.3.0-linux-walkthrough.md). Part 2 adds your real
+runtimes.
 
-Requirements: macOS, Python 3.11 or newer (3.11 and 3.14 are the tested
-interpreters; see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup-and-tests)
+Requirements: macOS or Linux, Python 3.11 or newer (3.11 and 3.14 are the
+tested interpreters; see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup-and-tests)
 before using another), Git, and
-[uv](https://docs.astral.sh/uv/). Words such as actor, team, seat and
+[uv](https://docs.astral.sh/uv/). On Linux, Part 2 also needs what the
+runtimes themselves need there: `bubblewrap` and `socat` for Claude Code's
+sandbox, and Node.js with npm to install Codex. The runtime pins cover
+macOS on arm64 and Linux on aarch64 (Debian 13 is the tested distribution);
+on another platform Part 1 works and a native dispatch is refused with a
+message that names the certified ones. Two [runbook](runbook.md) recipes
+use tools a minimal Linux install may lack: `xxd` for the operator
+credential and `ssh-keygen` for the review approval key. Words such as actor, team, seat and
 dispatch are defined in [concepts.md](concepts.md); you do not need that
 page to finish this one.
 
@@ -153,14 +165,20 @@ without a browser, add `--device-auth` to `codex login` and finish the
 sign-in from another device. The Claude custody copy is a file you place:
 the fix names the version and the path, and the installer keeps that
 version's binary under `~/.local/share/claude/versions/`, so copy it from
-there with `install -m 0755`. The release walkthrough in
+there with `install -m 0755`. The release walkthroughs show each of these as it was run:
+[releases/0.3.0-linux-walkthrough.md](releases/0.3.0-linux-walkthrough.md)
+on Debian 13, and
 [releases/0.2.0-macos-walkthrough.md](releases/0.2.0-macos-walkthrough.md)
-shows each of these as it was run; it predates the shared login, so it
-shows a third, worker-only Codex login that is no longer asked for.
+on macOS, which predates the shared login and so shows a third,
+worker-only Codex login that is no longer asked for. Neither shows
+`codex login --device-auth`: the Linux run copied an existing login in
+instead.
 
 ### 7. Start the monitor
 
-Real workers do not drive themselves. In a second terminal, with the human id
+A dispatch usually starts its worker at once, but nothing in the worker
+picks up what it leaves behind, or a dispatch that could not start. That
+is the monitor's job. In a second terminal, with the human id
 `setup` printed in step 2 (the monitor warning in `doctor` names this exact
 command as the terminal alternative):
 
@@ -174,7 +192,10 @@ when its work lands in the dead-letter queue, and writes a heartbeat
 Leave it running while you work; stop it with Ctrl-C. `--once` runs a single
 pass instead, for a scheduler. To keep it up without a terminal, install it
 as a user service with `agent-comms service install` and the same
-`--human-actor-id`; see the [runbook](runbook.md).
+`--human-actor-id`; see the [runbook](runbook.md). On Linux the service
+needs a systemd user manager (without one, use the terminal), and it
+stops when your last session ends unless lingering is on; `install` prints
+the command that turns it on.
 
 ### 8. The first real dispatch
 
@@ -197,8 +218,11 @@ repository's top-level directory names.' and wait_for_reply."
 
 What happens:
 
-1. `dispatch_agent` writes the dispatch; the monitor starts the worker under
-   its supervisor with the bounded policy.
+1. `dispatch_agent` writes the dispatch and starts the worker under its
+   supervisor with the bounded policy. When it cannot start one at once
+   (the architect already has as many dispatches in flight as it may, or a
+   Codex login is stale or being refreshed) the row stays `queued` and the
+   monitor starts it on a later pass.
 2. The worker does the task, sends its reply threaded under the dispatch,
    and calls `close_dispatch` with its result.
 3. The reply reaches the architect's inbox; `wait_for_reply` returns it.

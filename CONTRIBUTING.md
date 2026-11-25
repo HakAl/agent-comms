@@ -298,8 +298,11 @@ skipped integration as a pass. No credentials are needed for mailbox-only work.
 ## Release records
 
 Each release's acceptance walkthrough on a clean machine is saved under
-`docs/releases/`; for 0.2.0 it is
-[docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md).
+`docs/releases/`: for 0.2.0,
+[docs/releases/0.2.0-macos-walkthrough.md](docs/releases/0.2.0-macos-walkthrough.md)
+(macOS); for 0.3.0,
+[docs/releases/0.3.0-linux-walkthrough.md](docs/releases/0.3.0-linux-walkthrough.md)
+(Linux).
 A record is a frozen snapshot of one run, scrubbed of personal paths and
 account details. The docs checker does not parse it and a later doc change
 does not update it; the next release gets its own.
