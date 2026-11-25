@@ -1105,13 +1105,18 @@ class PreReadyDiagnosticTest(unittest.TestCase):
         self.assertEqual(raised, [fault])
 
     def test_forwarded_cause_is_one_bounded_line(self) -> None:
-        fault = supervisor.SupervisorError("first\nsecond " + "x" * 5000)
+        fault = supervisor.SupervisorError(
+            "first\nsecond " + "x" * 5000 + "; recover with: shorten the supervisor control root"
+        )
         adapter_peer, thread, raised, stderr = self._run(fault)
         line = supervising.protocol._read_line(adapter_peer, timeout=10.0)
         self.assertIsNotNone(line)
         error = json.loads(line.decode("utf-8"))["error"]
         self.assertTrue(error.startswith("SupervisorError: first second xxx"), error[:60])
         self.assertNotIn("\n", error)
+        # The end survives the bound too: a recovery hint follows the path.
+        self.assertTrue(error.endswith("; recover with: shorten the supervisor control root"), error[-80:])
+        self.assertIn(" ... ", error)
         self.assertLessEqual(len(error), 500)
         _FaultingSupervisor.release.set()
         thread.join(timeout=10)

@@ -461,10 +461,14 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
                 pass
             if not isinstance(exc, paths.SupervisorError):
                 detail = f"{type(exc).__name__} (details in the worker log)"
+            detail = " ".join(detail.split())
+            if len(detail) > 500:
+                # Keep both ends: the recovery hint follows a path that may be long.
+                detail = f"{detail[:295]} ... {detail[-200:]}"
             try:
                 # Best effort and bounded, so a stuck peer cannot hold up cleanup.
                 boot.settimeout(2.0)
-                protocol._send_json(boot, {"ready": False, "error": " ".join(detail.split())[:500]})
+                protocol._send_json(boot, {"ready": False, "error": detail})
             except (OSError, ValueError):
                 pass
         raise
