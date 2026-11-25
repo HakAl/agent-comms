@@ -15,19 +15,34 @@ was asked what. Nothing bounds the agent you handed the task to, and nothing
 tells you when it stalled. agent-comms gives the agents a mailbox to talk
 through, and gives one of them, the architect, a way to hand a task to a
 worker that runs under a time limit and a restricted tool surface. Its reply
-comes back on the same thread, a failure pages the architect, and reviewed
-work is pushed only with an approval you signed.
+comes back on the same thread. When a dispatch fails to start, times out or
+dies, it lands in the dead-letter queue (DLQ) and the monitor pages the
+architect that sent it.
 
 ```text
   you (operator)
-       |  ask, approve
-       v
-  architect  --- dispatch: one task, time limit, restricted tools --->  worker
-  (your Claude Code                                                     (claude, codex or fake,
-   or Codex session)  <-- reply on the thread, or a DLQ page ---------   under a supervisor)
        |
        v
-  review gate  --->  push approval signed with your SSH key  --->  git push
+  architect  (your Claude Code or Codex session)
+       |   ^
+       |   |  reply on the dispatch thread
+       v   |
+  dispatch: one task, a time limit, restricted tools
+       |   ^
+       v   |
+  worker  (claude, codex or fake, under a supervisor)
+
+  monitor: reconciles in-flight dispatches and pages the
+           architect when one lands in the DLQ
+```
+
+This repository also lands its own changes through a review gate and a
+guarded push that verifies an approval signed with an SSH key. That is a
+workflow run from a clone, not part of the installed commands, and a
+dispatch does not depend on it:
+
+```text
+  reviewed commit --> approval signed with your SSH key --> scripts/guarded-push --> remote
 ```
 
 ## Try it without a login
@@ -43,6 +58,10 @@ mkdir agent-comms-build && cd agent-comms-build &&
     agent-comms version
 ```
 
+If the last step says `agent-comms` is not found, uv's tool directory is not
+on `PATH`: run `uv tool update-shell`, open a new terminal, and run
+`agent-comms version` again. Then:
+
 ```sh
 mkdir -p "$HOME/demo-project"
 agent-comms setup --project-root "$HOME/demo-project" --team demo \
@@ -52,7 +71,7 @@ agent-comms demo
 ```
 
 `demo` has the architect dispatch one task to the fake worker and prints
-each step:
+each step to stderr:
 
 ```text
 dispatched dispatch_...: demo-architect -> demo-fake-worker, 'demo: ping'
@@ -87,8 +106,10 @@ explains each step and goes on to a real dispatch with Claude Code and Codex.
   specific to agent-comms, and a machine that already runs Claude Code and
   Codex needs none.
 - **Review and landing.** A review gate runner and a signed push approval
-  check (`scripts/guarded-push`), so nothing pushes without a human approval
-  signed with an SSH key. Landing needs two paths from the operator's shell:
+  check (`scripts/guarded-push`), so a push made through it needs a human
+  approval signed with an SSH key. These run from a clone and are not among
+  the installed commands; a plain `git push` is not intercepted. Landing
+  needs two paths from the operator's shell:
   `AGENT_COMMS_MAIN`, the clean main-branch checkout reviewed work merges
   into, and `AGENT_COMMS_APPROVAL_SIGNERS_REPO`, the checkout whose history
   carries `config/approval-signers` (see `config/approval-signers.example`).
