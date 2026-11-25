@@ -127,6 +127,10 @@ def spawn_supervised(
             raise paths.SupervisorError(
                 f"supervisor READY handshake was not valid JSON: {exc}"
             ) from exc
+        if isinstance(ack, dict) and not ack.get("ready") and ack.get("error"):
+            # The wrapper's own pre-READY refusal (for example SunPathTooLong
+            # with its recovery hint); it also wrote this to the worker log.
+            raise paths.SupervisorError(f"supervisor failed before READY: {ack['error']}")
         if not isinstance(ack, dict) or not ack.get("ready"):
             raise paths.SupervisorError(f"supervisor READY handshake failed: {ack!r}")
         try:

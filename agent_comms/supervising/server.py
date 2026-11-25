@@ -12,6 +12,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -413,13 +414,16 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
     spawn failure: the finally cleanup terminates and waits any launched child
     so no supervisor-less native child is orphaned, cleans the attempted run
     directory, and READY is never sent, so the adapter records
-    ``spawn_failed_message_landed`` rather than a false live row. Observed
-    identity written by ``merge_observed`` is only ever added to (exit evidence),
-    never overwritten, on such a failure.
+    ``spawn_failed_message_landed`` rather than a false live row. The cause is
+    written to stderr (the worker log) and, after cleanup, sent to the adapter
+    as ``{"ready": false, "error": ...}`` so it reaches ``failure_reason``.
+    Observed identity written by ``merge_observed`` is only ever added to (exit
+    evidence), never overwritten, on such a failure.
     """
     boot = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=bootstrap_fd)
     supervisor: _Supervisor | None = None
     previous_handlers: dict[int, Any] | None = None
+    pre_ready_error: str | None = None
     try:
         raw = protocol._read_line(boot, timeout=30.0)
         if raw is None:
@@ -440,16 +444,35 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
         boot.close()
         boot = None  # type: ignore[assignment]
         return supervisor.serve()
-    finally:
+    except BaseException as exc:
         if boot is not None:
+            # Pre-READY: write the cause to stderr (the worker log) now, while
+            # the adapter is still waiting, so a teardown signal cannot lose it.
+            pre_ready_error = f"{type(exc).__name__}: {exc}"
+            try:
+                sys.stderr.write(f"agent-comms supervisor failed before READY: {pre_ready_error}\n")
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+        raise
+    finally:
+        if supervisor is not None:
+            supervisor.cleanup()
+            if previous_handlers is not None:
+                supervisor.restore_signal_handlers(previous_handlers)
+        if boot is not None:
+            # Closed only after cleanup, and after telling the adapter why, so
+            # its failure_reason carries the cause rather than a bare EOF.
+            if pre_ready_error is not None:
+                try:
+                    protocol._send_json(boot, {"ready": False, "error": pre_ready_error})
+                except OSError:
+                    pass
             try:
                 boot.close()
             except OSError:
                 pass
         if supervisor is not None:
-            supervisor.cleanup()
-            if previous_handlers is not None:
-                supervisor.restore_signal_handlers(previous_handlers)
             # Deliver EOF on a confirmed-HALT connection LAST, so the client's
             # barrier 2 fires only once the wrapper has finished tearing down and
             # is about to exit (barrier 3, the parent-owned wrapper reap).
