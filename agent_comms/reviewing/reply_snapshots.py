@@ -114,7 +114,10 @@ class _RetainedCheckout:
     def index_digest(self) -> str:
         """Digest the real index opened descriptor-relative to the retained Git-dir
         FD, so a persistent rename/replacement of the Git-dir pathname between steps
-        cannot redirect the read away from the retained inode's ``index``."""
+        cannot redirect the read away from the retained inode's ``index``. The
+        digest is two-pass (two descriptors, digests and stat fields must agree);
+        its remaining windows are those in
+        ``git_evidence.bounded_regular_file_digest``."""
         return git_evidence.bounded_regular_file_digest(
             "index", dir_fd=self._git_dir_fd
         )
@@ -261,7 +264,11 @@ def classify_reply(
 def _identity_probe(co: _RetainedCheckout, binding: ReplyBinding) -> dict[str, str]:
     """Cheap read-only HEAD/branch/ref/index probe; runs no ``git status``. HEAD,
     branch, and source ref must equal the bound source identity (so object content
-    is bound by identity); the index digest streams from one bounded no-follow fd.
+    is bound by identity); the index digest is two bounded no-follow passes, each
+    from its own fd, and carries the remaining windows documented on
+    ``git_evidence.bounded_regular_file_digest``. ``capture``'s two probes around
+    two isolated snapshots are unchanged and do not close the window after the
+    last probe's final fstat.
     """
     head = co.run(["rev-parse", "HEAD"]).decode().strip()
     branch = co.run(["rev-parse", "--abbrev-ref", "HEAD"]).decode().strip()
