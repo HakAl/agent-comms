@@ -7,6 +7,62 @@ SQLite file. There is no daemon, no network service, and no cloud.
 Agents talk to it through a stdio MCP server that is bound to one identity per
 process. Humans and scripts use the `agent-comms` CLI.
 
+## Why
+
+With several terminal agents open, you are the message bus: you copy a task
+from one window into another, wait, copy the answer back, and remember who
+was asked what. Nothing bounds the agent you handed the task to, and nothing
+tells you when it stalled. agent-comms gives the agents a mailbox to talk
+through, and gives one of them, the architect, a way to hand a task to a
+worker that runs under a time limit and a restricted tool surface. Its reply
+comes back on the same thread, a failure pages the architect, and reviewed
+work is pushed only with an approval you signed.
+
+```text
+  you (operator)
+       |  ask, approve
+       v
+  architect  --- dispatch: one task, time limit, restricted tools --->  worker
+  (your Claude Code                                                     (claude, codex or fake,
+   or Codex session)  <-- reply on the thread, or a DLQ page ---------   under a supervisor)
+       |
+       v
+  review gate  --->  push approval signed with your SSH key  --->  git push
+```
+
+## Try it without a login
+
+The `fake` runtime runs the whole dispatch path with no model account. With
+Python 3.11 or newer, Git and [uv](https://docs.astral.sh/uv/):
+
+```sh
+mkdir agent-comms-build && cd agent-comms-build &&
+    git clone https://github.com/HakAl/agent-comms.git &&
+    uv build --project agent-comms --out-dir wheels &&
+    uv tool install wheels/agent_comms-*.whl &&
+    agent-comms version
+```
+
+```sh
+mkdir -p "$HOME/demo-project"
+agent-comms setup --project-root "$HOME/demo-project" --team demo \
+    --runtimes fake --clients "" --human alice --yes
+agent-comms doctor
+agent-comms demo
+```
+
+`demo` has the architect dispatch one task to the fake worker and prints
+each step:
+
+```text
+dispatched dispatch_...: demo-architect -> demo-fake-worker, 'demo: ping'
+worker replied msg_...: 'fake-reply: PONG'
+dispatch closed: satisfied
+```
+
+State goes under `~/.agent-comms`. [The quickstart](docs/quickstart.md)
+explains each step and goes on to a real dispatch with Claude Code and Codex.
+
 ## What is in this checkout
 
 - **Mailbox.** Messages, acknowledgements, status posts, handoff snapshots,
