@@ -1314,6 +1314,21 @@ class DispatchCellHarness:
     # the Claude worker's MCP server refuses a send without a parent before it
     # looks at the body, so its probe carries the parent and says why it is
     # still not the reply.
+    #
+    # Codex gets neither the probe nor that fixture. The fixture is a
+    # send_message call addressed to another agent on another thread, in
+    # Claude's markup; a Codex worker that reads the file before sending it
+    # sees an instruction it was not given and closes blocked, which it did
+    # in three of five certify runs on 2026-11-22. Codex does not parse that
+    # markup, so the probe showed nothing about Codex either. Its cell sends
+    # a plain file, which is the whole of its property: a file-backed reply.
+    # What the server does with a markup-looking body_file needs no model
+    # and is tests/substrate/test_mcp_stdio.py's to show.
+    PLAIN_REPLY_NAME = "reply-body.txt"
+    PLAIN_REPLY_BYTES = (
+        b"file-backed reply fixture\n"
+        b"second line: 0123456789 abcdefghijklmnopqrstuvwxyz\n"
+    )
     INLINE_PROBE_INSTRUCTION = {
         "claude": (
             "First, as a probe that is not your reply, call send_message inline to "
@@ -1325,15 +1340,25 @@ class DispatchCellHarness:
             "Print whether it was delivered, refused, or absent, and continue "
             "whatever the outcome."
         ),
-        "codex": (
-            "First, as a probe that is not your reply, attempt send_message inline to "
-            "the sender with the exact text from collision.txt as body, subject "
-            "'inline-probe' and no parent_message_id; print whether it was delivered, "
-            "refused, or absent, and continue whatever the outcome."
-        ),
     }
 
     def file_backed_reply_roundtrip(self, *, runtime: str) -> tuple[dict, bytes]:
+        if runtime not in self.INLINE_PROBE_INSTRUCTION:
+            fixture = self.PLAIN_REPLY_BYTES
+            (self.root / self.worker_id / self.PLAIN_REPLY_NAME).write_bytes(fixture)
+            dispatch = self.dispatch_and_wait(
+                idempotency_key=f"{runtime}-cell-file-backed",
+                ttl_seconds=POSITIVE_CELL_TTL_SECONDS,
+                timeout_seconds=POSITIVE_CELL_TERMINAL_WAIT_SECONDS,
+                body=(
+                    f"The file {self.PLAIN_REPLY_NAME} in this project root is a short "
+                    "plain-text test fixture. Send exactly one reply with "
+                    f"body_file='{self.PLAIN_REPLY_NAME}' and this dispatch message as "
+                    "parent_message_id, and no body. Then close_dispatch satisfied "
+                    "with that file-backed reply id and delta=false."
+                ),
+            )
+            return dispatch, fixture
         fixture = (
             ROOT / "tests/fixtures/send-message-marker-collision-claude-v1.txt"
         ).read_bytes()
