@@ -15,9 +15,9 @@ was asked what. Nothing bounds the agent you handed the task to, and nothing
 tells you when it stalled. agent-comms gives the agents a mailbox to talk
 through, and gives one of them, the architect, a way to hand a task to a
 worker that runs under a time limit and a restricted tool surface. Its reply
-comes back on the same thread. When a dispatch fails to start, times out or
-dies, it lands in the dead-letter queue (DLQ) and the monitor pages the
-architect that sent it.
+comes back on the same thread. The monitor pages the architect if the worker
+fails to start or the dispatch lands in the dead-letter queue (DLQ), as one
+that timed out or whose worker died does.
 
 ```text
   you (operator)
@@ -33,7 +33,8 @@ architect that sent it.
   worker  (claude, codex or fake, under a supervisor)
 
   monitor: reconciles in-flight dispatches and pages the
-           architect when one lands in the DLQ
+           architect when a worker fails to start or a
+           dispatch lands in the DLQ
 ```
 
 This repository also lands its own changes through a review gate and a
@@ -42,7 +43,8 @@ workflow run from a clone, not part of the installed commands, and a
 dispatch does not depend on it:
 
 ```text
-  reviewed commit --> approval signed with your SSH key --> scripts/guarded-push --> remote
+  reviewed commit --> approval signed with your SSH key
+                  --> scripts/guarded-push --> remote
 ```
 
 ## Try it without a login
