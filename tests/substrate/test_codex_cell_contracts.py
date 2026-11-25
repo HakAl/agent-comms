@@ -690,23 +690,28 @@ class PsEnvironmentTest(unittest.TestCase):
         self.assertIn("sample-marker", text)
 
     def test_the_observer_keeps_the_text_with_whole_values(self):
-        with tempfile.TemporaryDirectory() as temp:
-            script = Path(temp) / "hold.py"
-            script.write_text(cell_harness.hold_probe_source(Path(temp) / "r.json", nonce="n1", seconds=3))
-            observer = cell_harness.CommandEnvironmentObserver(f"{sys.executable} {script}", timeout_seconds=20)
-            observer.start()
-            self.addCleanup(observer.stop)
-            child = subprocess.Popen(
-                [sys.executable, str(script)], stdout=subprocess.DEVNULL,
-                env={"PATH": "/usr/bin:/bin", "LABEL": "prefix sample-marker", "AGENT_COMMS_DISPATCH_ID": "d1"},
-            )
-            self.addCleanup(child.wait)
-            self.addCleanup(child.kill)
-            snapshot = observer.wait(10)
-            if snapshot is None:
-                self.skipTest("this host does not show a child process's environment")
-            self.assertIn("sample-marker", snapshot["environment_text"])
-            self.assertEqual(snapshot["environment"]["AGENT_COMMS_DISPATCH_ID"], "d1")
+        # Registered first, so it runs last: the child writes its receipt into
+        # this directory when it starts, and must be reaped before the
+        # directory is removed (ac-03f).
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        temp = temp_dir.name
+        script = Path(temp) / "hold.py"
+        script.write_text(cell_harness.hold_probe_source(Path(temp) / "r.json", nonce="n1", seconds=3))
+        observer = cell_harness.CommandEnvironmentObserver(f"{sys.executable} {script}", timeout_seconds=20)
+        observer.start()
+        self.addCleanup(observer.stop)
+        child = subprocess.Popen(
+            [sys.executable, str(script)], stdout=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin", "LABEL": "prefix sample-marker", "AGENT_COMMS_DISPATCH_ID": "d1"},
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        snapshot = observer.wait(10)
+        if snapshot is None:
+            self.skipTest("this host does not show a child process's environment")
+        self.assertIn("sample-marker", snapshot["environment_text"])
+        self.assertEqual(snapshot["environment"]["AGENT_COMMS_DISPATCH_ID"], "d1")
 
 
 class CommandMatcherTest(unittest.TestCase):
