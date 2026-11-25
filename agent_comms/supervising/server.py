@@ -415,15 +415,16 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
     so no supervisor-less native child is orphaned, cleans the attempted run
     directory, and READY is never sent, so the adapter records
     ``spawn_failed_message_landed`` rather than a false live row. The cause is
-    written to stderr (the worker log) and, after cleanup, sent to the adapter
-    as ``{"ready": false, "error": ...}`` so it reaches ``failure_reason``.
+    written to stderr (the worker log) and sent to the adapter as
+    ``{"ready": false, "error": ...}`` before cleanup starts, so it reaches
+    ``failure_reason`` even when cleanup outlasts the adapter's READY wait; the
+    bootstrap socket closes only after cleanup.
     Observed identity written by ``merge_observed`` is only ever added to (exit
     evidence), never overwritten, on such a failure.
     """
     boot = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=bootstrap_fd)
     supervisor: _Supervisor | None = None
     previous_handlers: dict[int, Any] | None = None
-    pre_ready_error: str | None = None
     try:
         raw = protocol._read_line(boot, timeout=30.0)
         if raw is None:
@@ -446,12 +447,24 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
         return supervisor.serve()
     except BaseException as exc:
         if boot is not None:
-            # Pre-READY: write the cause to stderr (the worker log) now, while
-            # the adapter is still waiting, so a teardown signal cannot lose it.
-            pre_ready_error = f"{type(exc).__name__}: {exc}"
+            # Pre-READY. Say why now, before cleanup: cleanup may spend a
+            # launched child's whole termination grace, longer than the adapter
+            # waits for READY, and the adapter's teardown signal would then
+            # lose the cause. The worker log (stderr) gets the full text. The
+            # adapter gets one bounded line for failure_reason and the page:
+            # this package's own error text, or only the type of anything else.
+            detail = f"{type(exc).__name__}: {exc}"
             try:
-                sys.stderr.write(f"agent-comms supervisor failed before READY: {pre_ready_error}\n")
+                sys.stderr.write(f"agent-comms supervisor failed before READY: {detail}\n")
                 sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+            if not isinstance(exc, paths.SupervisorError):
+                detail = f"{type(exc).__name__} (details in the worker log)"
+            try:
+                # Best effort and bounded, so a stuck peer cannot hold up cleanup.
+                boot.settimeout(2.0)
+                protocol._send_json(boot, {"ready": False, "error": " ".join(detail.split())[:500]})
             except (OSError, ValueError):
                 pass
         raise
@@ -461,13 +474,8 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
             if previous_handlers is not None:
                 supervisor.restore_signal_handlers(previous_handlers)
         if boot is not None:
-            # Closed only after cleanup, and after telling the adapter why, so
-            # its failure_reason carries the cause rather than a bare EOF.
-            if pre_ready_error is not None:
-                try:
-                    protocol._send_json(boot, {"ready": False, "error": pre_ready_error})
-                except OSError:
-                    pass
+            # Closed only after cleanup: the adapter that got the cause above
+            # waits for this EOF before it signals the wrapper.
             try:
                 boot.close()
             except OSError:

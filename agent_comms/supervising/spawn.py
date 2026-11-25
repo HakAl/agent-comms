@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -113,6 +114,7 @@ def spawn_supervised(
             raise paths.SupervisorError(
                 f"supervisor bootstrap send failed before READY: {exc}"
             ) from exc
+        ready_deadline = time.monotonic() + ready_timeout
         try:
             line = protocol._read_line(adapter_peer, timeout=ready_timeout)
         except OSError as exc:
@@ -130,6 +132,16 @@ def spawn_supervised(
         if isinstance(ack, dict) and not ack.get("ready") and ack.get("error"):
             # The wrapper's own pre-READY refusal (for example SunPathTooLong
             # with its recovery hint); it also wrote this to the worker log.
+            # It sends the cause before its cleanup and closes the socket
+            # after, so wait out what is left of the READY budget for that
+            # close: the teardown below then finds the wrapper gone, or
+            # signals it exactly as a missed READY always has.
+            try:
+                protocol._read_line(
+                    adapter_peer, timeout=max(0.1, ready_deadline - time.monotonic())
+                )
+            except OSError:
+                pass
             raise paths.SupervisorError(f"supervisor failed before READY: {ack['error']}")
         if not isinstance(ack, dict) or not ack.get("ready"):
             raise paths.SupervisorError(f"supervisor READY handshake failed: {ack!r}")

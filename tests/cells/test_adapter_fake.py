@@ -421,6 +421,9 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertIn("SunPathTooLong", log_text)
                 self.assertIn("exceeds AF_UNIX limit", log_text)
                 self.assertIn("recover with: shorten the supervisor control root", log_text)
+                # The refused attempt left nothing under the over-long root.
+                leftovers = sorted(deep_root.rglob("*")) if deep_root.exists() else []
+                self.assertEqual(leftovers, [])
 
     def test_spawn_args_missing_bootstrap_marker_rejects(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
