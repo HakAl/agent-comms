@@ -12,6 +12,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -413,9 +414,13 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
     spawn failure: the finally cleanup terminates and waits any launched child
     so no supervisor-less native child is orphaned, cleans the attempted run
     directory, and READY is never sent, so the adapter records
-    ``spawn_failed_message_landed`` rather than a false live row. Observed
-    identity written by ``merge_observed`` is only ever added to (exit evidence),
-    never overwritten, on such a failure.
+    ``spawn_failed_message_landed`` rather than a false live row. The cause is
+    written to stderr (the worker log) and sent to the adapter as
+    ``{"ready": false, "error": ...}`` before cleanup starts, so it reaches
+    ``failure_reason`` even when cleanup outlasts the adapter's READY wait; the
+    bootstrap socket closes only after cleanup.
+    Observed identity written by ``merge_observed`` is only ever added to (exit
+    evidence), never overwritten, on such a failure.
     """
     boot = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=bootstrap_fd)
     supervisor: _Supervisor | None = None
@@ -440,16 +445,46 @@ def run_supervisor(bootstrap_fd: int, child_command: Sequence[str]) -> int:
         boot.close()
         boot = None  # type: ignore[assignment]
         return supervisor.serve()
-    finally:
+    except BaseException as exc:
         if boot is not None:
+            # Pre-READY. Say why now, before cleanup: cleanup may spend a
+            # launched child's whole termination grace, longer than the adapter
+            # waits for READY, and the adapter's teardown signal would then
+            # lose the cause. The worker log (stderr) gets the full text. The
+            # adapter gets one bounded line for failure_reason and the page:
+            # this package's own error text, or only the type of anything else.
+            detail = f"{type(exc).__name__}: {exc}"
+            try:
+                sys.stderr.write(f"agent-comms supervisor failed before READY: {detail}\n")
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+            if not isinstance(exc, paths.SupervisorError):
+                detail = f"{type(exc).__name__} (details in the worker log)"
+            detail = " ".join(detail.split())
+            if len(detail) > 500:
+                # Keep both ends: the recovery hint follows a path that may be long.
+                detail = f"{detail[:295]} ... {detail[-200:]}"
+            try:
+                # Best effort and bounded, so a stuck peer cannot hold up cleanup.
+                boot.settimeout(2.0)
+                protocol._send_json(boot, {"ready": False, "error": detail})
+            except (OSError, ValueError):
+                pass
+        raise
+    finally:
+        if supervisor is not None:
+            supervisor.cleanup()
+            if previous_handlers is not None:
+                supervisor.restore_signal_handlers(previous_handlers)
+        if boot is not None:
+            # Closed only after cleanup: the adapter that got the cause above
+            # waits for this EOF before it signals the wrapper.
             try:
                 boot.close()
             except OSError:
                 pass
         if supervisor is not None:
-            supervisor.cleanup()
-            if previous_handlers is not None:
-                supervisor.restore_signal_handlers(previous_handlers)
             # Deliver EOF on a confirmed-HALT connection LAST, so the client's
             # barrier 2 fires only once the wrapper has finished tearing down and
             # is about to exit (barrier 3, the parent-owned wrapper reap).

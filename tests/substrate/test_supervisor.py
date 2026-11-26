@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import tests.isolation  # noqa: F401  # scratch-home guard; keep above agent_comms imports
 
+import io
 import json
 import os
 import shutil
@@ -952,6 +953,173 @@ class BootstrapHandshakeFailureTest(SupervisorTestBase):
                 self._spawn()
         self.assertIn("not valid JSON", str(ctx.exception))
         popen.terminate.assert_called_once()
+
+    def test_wrapper_error_frame_becomes_failure_text_after_waiting_for_cleanup(self) -> None:
+        # ac-xbs: the wrapper names its pre-READY failure, then cleans up and
+        # closes the socket. The adapter keeps the cause, waits (bounded by
+        # what is left of the READY budget) for that close, and only then
+        # runs the ordinary teardown.
+        popen = self._fake_wrapper()
+        frame = json.dumps({"ready": False, "error": "SupervisorError: merge failed"}).encode()
+        with mock.patch("subprocess.Popen", return_value=popen), mock.patch.object(
+            supervising.protocol, "_send_json"
+        ), mock.patch.object(
+            supervising.protocol, "_read_line", side_effect=[frame, None]
+        ) as read_line:
+            with self.assertRaises(supervisor.SupervisorError) as ctx:
+                self._spawn()
+        self.assertEqual(
+            str(ctx.exception), "supervisor failed before READY: SupervisorError: merge failed"
+        )
+        self.assertEqual(read_line.call_count, 2)
+        wait_timeout = read_line.call_args_list[1].kwargs["timeout"]
+        self.assertGreater(wait_timeout, 0)
+        self.assertLessEqual(wait_timeout, 30.0)
+        popen.terminate.assert_called_once()
+
+    def test_wrapper_error_frame_survives_a_failed_wait_for_cleanup(self) -> None:
+        popen = self._fake_wrapper()
+        frame = json.dumps({"ready": False, "error": "SupervisorError: merge failed"}).encode()
+        with mock.patch("subprocess.Popen", return_value=popen), mock.patch.object(
+            supervising.protocol, "_send_json"
+        ), mock.patch.object(
+            supervising.protocol, "_read_line", side_effect=[frame, ConnectionResetError("reset")]
+        ):
+            with self.assertRaises(supervisor.SupervisorError) as ctx:
+                self._spawn()
+        self.assertIn("SupervisorError: merge failed", str(ctx.exception))
+        popen.terminate.assert_called_once()
+
+
+class _FaultingSupervisor:
+    """Stand-in for the wrapper's supervisor: fails after the child launch
+    and holds cleanup until the test releases it."""
+
+    fault: BaseException = RuntimeError("unset")
+    release: threading.Event
+    cleaned: threading.Event
+
+    def __init__(self, payload, child_command) -> None:  # type: ignore[no-untyped-def]
+        self.payload = payload
+
+    def install_signal_handlers(self) -> dict:
+        return {}
+
+    def restore_signal_handlers(self, previous: dict) -> None:
+        pass
+
+    def prepare(self) -> None:
+        pass
+
+    def launch_child(self) -> None:
+        pass
+
+    def merge_observed(self) -> None:
+        raise type(self).fault
+
+    def cleanup(self) -> None:
+        if not type(self).release.wait(timeout=30):
+            raise AssertionError("cleanup was never released")
+        type(self).cleaned.set()
+
+    def close_halt_connection(self) -> None:
+        pass
+
+
+class PreReadyDiagnosticTest(unittest.TestCase):
+    """ac-xbs: a wrapper failure before READY reaches the adapter at once,
+    not after cleanup, which may outlast the adapter's READY wait when a
+    launched child needs its whole termination grace."""
+
+    def _run(self, fault: BaseException):  # type: ignore[no-untyped-def]
+        adapter_peer, wrapper_peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(adapter_peer.close)
+        _FaultingSupervisor.fault = fault
+        _FaultingSupervisor.release = threading.Event()
+        _FaultingSupervisor.cleaned = threading.Event()
+        self.addCleanup(_FaultingSupervisor.release.set)
+        raised: list[BaseException] = []
+        stderr = io.StringIO()
+
+        def target() -> None:
+            try:
+                supervising.server.run_supervisor(wrapper_peer.detach(), ["true"])
+            except BaseException as exc:  # the wrapper re-raises its failure
+                raised.append(exc)
+
+        patches = [
+            mock.patch.object(supervising.server, "_Supervisor", _FaultingSupervisor),
+            mock.patch.object(supervising.server.sys, "stderr", stderr),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        supervising.protocol._send_json(
+            adapter_peer,
+            {
+                "protocol_version": supervising.paths.PROTOCOL_VERSION,
+                "dispatch_id": "dispatch_x",
+                "run_token": "t" * 32,
+                "db_path": "unused.sqlite",
+                "control_root": "unused",
+                "ttl_seconds": 30.0,
+                "kill_after_seconds": 2.0,
+                "zdotdir": None,
+                "expected_close_by": None,
+            },
+        )
+        return adapter_peer, thread, raised, stderr
+
+    def test_cause_arrives_while_cleanup_is_still_held(self) -> None:
+        fault = supervisor.SupervisorError("merge failed: database is locked")
+        adapter_peer, thread, raised, stderr = self._run(fault)
+        line = supervising.protocol._read_line(adapter_peer, timeout=10.0)
+        self.assertIsNotNone(line, "no error frame while cleanup was held")
+        self.assertFalse(_FaultingSupervisor.cleaned.is_set())
+        frame = json.loads(line.decode("utf-8"))
+        self.assertEqual(
+            frame, {"ready": False, "error": "SupervisorError: merge failed: database is locked"}
+        )
+        self.assertIn("merge failed: database is locked", stderr.getvalue())
+        # The socket closes only once cleanup has finished.
+        _FaultingSupervisor.release.set()
+        adapter_peer.settimeout(10.0)
+        self.assertEqual(adapter_peer.recv(1), b"")
+        self.assertTrue(_FaultingSupervisor.cleaned.is_set())
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(raised, [fault])
+
+    def test_unknown_exception_text_stays_in_the_worker_log(self) -> None:
+        fault = ValueError("line one\nTOKEN=abc line two")
+        adapter_peer, thread, raised, stderr = self._run(fault)
+        line = supervising.protocol._read_line(adapter_peer, timeout=10.0)
+        self.assertIsNotNone(line)
+        frame = json.loads(line.decode("utf-8"))
+        self.assertEqual(frame, {"ready": False, "error": "ValueError (details in the worker log)"})
+        self.assertIn("TOKEN=abc line two", stderr.getvalue())
+        _FaultingSupervisor.release.set()
+        thread.join(timeout=10)
+        self.assertEqual(raised, [fault])
+
+    def test_forwarded_cause_is_one_bounded_line(self) -> None:
+        fault = supervisor.SupervisorError(
+            "first\nsecond " + "x" * 5000 + "; recover with: shorten the supervisor control root"
+        )
+        adapter_peer, thread, raised, stderr = self._run(fault)
+        line = supervising.protocol._read_line(adapter_peer, timeout=10.0)
+        self.assertIsNotNone(line)
+        error = json.loads(line.decode("utf-8"))["error"]
+        self.assertTrue(error.startswith("SupervisorError: first second xxx"), error[:60])
+        self.assertNotIn("\n", error)
+        # The end survives the bound too: a recovery hint follows the path.
+        self.assertTrue(error.endswith("; recover with: shorten the supervisor control root"), error[-80:])
+        self.assertIn(" ... ", error)
+        self.assertLessEqual(len(error), 500)
+        _FaultingSupervisor.release.set()
+        thread.join(timeout=10)
 
 
 # --------------------------------------------------------------------------- #

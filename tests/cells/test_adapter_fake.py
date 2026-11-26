@@ -12,6 +12,7 @@ from unittest import mock
 
 from agent_comms.adapters import DispatchContext
 from agent_comms.adapters.fake import FakeAdapter
+from agent_comms.paths import dispatch_log_path
 from agent_comms.store import Store, WORKER_DISPATCH_POLICY
 from agent_comms import supervisor
 from agent_comms import supervising
@@ -385,6 +386,44 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertEqual(ledger["failure_reason"], "worker_exited_before_close")
                 self.assertIn("producer_paged", [action["status"] for action in actions])
                 self.assertEqual(len(store.list_inbox("alpha-architect")), 1)
+
+    def test_pre_ready_wrapper_failure_reaches_worker_log_and_failure_reason(self) -> None:
+        # ac-xbs: the wrapper refuses before READY (here SunPathTooLong on its
+        # own sun_path check, with the adapter-side pre-check bypassed so the
+        # wrapper is the one that refuses). Its error text, recovery hint
+        # included, must land in both the worker log and failure_reason.
+        with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
+            root = Path(temp_dir)
+            with self.isolated_real_spawn(root):
+                deep_root = root / ("d" * 90) / ("e" * 90) / "s"
+                db_path = root / "agent-comms.sqlite"
+                store = Store(db_path)
+                seed_fake_actors(store, root, db_path)
+                dispatch = store.dispatch_agent(
+                    "alpha-architect", "alpha-fake-worker", "fake-pre-ready",
+                    "Ping", "Please reply.", [],
+                )
+                with mock.patch.dict(
+                    os.environ, {supervisor.CONTROL_ROOT_ENV: str(deep_root)}
+                ), mock.patch.object(
+                    supervising.paths, "control_root_problem", return_value=None
+                ):
+                    started = store.start_queued_dispatches(
+                        lambda _runtime: FakeAdapter(), ttl_seconds=30
+                    )
+
+                self.assertEqual(started[0]["status"], "spawn_failed_message_landed", started[0])
+                reason = started[0]["failure_reason"]
+                self.assertIn("SunPathTooLong", reason)
+                self.assertIn("exceeds AF_UNIX limit", reason)
+                self.assertIn("recover with: shorten the supervisor control root", reason)
+                log_text = dispatch_log_path(dispatch["dispatch_id"]).read_text()
+                self.assertIn("SunPathTooLong", log_text)
+                self.assertIn("exceeds AF_UNIX limit", log_text)
+                self.assertIn("recover with: shorten the supervisor control root", log_text)
+                # The refused attempt left nothing under the over-long root.
+                leftovers = sorted(deep_root.rglob("*")) if deep_root.exists() else []
+                self.assertEqual(leftovers, [])
 
     def test_spawn_args_missing_bootstrap_marker_rejects(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
