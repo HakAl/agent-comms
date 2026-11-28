@@ -2090,6 +2090,20 @@ def outer_shell_flags(command: str) -> tuple[str, str] | None:
     return Path(argv[0]).name, letters
 
 
+def command_shells(events: list[dict]) -> list[tuple[dict, tuple[str, str] | None]]:
+    """Each command the events show, with its :func:`outer_shell_flags`. A
+    command counts from its start: one the TTL ended has no completion
+    event, and its shell ran all the same. An item started and completed
+    under one id is one command, given as completed."""
+    commands: dict[object, dict] = {}
+    for item in event_items(events, "started", "completed"):
+        if item.get("type") != "command_execution":
+            continue
+        key = item.get("id")
+        commands[key if key is not None else object()] = item
+    return [(item, outer_shell_flags(str(item.get("command", "")))) for item in commands.values()]
+
+
 def operator_env(root: Path, token: str = "operator-secret") -> dict[str, str]:
     home = root / "home"
     secret_dir = home / ".agent-comms"

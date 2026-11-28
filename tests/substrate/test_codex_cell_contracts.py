@@ -369,6 +369,31 @@ class TimedOutAfterProbeTest(BlockedDispatchFixture):
             self.harness.assert_closed_or_timed_out_after_probe(self.dispatch)
 
 
+class CommandShellsTest(unittest.TestCase):
+    """The shells a worker's commands ran under are read from every command
+    that started, so one the TTL ended before its completion still counts."""
+
+    HOLD = _command(f"/bin/bash -c '{INVOCATION}'")
+
+    def flags(self, events) -> list:
+        return [flags for _item, flags in cell_harness.command_shells(events)]
+
+    def test_a_login_shell_that_only_started_is_seen(self):
+        late = _started("/bin/bash -lc 'sleep 60'", item_id="item_7")
+        self.assertEqual(self.flags([self.HOLD, late]), [("bash", "c"), ("bash", "lc")])
+
+    def test_a_command_started_and_completed_is_one_command(self):
+        started = _started("/bin/bash -c 'ls'", item_id="item_1")
+        self.assertEqual(self.flags([started, _command("/bin/bash -c 'ls'")]), [("bash", "c")])
+
+    def test_an_unfinished_call_that_is_not_a_command_is_not_a_shell(self):
+        call = _item("started", "mcp_tool_call", server="agent-comms", tool="close_dispatch", status="in_progress")
+        self.assertEqual(self.flags([self.HOLD, call]), [("bash", "c")])
+
+    def test_a_command_under_no_shell_has_no_flags(self):
+        self.assertEqual(self.flags([_command(INVOCATION)]), [None])
+
+
 class DenialCloseTest(BlockedDispatchFixture):
     """A denial cell's dispatch may close satisfied or blocked, but always
     with one reply bound by a protocol 1 closeout to the closed trigger."""

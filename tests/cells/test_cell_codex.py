@@ -31,6 +31,7 @@ from tests.dispatch_cell_harness import (
     codex_cell_preflight,
     codex_pin_env_for_versions_dir,
     command_matcher,
+    command_shells,
     event_items,
     forbidden_write_probe_source,
     hook_refusal_lines,
@@ -41,7 +42,6 @@ from tests.dispatch_cell_harness import (
     sole_observed_launch,
     long_running_worker_spawn,
     make_codex_harness,
-    outer_shell_flags,
     probe_output,
     read_worker_events,
     supervisor_root_negative_fixture,
@@ -541,12 +541,11 @@ class CodexCellTest(unittest.TestCase):
                 zdotdir = Path(environment.get("ZDOTDIR", ""))
                 self.assertEqual(zdotdir.name, "empty-zdotdir", zdotdir)
                 self.assertTrue(zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), zdotdir)
-                commands = [
-                    item
-                    for item in event_items(read_worker_events(dispatch), "completed")
-                    if item.get("type") == "command_execution"
-                ]
-                shells = [outer_shell_flags(str(item.get("command", ""))) for item in commands]
+                # Started commands too: on a dispatch the TTL ended, a shell
+                # may have started and never reported its completion.
+                command_shell_pairs = command_shells(read_worker_events(dispatch))
+                commands = [item for item, _flags in command_shell_pairs]
+                shells = [flags for _item, flags in command_shell_pairs]
                 print(f"CODEX_COMMAND_SHELLS={sorted({shell for shell in shells if shell})}")
                 leaked = sorted(name for name in (STARTUP_SECRET_NAME, *STARTUP_MARKERS) if name in environment)
                 print(f"CODEX_STARTUP_LEAKED={leaked}")
