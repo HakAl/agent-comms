@@ -31,6 +31,7 @@ from tests.dispatch_cell_harness import (
     codex_cell_preflight,
     codex_pin_env_for_versions_dir,
     command_matcher,
+    command_shells,
     event_items,
     forbidden_write_probe_source,
     hook_refusal_lines,
@@ -41,7 +42,6 @@ from tests.dispatch_cell_harness import (
     sole_observed_launch,
     long_running_worker_spawn,
     make_codex_harness,
-    outer_shell_flags,
     probe_output,
     read_worker_events,
     supervisor_root_negative_fixture,
@@ -444,6 +444,11 @@ class CodexCellTest(unittest.TestCase):
             ),
             matches=command_matcher(invocation),
             host_check=lambda: self.assertFalse(receipt_path.exists(), receipt_path),
+            # The host reads the environment while the command holds, so a
+            # worker that then runs out of TTL before its close has still
+            # given the whole measurement (Linux certify run, 2026-11-25:
+            # reply at 89 of 90 seconds).
+            complete_without_close=True,
             context={
                 "invocation": invocation, "nonce": nonce, "receipt_path": receipt_path,
                 "probe_path": probe_path, "source": source, "observer": observer,
@@ -490,7 +495,7 @@ class CodexCellTest(unittest.TestCase):
                     attempt_for=lambda number: self.hold_attempt(root, project, stack, number),
                 )
 
-            harness.assert_closed_with_parented_reply(dispatch)
+            harness.assert_closed_or_timed_out_after_probe(dispatch)
             with harness.worker_evidence_on_failure(dispatch):
                 environment = self.held_command_environment(dispatch, attempt)
                 present = sorted(name for name in names if name in environment)
@@ -527,7 +532,7 @@ class CodexCellTest(unittest.TestCase):
                     ),
                 )
 
-            harness.assert_closed_with_parented_reply(dispatch)
+            harness.assert_closed_or_timed_out_after_probe(dispatch)
             with harness.worker_evidence_on_failure(dispatch):
                 environment = self.held_command_environment(dispatch, attempt)
                 # The answer counts only if it came from this dispatch's worker
@@ -536,12 +541,11 @@ class CodexCellTest(unittest.TestCase):
                 zdotdir = Path(environment.get("ZDOTDIR", ""))
                 self.assertEqual(zdotdir.name, "empty-zdotdir", zdotdir)
                 self.assertTrue(zdotdir.parent.name.startswith(f"agent-comms-zdotdir-{CODEX_WORKER_ID}-"), zdotdir)
-                commands = [
-                    item
-                    for item in event_items(read_worker_events(dispatch), "completed")
-                    if item.get("type") == "command_execution"
-                ]
-                shells = [outer_shell_flags(str(item.get("command", ""))) for item in commands]
+                # Started commands too: on a dispatch the TTL ended, a shell
+                # may have started and never reported its completion.
+                command_shell_pairs = command_shells(read_worker_events(dispatch))
+                commands = [item for item, _flags in command_shell_pairs]
+                shells = [flags for _item, flags in command_shell_pairs]
                 print(f"CODEX_COMMAND_SHELLS={sorted({shell for shell in shells if shell})}")
                 leaked = sorted(name for name in (STARTUP_SECRET_NAME, *STARTUP_MARKERS) if name in environment)
                 print(f"CODEX_STARTUP_LEAKED={leaked}")
