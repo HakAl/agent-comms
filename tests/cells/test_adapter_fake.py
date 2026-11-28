@@ -168,7 +168,14 @@ class FakeAdapterTest(unittest.TestCase):
                 self.assertEqual(reply["to"], "alpha-architect")
                 self.assertEqual(ledger["status"], "closed")
 
-    def test_fake_worker_dies_before_close_goes_to_dlq_and_pages_human(self) -> None:
+    def assert_dies_before_close_reaches_dlq_and_pages_human(
+        self, adapter_for_store: Callable[[Store], FakeAdapter]
+    ) -> dict:
+        """The --fail-before-close worker exits at once, so its exit may be
+        recorded before or after the start commit. Before it, the start commit
+        settles the row to dlq itself and reconcile only pages; after it, the
+        row is published in_flight and reconcile moves it to dlq and pages.
+        Either way the dispatch must end dlq and the human must be paged."""
         with tempfile.TemporaryDirectory(dir=cert_scratch_base()) as temp_dir:
             root = Path(temp_dir)
             with self.isolated_real_spawn(root) as (_registry, control_root):
@@ -179,9 +186,14 @@ class FakeAdapterTest(unittest.TestCase):
                     "alpha-architect", "alpha-fake-worker", "fake-worker-crash",
                     "Ping", "Please crash.", [],
                 )
-                adapter = FakeAdapter()
+                queued = store._dispatch_by_idempotency_key_fresh(
+                    "alpha-architect", "fake-worker-crash"
+                )
+                self.assertEqual(queued["status"], "queued", queued)
+                adapter = adapter_for_store(store)
                 started = store.start_queued_dispatches(lambda _runtime: adapter, ttl_seconds=10)
-                self.assertEqual(started[0]["status"], "in_flight", started[0])
+                self.assertEqual(started[0]["dispatch_id"], queued["dispatch_id"], started[0])
+                self.assertIn(started[0]["status"], ("in_flight", "dlq"), started[0])
                 self.assert_test_control_root(started[0], control_root)
 
                 def child_exit() -> Optional[dict]:
@@ -208,9 +220,50 @@ class FakeAdapterTest(unittest.TestCase):
 
                 self.assertEqual(ledger["status"], "dlq")
                 self.assertEqual(ledger["failure_reason"], "worker_exited_before_close")
-                self.assertIn("dlq", [action["status"] for action in observed_actions])
-                self.assertIn("producer_paged", [action["status"] for action in observed_actions])
+                action_statuses = [action["status"] for action in observed_actions]
+                if started[0]["status"] == "in_flight":
+                    self.assertIn("dlq", action_statuses)
+                else:
+                    self.assertEqual(started[0]["failure_reason"], "worker_exited_before_close")
+                self.assertIn("producer_paged", action_statuses)
                 self.assertEqual(len(store.list_inbox("alpha-architect")), 1)
+                return started[0]
+
+    def test_fake_worker_dies_before_close_goes_to_dlq_and_pages_human(self) -> None:
+        self.assert_dies_before_close_reaches_dlq_and_pages_human(lambda _store: FakeAdapter())
+
+    def test_fake_worker_exit_recorded_before_start_commit_goes_to_dlq_and_pages_human(self) -> None:
+        """Forces the slow-filesystem order: the adapter's dispatch does not
+        return until the child's same-run exit is in the ledger, so the start
+        commit sees it and start_queued_dispatches returns the row as dlq."""
+
+        class ExitBeforeStartCommitAdapter(FakeAdapter):
+            def __init__(self, store: Store) -> None:
+                super().__init__()
+                self.store = store
+
+            def dispatch(self, context: DispatchContext):
+                result = super().dispatch(context)
+                run_token = result.observed_values["run_token"]
+
+                def exit_recorded() -> bool:
+                    row = self.store._dispatch_by_idempotency_key_fresh(
+                        "alpha-architect", "fake-worker-crash"
+                    )
+                    evidence = row["observed_values"].get("worker_exit")
+                    return (
+                        row["status"] == "queued"
+                        and isinstance(evidence, dict)
+                        and evidence.get("run_token") == run_token
+                    )
+
+                wait_until(exit_recorded)
+                return result
+
+        started = self.assert_dies_before_close_reaches_dlq_and_pages_human(
+            ExitBeforeStartCommitAdapter
+        )
+        self.assertEqual(started["status"], "dlq", started)
 
     def test_worker_exiting_124_at_once_is_dlq_before_close_and_pages_producer(self) -> None:
         """Exit 124 from the worker itself is not a timeout (only the
