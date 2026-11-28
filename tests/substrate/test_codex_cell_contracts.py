@@ -386,6 +386,18 @@ class CommandShellsTest(unittest.TestCase):
         started = _started("/bin/bash -c 'ls'", item_id="item_1")
         self.assertEqual(self.flags([started, _command("/bin/bash -c 'ls'")]), [("bash", "c")])
 
+    def test_a_completion_with_another_command_does_not_erase_the_start(self):
+        started = _started("/bin/bash -lc 'sleep 60'", item_id="item_7")
+        completed = _command("/bin/bash -c 'sleep 60'")
+        completed["item"]["id"] = "item_7"
+        self.assertEqual(self.flags([started, completed]), [("bash", "lc"), ("bash", "c")])
+
+    def test_commands_with_no_id_are_each_kept(self):
+        started = _started("/bin/bash -lc 'ls'", item_id="x")
+        completed = _command("/bin/bash -c 'ls'")
+        del started["item"]["id"], completed["item"]["id"]
+        self.assertEqual(self.flags([started, completed]), [("bash", "lc"), ("bash", "c")])
+
     def test_an_unfinished_call_that_is_not_a_command_is_not_a_shell(self):
         call = _item("started", "mcp_tool_call", server="agent-comms", tool="close_dispatch", status="in_progress")
         self.assertEqual(self.flags([self.HOLD, call]), [("bash", "c")])

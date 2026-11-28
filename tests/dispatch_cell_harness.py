@@ -2094,13 +2094,17 @@ def command_shells(events: list[dict]) -> list[tuple[dict, tuple[str, str] | Non
     """Each command the events show, with its :func:`outer_shell_flags`. A
     command counts from its start: one the TTL ended has no completion
     event, and its shell ran all the same. An item started and completed
-    under one id is one command, given as completed."""
+    under one id with one command string is one command, given as
+    completed. A completion whose command string differs from its start's
+    is kept beside the start: neither string is known to be the shell that
+    ran, so both are judged."""
     commands: dict[object, dict] = {}
     for item in event_items(events, "started", "completed"):
         if item.get("type") != "command_execution":
             continue
         key = item.get("id")
-        commands[key if key is not None else object()] = item
+        command = str(item.get("command", ""))
+        commands[(key, command) if key is not None else object()] = item
     return [(item, outer_shell_flags(str(item.get("command", "")))) for item in commands.values()]
 
 
