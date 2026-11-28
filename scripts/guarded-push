@@ -10,8 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agent_comms import paths, push_approval
-from agent_comms.review import ReviewError, run_git
+from agent_comms import paths, push_approval  # noqa: E402
+from agent_comms.review import ReviewError, run_git  # noqa: E402
 
 
 def current_ref(repo: Path) -> str:
