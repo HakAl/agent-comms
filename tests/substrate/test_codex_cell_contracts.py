@@ -293,6 +293,82 @@ class ProbeAttemptClassificationTest(BlockedDispatchFixture):
                 self.assertEqual(self.classify(), cell_harness.INCONCLUSIVE)
 
 
+class TimedOutAfterProbeTest(BlockedDispatchFixture):
+    """A cell whose measurement the host takes while the probe runs may be
+    judged on a dispatch that the TTL ended after the probe completed, and
+    only then: the close is not what such a cell shows."""
+
+    def setUp(self):
+        super().setUp()
+        self.dispatch.update(status="dlq", result=None, failure_reason="timeout")
+        self.dispatch["observed_values"].pop("closeout")
+        self.write_events([_command(f"/bin/zsh -c '{INVOCATION}'"), _started("send", item_id="item_9")])
+
+    def classify(self, *, complete_without_close: bool = True) -> tuple[str, str]:
+        attempt = cell_harness.ProbeAttempt(
+            body="b", matches=cell_harness.command_matcher(INVOCATION), host_check=self.host_check,
+            complete_without_close=complete_without_close,
+        )
+        return self.harness.classify_probe_attempt(self.dispatch, attempt)
+
+    def test_a_timeout_after_the_probe_completed_is_an_attempt(self):
+        outcome, why = self.classify()
+        self.assertEqual(outcome, cell_harness.ATTEMPTED)
+        self.assertIn("timed out after the probe completed", why)
+
+    def test_a_cell_that_did_not_ask_for_it_stays_inconclusive(self):
+        self.assertEqual(self.classify(complete_without_close=False)[0], cell_harness.INCONCLUSIVE)
+
+    def test_anything_short_of_a_completed_probe_is_inconclusive(self):
+        def probe_only_started():
+            self.write_events([_command(INVOCATION, kind="started", exit_code=None, status="in_progress")])
+
+        def probe_absent():
+            self.write_events([_command("ls")])
+
+        def another_failure():
+            self.dispatch["failure_reason"] = "worker_exited_before_close"
+
+        def no_failure_reason():
+            del self.dispatch["failure_reason"]
+
+        def another_status():
+            self.dispatch["status"] = "spawn_failed_message_landed"
+
+        def missing_events():
+            self.events_path.unlink()
+
+        def truncated_events():
+            self.write_events([_command(INVOCATION)], tail='{"type":"item.started","item":{"id"')
+
+        for case in (
+            probe_only_started, probe_absent, another_failure, no_failure_reason, another_status,
+            missing_events, truncated_events,
+        ):
+            with self.subTest(case=case.__name__):
+                self.setUp()
+                case()
+                self.assertEqual(self.classify()[0], cell_harness.INCONCLUSIVE)
+
+    def test_the_close_check_passes_a_timeout_and_nothing_else_unclosed(self):
+        self.harness.evidence_secrets = ()
+        with mock.patch("builtins.print") as printed:
+            self.harness.assert_closed_or_timed_out_after_probe(self.dispatch)
+        self.assertIn("timeout", printed.call_args.args[0])
+        self.dispatch["failure_reason"] = "worker_exited_before_close"
+        with self.assertRaisesRegex(AssertionError, "neither closed nor timed out"):
+            self.harness.assert_closed_or_timed_out_after_probe(self.dispatch)
+
+    def test_the_close_check_holds_a_closed_dispatch_to_the_positive_close(self):
+        self.harness.evidence_secrets = ()
+        self.dispatch.update(status="closed", result="blocked")
+        self.dispatch["observed_values"]["closeout"] = {
+            "protocol": 1, "reply_message_id": "reply", "result": "blocked",
+        }
+        with self.assertRaisesRegex(AssertionError, "did not record satisfied"):
+            self.harness.assert_closed_or_timed_out_after_probe(self.dispatch)
+
+
 class DenialCloseTest(BlockedDispatchFixture):
     """A denial cell's dispatch may close satisfied or blocked, but always
     with one reply bound by a protocol 1 closeout to the closed trigger."""
@@ -750,8 +826,9 @@ class DispatchUntilAttemptedTest(unittest.TestCase):
         self.harness.evidence_secrets = ()
         self.calls: list[dict] = []
         self.classes: list[str] = []
+        self.status = "closed"
         self.harness.dispatch_and_wait = lambda **kwargs: (
-            self.calls.append(kwargs) or {"dispatch_id": f"d{len(self.calls)}", "status": "closed"}
+            self.calls.append(kwargs) or {"dispatch_id": f"d{len(self.calls)}", "status": self.status}
         )
         self.settled = True
         self.harness.settle_dispatch = lambda dispatch: self.settled
@@ -793,6 +870,18 @@ class DispatchUntilAttemptedTest(unittest.TestCase):
 
     def test_a_refusal_from_a_worker_not_confirmed_gone_is_inconclusive(self):
         self.classes = [cell_harness.DECLINED]
+        self.settled = False
+        with self.assertRaisesRegex(AssertionError, "exit was not confirmed"):
+            self.run_cell()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_an_attempt_on_an_unclosed_dispatch_needs_the_worker_confirmed_gone(self):
+        # The events of a dispatch the TTL ended are final only once its
+        # worker is gone.
+        self.classes = [cell_harness.ATTEMPTED]
+        self.status = "dlq"
+        self.assertEqual(self.run_cell()[0]["dispatch_id"], "d1")
+        self.calls.clear()
         self.settled = False
         with self.assertRaisesRegex(AssertionError, "exit was not confirmed"):
             self.run_cell()

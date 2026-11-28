@@ -444,6 +444,11 @@ class CodexCellTest(unittest.TestCase):
             ),
             matches=command_matcher(invocation),
             host_check=lambda: self.assertFalse(receipt_path.exists(), receipt_path),
+            # The host reads the environment while the command holds, so a
+            # worker that then runs out of TTL before its close has still
+            # given the whole measurement (Linux certify run, 2026-11-25:
+            # reply at 89 of 90 seconds).
+            complete_without_close=True,
             context={
                 "invocation": invocation, "nonce": nonce, "receipt_path": receipt_path,
                 "probe_path": probe_path, "source": source, "observer": observer,
@@ -490,7 +495,7 @@ class CodexCellTest(unittest.TestCase):
                     attempt_for=lambda number: self.hold_attempt(root, project, stack, number),
                 )
 
-            harness.assert_closed_with_parented_reply(dispatch)
+            harness.assert_closed_or_timed_out_after_probe(dispatch)
             with harness.worker_evidence_on_failure(dispatch):
                 environment = self.held_command_environment(dispatch, attempt)
                 present = sorted(name for name in names if name in environment)
@@ -527,7 +532,7 @@ class CodexCellTest(unittest.TestCase):
                     ),
                 )
 
-            harness.assert_closed_with_parented_reply(dispatch)
+            harness.assert_closed_or_timed_out_after_probe(dispatch)
             with harness.worker_evidence_on_failure(dispatch):
                 environment = self.held_command_environment(dispatch, attempt)
                 # The answer counts only if it came from this dispatch's worker

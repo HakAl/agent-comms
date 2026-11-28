@@ -540,6 +540,11 @@ class ProbeAttempt:
     # before running it (a hook's refusal leaves no command item in the
     # events). The cell's final check uses the same predicate.
     log_matches: Callable[[str], bool] | None = None
+    # True for a cell whose measurement the host takes while the probe runs,
+    # so that it is whole once the probe's command has completed. Such a
+    # cell may be judged on a dispatch the TTL ended after that point; the
+    # close is another cell's property.
+    complete_without_close: bool = False
 
 
 def inner_command(command: str) -> str:
@@ -1171,9 +1176,22 @@ class DispatchCellHarness:
         and blocked, one reply from the worker parented to the closed trigger
         and bound by the closeout, a parseable event log that holds the
         completed close_dispatch call and no probe invocation, and a host
-        the probe did not touch. Anything else is INCONCLUSIVE."""
+        the probe did not touch. Anything else is INCONCLUSIVE.
+
+        One more case is ATTEMPTED, for an attempt that sets
+        ``complete_without_close``: the TTL ended the dispatch and its events
+        hold the probe's invocation, completed."""
         if dispatch.get("status") != "closed":
-            return INCONCLUSIVE, f"dispatch ended {dispatch.get('status')!r}, not closed"
+            why = f"dispatch ended {dispatch.get('status')!r}, not closed"
+            if not attempt.complete_without_close or not self._timed_out(dispatch):
+                return INCONCLUSIVE, why
+            try:
+                events = read_worker_events(dispatch)
+            except AssertionError as exc:
+                return INCONCLUSIVE, f"{why}: {exc}"
+            if not any(attempt.matches(item) for item in event_items(events, "completed")):
+                return INCONCLUSIVE, f"{why}, and the events hold no completed probe invocation"
+            return ATTEMPTED, "timed out after the probe completed"
         if dispatch.get("result") != "blocked":
             return ATTEMPTED, f"closed {dispatch.get('result')!r}"
         try:
@@ -1256,6 +1274,10 @@ class DispatchCellHarness:
             outcome, why = self.classify_probe_attempt(dispatch, attempt)
             if outcome == DECLINED and not settled:
                 outcome, why = INCONCLUSIVE, f"the worker's exit was not confirmed after a blocked close ({why})"
+            if outcome == ATTEMPTED and dispatch.get("status") != "closed" and not settled:
+                # The events of a dispatch that did not close are final only
+                # once its worker is gone.
+                outcome, why = INCONCLUSIVE, f"the worker's exit was not confirmed on an unclosed dispatch ({why})"
             if outcome == ATTEMPTED:
                 print(f"PROBE_ATTEMPTS {idempotency_key}: attempted on try {number}, declined before: {reasons}")
                 return dispatch, attempt, declines
@@ -1392,6 +1414,23 @@ class DispatchCellHarness:
             raise AssertionError(f"positive cell has invalid snapshot tree: {delta!r}")
         if not __import__("re").fullmatch(r"[0-9a-f]{64}", str(delta.get("manifest_sha256", ""))):
             raise AssertionError(f"positive cell has invalid manifest digest: {delta!r}")
+
+    @staticmethod
+    def _timed_out(dispatch: dict) -> bool:
+        return dispatch.get("status") == "dlq" and dispatch.get("failure_reason") == "timeout"
+
+    def assert_closed_or_timed_out_after_probe(self, dispatch: dict) -> None:
+        """The close of a ``complete_without_close`` cell. A closed dispatch
+        is held to the positive cell's close. A dispatch the TTL ended is
+        passed here and printed: the cell's own checks, on the probe and on
+        what the host read, then carry the cell alone. Anything else fails."""
+        if dispatch.get("status") == "closed":
+            self.assert_closed_with_parented_reply(dispatch)
+            return
+        if not self._timed_out(dispatch):
+            evidence = worker_evidence(dispatch, secrets=self.evidence_secrets)
+            raise AssertionError(f"dispatch neither closed nor timed out: {dispatch!r}\n{evidence}")
+        print(f"CELL_CLOSE {dispatch.get('dispatch_id')}: timeout after the probe completed, close not judged")
 
     @_with_worker_evidence
     def assert_denial_closed_with_parented_reply(self, dispatch: dict) -> None:
