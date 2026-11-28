@@ -694,8 +694,8 @@ class ReplySnapshotCustodyTest(ReplySnapshotHarness):
 
 
 class BoundedIndexDigestTest(unittest.TestCase):
-    """DoD 12: the real-index digest streams from one bounded, no-follow,
-    nonblocking descriptor. Missing yields the absent sentinel; every irregular or
+    """DoD 12: the real-index digest streams from bounded, no-follow,
+    nonblocking descriptors, two passes that must agree. Missing yields the absent sentinel; every irregular or
     raced input refuses with a typed custody error the caller treats as retryable."""
 
     def setUp(self) -> None:
@@ -868,6 +868,124 @@ class BoundedIndexDigestTest(unittest.TestCase):
         self.assertNotEqual(  # only ctime discriminates the in-place mutation
             st_after.st_ctime_ns, st_before.st_ctime_ns
         )
+
+    def _frozen_fstat(self):
+        # Every fstat reports the fields first observed, as on a filesystem whose
+        # timestamp tick is coarser than the write: dev, ino, size, mtime_ns and
+        # ctime_ns stay equal around a same-size in-place write, so only the
+        # content can tell.
+        real_fstat = os.fstat
+        first: dict = {}
+
+        class _Stat:
+            def __init__(self, base) -> None:
+                self.st_mode = base.st_mode
+                self.st_dev = base.st_dev
+                self.st_ino = base.st_ino
+                self.st_size = base.st_size
+                self.st_mtime_ns = base.st_mtime_ns
+                self.st_ctime_ns = base.st_ctime_ns
+
+        def frozen(fd):
+            if "st" not in first:
+                first["st"] = _Stat(real_fstat(fd))
+            return first["st"]
+
+        return frozen
+
+    def test_same_tick_inplace_write_after_read_refuses(self) -> None:
+        # The write lands after the first streamed read reached EOF and before the
+        # post-read fstat, in the same timestamp tick: every compared stat field is
+        # equal, so a single pass would return the digest of bytes the file no
+        # longer holds. The second, independently opened pass reads the new bytes.
+        path = self.dir / "index"
+        original, mutated = b"A" * 4096, b"B" * 4096
+        path.write_bytes(original)
+        real_read = os.read
+        fired = {"done": False}
+
+        def mutating_read(fd, n):
+            chunk = real_read(fd, n)
+            if not chunk and not fired["done"]:
+                fired["done"] = True
+                with open(path, "r+b") as handle:
+                    handle.write(mutated)  # same-size in-place write
+            return chunk
+
+        with mock.patch.object(git_evidence.os, "fstat", self._frozen_fstat()):
+            with mock.patch.object(git_evidence.os, "read", mutating_read):
+                with self.assertRaises(git_evidence.GitCustodyError) as ctx:
+                    git_evidence.bounded_regular_file_digest(path)
+        self.assertTrue(fired["done"])
+        self.assertEqual(path.read_bytes(), mutated)  # the file really changed
+        self.assertIn("git_index_raced", ctx.exception.code)
+
+    def test_same_tick_inplace_write_during_read_refuses(self) -> None:
+        # Larger than one read chunk; the write lands after the first chunk of the
+        # first pass, so that pass digests a torn mix the file never held whole.
+        path = self.dir / "index"
+        size = (1 << 20) * 2 + 17
+        original, mutated = b"A" * size, b"B" * size
+        path.write_bytes(original)
+        real_read = os.read
+        fired = {"done": False}
+
+        def mutating_read(fd, n):
+            chunk = real_read(fd, n)
+            if chunk and not fired["done"]:
+                fired["done"] = True
+                with open(path, "r+b") as handle:
+                    handle.write(mutated)
+            return chunk
+
+        with mock.patch.object(git_evidence.os, "fstat", self._frozen_fstat()):
+            with mock.patch.object(git_evidence.os, "read", mutating_read):
+                with self.assertRaises(git_evidence.GitCustodyError) as ctx:
+                    git_evidence.bounded_regular_file_digest(path)
+        self.assertTrue(fired["done"])
+        self.assertEqual(path.read_bytes(), mutated)
+        self.assertIn("git_index_raced", ctx.exception.code)
+
+    def _after_first_close(self, action):
+        real_close = os.close
+        fired = {"done": False}
+
+        def closing(fd):
+            real_close(fd)
+            if not fired["done"]:
+                fired["done"] = True
+                action()
+
+        return closing, fired
+
+    def test_replaced_between_passes_refuses(self) -> None:
+        # Same bytes under a new inode after the first pass closed its fd: the
+        # digests agree, so only the cross-pass stat compare refuses.
+        path = self.dir / "index"
+        path.write_bytes(b"index-bytes")
+        replacement = self.dir / "index.new"
+        replacement.write_bytes(b"index-bytes")
+        real_replace = os.replace
+        closing, fired = self._after_first_close(
+            lambda: real_replace(replacement, path)
+        )
+        with mock.patch.object(git_evidence.os, "close", closing):
+            with self.assertRaises(git_evidence.GitCustodyError) as ctx:
+                git_evidence.bounded_regular_file_digest(path)
+        self.assertTrue(fired["done"])
+        self.assertIn("git_index_raced", ctx.exception.code)
+
+    def test_removed_between_passes_refuses(self) -> None:
+        # Present on the first pass and gone on the second is a race, not absent.
+        path = self.dir / "index"
+        path.write_bytes(b"index-bytes")
+        real_unlink = os.unlink
+        closing, fired = self._after_first_close(lambda: real_unlink(path))
+        with mock.patch.object(git_evidence.os, "close", closing):
+            with self.assertRaises(git_evidence.GitCustodyError) as ctx:
+                git_evidence.bounded_regular_file_digest(path)
+        self.assertTrue(fired["done"])
+        self.assertIn("git_index_raced", ctx.exception.code)
 
     def test_index_digest_is_descriptor_relative_to_retained_git_dir(self) -> None:
         # Open the real Git dir as a retained descriptor and digest ``index``

@@ -414,30 +414,18 @@ def run_git_fchdir(worktree_fd: int, args: list[str], env: dict[str, str]) -> by
     return proc.stdout
 
 
-def bounded_regular_file_digest(
-    path, *, dir_fd: int | None = None, max_bytes: int = INDEX_DIGEST_MAX_BYTES
-) -> str:
-    """SHA-256 of a regular file streamed from one no-follow, nonblocking fd.
+def _bounded_digest_pass(path, dir_fd: int | None, max_bytes: int):
+    """One bounded streamed read from its own freshly opened no-follow fd.
 
-    When ``dir_fd`` is given, ``path`` is opened descriptor-relative to that
-    retained directory (``openat``), so a concurrently renamed or replaced
-    directory pathname cannot redirect the read to another file; callers pass the
-    already retained Git-dir FD and the bare ``index`` name. Missing returns
-    ``absent``. A symlink/FIFO/device/socket/directory (rejected by the open or
-    fstat), oversize, or device/inode/total-size/``st_mtime_ns``/``st_ctime_ns``
-    drift across the read refuses. ``st_ctime_ns`` is load-bearing: a same-size
-    in-place mutation by the owner cannot be masked with ``utime``, which
-    cannot restore ``ctime``; ``st_mtime_ns`` is defense in depth. The check
-    is only as fine as the filesystem's timestamps: a same-size mutation that
-    lands within the same timestamp tick as the ``ctime`` already recorded
-    (coarse on ext4) leaves every compared field equal and is not detected;
-    the streamed digest alone cannot tell. Tracked as a follow-up.
+    Returns ``(st0, hexdigest)``, or None when the path is missing. Refuses on a
+    non-regular file, oversize, growth, or device/inode/total-size/
+    ``st_mtime_ns``/``st_ctime_ns`` drift between the pre-read and post-read fstat.
     """
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
         fd = os.open(os.fspath(path), flags, dir_fd=dir_fd)
     except FileNotFoundError:
-        return INDEX_DIGEST_ABSENT
+        return None
     except OSError as exc:  # ELOOP (symlink), ENXIO (device), EWOULDBLOCK, ...
         raise GitCustodyError("git_index_unreadable", f"{path}: {exc}") from exc
     try:
@@ -459,13 +447,73 @@ def bounded_regular_file_digest(
                 raise GitCustodyError("git_index_grew", str(total))
             digest.update(chunk)
         st1 = os.fstat(fd)
-        if (
-            (st1.st_dev, st1.st_ino) != (st0.st_dev, st0.st_ino)
-            or st1.st_size != total
-            or st1.st_mtime_ns != st0.st_mtime_ns
-            or st1.st_ctime_ns != st0.st_ctime_ns
-        ):
+        if _stat_key(st1) != _stat_key(st0) or st1.st_size != total:
             raise GitCustodyError("git_index_raced", f"{total}/{st0.st_size}")
-        return digest.hexdigest()
+        return st0, digest.hexdigest()
     finally:
         os.close(fd)
+
+
+def _stat_key(st) -> tuple[int, int, int, int, int]:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def bounded_regular_file_digest(
+    path, *, dir_fd: int | None = None, max_bytes: int = INDEX_DIGEST_MAX_BYTES
+) -> str:
+    """SHA-256 of a regular file, read in two bounded passes, each opened no-follow
+    and ``O_NONBLOCK``. The flag only keeps the open from blocking on a FIFO or
+    device; a read of a regular file can still wait on storage.
+
+    When ``dir_fd`` is given, ``path`` is opened descriptor-relative to that
+    retained directory (``openat``), so a concurrently renamed or replaced
+    directory pathname cannot redirect the read to another file; callers pass the
+    already retained Git-dir FD and the bare ``index`` name. Missing on the first
+    pass returns ``absent``. A symlink/FIFO/device/socket/directory (rejected by
+    the open or fstat), or oversize refuses. Each pass opens its own descriptor,
+    takes fstat A, streams the bounded read, takes fstat B, and closes; a pass
+    whose device/inode/total-size/``st_mtime_ns``/``st_ctime_ns`` differ between
+    A and B refuses. ``st_ctime_ns`` is load-bearing there: a same-size in-place
+    mutation by the owner cannot be masked with ``utime``, which cannot restore
+    ``ctime``; ``st_mtime_ns`` is defense in depth.
+
+    The digest is returned only when both passes agree on the digest and on
+    (dev, ino, size, mtime_ns, ctime_ns); otherwise, or when the file was present
+    on the first pass and missing on the second, it refuses ``git_index_raced``.
+    So a write that changes bytes after the first pass read them and before the
+    second pass reads them, and is not undone before then, refuses whatever the
+    timestamps do (a same-size write within one timestamp tick included).
+
+    Remaining windows; nothing more is guaranteed:
+
+    1. Timestamp-dependent, between the second pass's read of the changed bytes
+       and its fstat B. A write there is refused only if it moves ``mtime_ns``
+       or ``ctime_ns``; a same-size write within the same timestamp tick leaves
+       every compared field equal and the returned digest is stale.
+    2. Unconditional, after the second pass's fstat B. A write while the
+       descriptor closes and the function returns, or at any time after, is
+       seen by no check, whatever its timestamps. The digest describes what the
+       file held during the reads, not after them.
+    3. Timestamp-dependent, lockstep change and restore. A writer that makes
+       both passes read the same byte sequence (for example the same torn mix
+       of two versions) yields agreeing digests over bytes the file may never
+       have held at one instant. Undetected only if every such write leaves all
+       compared fields equal from the first fstat A to the last fstat B.
+
+    4. Replacement of the name during the second pass. Each fstat checks the
+       inode its descriptor holds, not the name. A rename over ``index`` after
+       the second pass's open leaves the held inode's compared fields equal,
+       so the digest returned is of the file that was replaced.
+
+    The index is read twice, each read bounded by ``max_bytes``.
+    """
+    first = _bounded_digest_pass(path, dir_fd, max_bytes)
+    if first is None:
+        return INDEX_DIGEST_ABSENT
+    second = _bounded_digest_pass(path, dir_fd, max_bytes)
+    if second is None:
+        raise GitCustodyError("git_index_raced", f"{path}: removed between passes")
+    (st_a, digest_a), (st_b, digest_b) = first, second
+    if _stat_key(st_a) != _stat_key(st_b) or digest_a != digest_b:
+        raise GitCustodyError("git_index_raced", f"{path}: passes disagree")
+    return digest_b
